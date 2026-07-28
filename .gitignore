@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 .pytest_cache/
+.superpowers/
 *.py[cod]
 *.pyc
 *.egg-info/
