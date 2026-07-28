@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.pyc
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+
+# Environment Variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+
+# Data
+data/raw/*.csv
+data/processed/*.csv
+data/*.db
+data/cache/
+
+# Models
+models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Notebooks
+.ipynb_checkpoints/
+output/
+*.pth
+*.parquet

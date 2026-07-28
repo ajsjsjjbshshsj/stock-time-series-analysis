@@ -1,0 +1,17 @@
+# 数据采集服务依赖
+# 服务可独立安装，也可复用主项目虚拟环境
+
+# 核心依赖
+pandas>=1.5.0
+python-dotenv>=1.0.0
+
+# 数据源
+tushare>=1.2.89
+akshare>=1.8.0
+
+# 数据库
+sqlalchemy>=1.4.0
+pymysql>=1.0.0
+
+# 测试
+pytest>=7.0.0
