@@ -12,7 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制服务代码
-COPY app/ app/
+COPY app app/
 
 # 创建日志目录
 RUN mkdir -p logs

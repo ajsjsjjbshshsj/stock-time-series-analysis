@@ -18,8 +18,8 @@ from database import repository
 from analysis.statistical import StatisticalAnalyzer
 from analysis.predictor import StockPredictor
 from analysis.backtester import Backtester
-from analysis.ranking_predictor import train_ranking_model, predict_top_n, predict_full_ranking
-from analysis.ranking_backtester import run_ranking_backtest, run_walk_forward_backtest
+from analysis.ranking_predictor import train_ranking_model, predict_top_n
+from analysis.ranking_backtester import run_walk_forward_backtest
 from visualization.plotter import StockPlotter
 
 
@@ -422,7 +422,6 @@ def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=F
     """
     执行全市场排名选股流程。
     """
-    from config.settings import RANKING_CONFIG
     from data_processor.panel_builder import (
         incremental_update,
         prepare_panel_for_training,
@@ -485,13 +484,11 @@ def run_ranking_backtest_pipeline(top_n=10, use_probe=True, forward_days=5,
 
     先训练模型，然后进行滚动训练回测。
     """
-    from config.settings import RANKING_CONFIG
     from data_processor.panel_builder import (
         incremental_update,
         prepare_panel_for_training,
         load_all_stock_data_from_db,
     )
-    from analysis.ranking_predictor import get_feature_columns
 
     logger.info("=" * 60)
     logger.info("排名策略回测")
@@ -561,7 +558,6 @@ def run_probe_selection_only(top_n=10, forward_days=5, use_tushare=False, skip_u
     """
     仅执行探针法特征筛选，不训练最终模型。
     """
-    from config.settings import RANKING_CONFIG
     from data_processor.panel_builder import (
         incremental_update,
         prepare_panel_for_training,

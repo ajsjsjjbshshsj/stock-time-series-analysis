@@ -18,7 +18,7 @@ V0.2 独立数据采集服务，将原项目中的股票数据采集功能从主
 ## 项目结构
 
 ```text
-services/python-collector/
+python-services/python-collector/
 ├── app/
 │   ├── main.py                  # CLI 入口
 │   ├── config.py                # 服务配置
@@ -69,7 +69,7 @@ source .venv/bin/activate  # Linux/Mac
 # 或 .venv\Scripts\activate  # Windows
 
 # 方式二：独立安装
-cd services/python-collector
+cd python-services/python-collector
 pip install -r requirements.txt
 ```
 
@@ -147,7 +147,7 @@ PENDING → RUNNING → SUCCESS
 ## 测试
 
 ```bash
-cd services/python-collector
+cd python-services/python-collector
 python -m pytest tests/ -v
 ```
 

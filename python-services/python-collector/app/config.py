@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 # ── 加载 .env ────────────────────────────────────────────────
 # 尝试多个路径：服务根目录 → 项目根目录
-# __file__ = .../services/python-collector/app/config.py
+# __file__ = .../python-services/python-collector/app/config.py
 _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))           # .../app/
 _SERVICE_ROOT = os.path.abspath(os.path.join(_CONFIG_DIR, '..'))   # .../python-collector/
 _PROJECT_ROOT = os.path.abspath(os.path.join(_CONFIG_DIR, '..', '..', '..'))  # .../StockAnalysisSystem/

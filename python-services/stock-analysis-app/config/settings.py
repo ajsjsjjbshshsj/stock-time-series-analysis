@@ -6,8 +6,17 @@
 import os
 from dotenv import load_dotenv
 
-# 加载 .env 文件
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+# 优先加载应用自身配置；在多语言仓库中回退到仓库根目录的共享配置。
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPOSITORY_ROOT = os.path.abspath(os.path.join(_APP_ROOT, '..', '..'))
+
+for _env_path in (
+    os.path.join(_APP_ROOT, '.env'),
+    os.path.join(_REPOSITORY_ROOT, '.env'),
+):
+    if os.path.isfile(_env_path):
+        load_dotenv(_env_path)
+        break
 
 
 # ── 敏感配置校验 ─────────────────────────────────────────────

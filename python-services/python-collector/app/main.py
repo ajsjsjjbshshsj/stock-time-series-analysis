@@ -23,9 +23,10 @@ import sys
 # 确保 app 包可被导入（将服务根目录加入 sys.path）
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))               # .../app/
 _SERVICE_ROOT = os.path.dirname(_APP_DIR)                            # .../python-collector/
-_PROJECT_ROOT = os.path.abspath(os.path.join(_SERVICE_ROOT, '..', '..', '..'))
+_PYTHON_SERVICES_ROOT = os.path.dirname(_SERVICE_ROOT)               # .../python-services/
+_STOCK_ANALYSIS_ROOT = os.path.join(_PYTHON_SERVICES_ROOT, 'stock-analysis-app')
 
-for _p in (_SERVICE_ROOT, _PROJECT_ROOT):
+for _p in (_SERVICE_ROOT, _STOCK_ANALYSIS_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
