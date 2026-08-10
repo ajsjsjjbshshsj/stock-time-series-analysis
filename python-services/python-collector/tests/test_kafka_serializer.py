@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -129,3 +130,11 @@ def test_serializer_rejects_invalid_input():
         match="StockDailyEvent",
     ):
         KafkaJsonSerializer.serialize({"tsCode": "000001.SZ"})
+
+
+@pytest.mark.parametrize("invalid_value", [Decimal("NaN"), Decimal("Infinity")])
+def test_serializer_rejects_non_finite_decimal(invalid_value):
+    event = replace(create_event(), close=invalid_value)
+
+    with pytest.raises(KafkaSerializationError, match="finite Decimal"):
+        KafkaJsonSerializer.serialize(event)

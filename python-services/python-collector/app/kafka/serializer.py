@@ -1,4 +1,5 @@
 import simplejson
+from decimal import Decimal
 
 from app.events.stock_daily_event import StockDailyEvent
 
@@ -17,9 +18,12 @@ class KafkaJsonSerializer:
                 "event 必须是 StockDailyEvent"
             )
 
+        payload_data = event.to_dict()
+        KafkaJsonSerializer._validate_json_numbers(payload_data)
+
         try:
             payload = simplejson.dumps(
-                event.to_dict(),
+                payload_data,
                 ensure_ascii=False,
                 use_decimal=True,
                 allow_nan=False,
@@ -31,3 +35,21 @@ class KafkaJsonSerializer:
             ) from exc
 
         return payload.encode("utf-8")
+
+    @staticmethod
+    def _validate_json_numbers(value: object) -> None:
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise KafkaSerializationError(
+                    f"JSON numbers must be finite Decimal values: {value}"
+                )
+            return
+
+        if isinstance(value, dict):
+            for nested_value in value.values():
+                KafkaJsonSerializer._validate_json_numbers(nested_value)
+            return
+
+        if isinstance(value, (list, tuple)):
+            for nested_value in value:
+                KafkaJsonSerializer._validate_json_numbers(nested_value)

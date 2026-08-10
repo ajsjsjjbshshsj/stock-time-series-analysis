@@ -5,7 +5,6 @@ try:
 except ImportError:  # pragma: no cover - exercised only without dependency
     ConfluentProducer = None
 
-from app.config import KAFKA_CONFIG, KAFKA_TOPICS
 from app.events.stock_daily_event import StockDailyEvent
 from app.kafka.delivery_callback import DeliveryCallback
 from app.kafka.serializer import KafkaJsonSerializer
@@ -24,8 +23,15 @@ class StockKafkaProducer:
         producer_config: Mapping[str, object] | None = None,
         daily_topic: str | None = None,
     ):
-        config = dict(producer_config or KAFKA_CONFIG)
-        self._daily_topic = daily_topic or KAFKA_TOPICS['daily']
+        if producer_config is None or daily_topic is None:
+            from app.config import KAFKA_CONFIG, KAFKA_TOPICS
+
+        config = dict(
+            producer_config if producer_config is not None else KAFKA_CONFIG
+        )
+        self._daily_topic = (
+            daily_topic if daily_topic is not None else KAFKA_TOPICS['daily']
+        )
         self._delivery_callback = DeliveryCallback()
 
         if client is not None:
