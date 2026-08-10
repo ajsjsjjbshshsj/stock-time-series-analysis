@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.events.stock_daily_event import StockDailyEvent
 
@@ -18,6 +18,8 @@ class OutputResult:
     success_count: int
     failure_count: int
     errors: list[str]
+    # Composite outputs keep the original child results for diagnosis/retry.
+    details: dict[str, "OutputResult"] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:

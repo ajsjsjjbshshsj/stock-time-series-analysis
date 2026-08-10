@@ -40,3 +40,9 @@ def test_empty_daily_output_batch_is_allowed():
 
     assert batch.records == []
     assert batch.events == []
+
+
+def test_output_result_details_default_to_empty_mapping():
+    result = OutputResult("MYSQL", 0, 0, 0, [])
+
+    assert result.details == {}

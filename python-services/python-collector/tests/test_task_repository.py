@@ -105,6 +105,36 @@ class TestTaskRepository(unittest.TestCase):
         repo.update_status(1, TaskStatus.FAILED.value, error_message="网络超时")
         session.execute.assert_called_once()
 
+    def test_update_status_partial_success_keeps_delivery_error(self):
+        repo, session = self._make_repo()
+
+        repo.update_status(
+            1,
+            TaskStatus.PARTIAL_SUCCESS.value,
+            record_count=100,
+            error_message="KAFKA: broker unavailable",
+        )
+
+        _, params = session.execute.call_args.args
+        statement = str(session.execute.call_args.args[0])
+        self.assertEqual(params['status'], 'PARTIAL_SUCCESS')
+        self.assertEqual(params['record_count'], 100)
+        self.assertEqual(
+            params['error_message'],
+            'KAFKA: broker unavailable',
+        )
+        self.assertIn('retry_count = retry_count + 1', statement)
+
+    def test_get_failed_tasks_includes_partial_success(self):
+        repo, session = self._make_repo()
+        session.execute.return_value = []
+
+        repo.get_failed_tasks()
+
+        _, params = session.execute.call_args.args
+        self.assertEqual(params['failed_status'], 'FAILED')
+        self.assertEqual(params['partial_status'], 'PARTIAL_SUCCESS')
+
 
 if __name__ == '__main__':
     unittest.main()

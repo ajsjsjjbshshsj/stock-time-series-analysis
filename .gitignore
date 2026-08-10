@@ -34,6 +34,9 @@ data/cache/
 
 # Models
 models/
+# These are Python source models, not generated ML model artifacts.
+!python-services/python-collector/app/models/
+!python-services/python-collector/app/models/*.py
 
 # OS
 .DS_Store

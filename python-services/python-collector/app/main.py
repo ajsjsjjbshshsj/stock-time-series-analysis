@@ -33,6 +33,7 @@ for _p in (_SERVICE_ROOT, _STOCK_ANALYSIS_ROOT):
 from app.config import (
     DATABASE_CONFIG,
     COLLECTOR_SOURCE,
+    COLLECTOR_OUTPUT_MODE,
     COLLECTION_CONFIG,
     safe_config_repr,
 )
@@ -94,13 +95,25 @@ def cmd_daily(args):
         from app.repositories.stock_repository import StockRepository
         from app.repositories.task_repository import TaskRepository
         from app.jobs.daily_collection_job import DailyCollectionJob
+        from app.outputs.output_factory import OutputFactory
         from app.utils.date_utils import load_trade_calendar
 
         stock_repo = StockRepository(session)
         task_repo = TaskRepository(session)
         trade_calendar = load_trade_calendar(collector)
+        output = OutputFactory.create(
+            mode=COLLECTOR_OUTPUT_MODE,
+            stock_repository=stock_repo,
+        )
 
-        job = DailyCollectionJob(collector, stock_repo, task_repo, trade_calendar)
+        logger.info(f"Daily output mode: {COLLECTOR_OUTPUT_MODE}")
+        job = DailyCollectionJob(
+            collector,
+            stock_repo,
+            task_repo,
+            trade_calendar,
+            output=output,
+        )
         result = job.execute(args.date)
 
     if result['success']:
@@ -130,11 +143,21 @@ def cmd_history(args):
         from app.repositories.stock_repository import StockRepository
         from app.repositories.task_repository import TaskRepository
         from app.jobs.history_backfill_job import HistoryBackfillJob
+        from app.outputs.output_factory import OutputFactory
 
         stock_repo = StockRepository(session)
         task_repo = TaskRepository(session)
+        output = OutputFactory.create(
+            mode=COLLECTOR_OUTPUT_MODE,
+            stock_repository=stock_repo,
+        )
 
-        job = HistoryBackfillJob(collector, stock_repo, task_repo)
+        job = HistoryBackfillJob(
+            collector,
+            stock_repo,
+            task_repo,
+            output=output,
+        )
         result = job.execute(args.start, args.end)
 
     if result['success']:
@@ -220,11 +243,21 @@ def cmd_retry_failed(args):
         from app.repositories.stock_repository import StockRepository
         from app.repositories.task_repository import TaskRepository
         from app.jobs.retry_failed_job import RetryFailedJob
+        from app.outputs.output_factory import OutputFactory
 
         stock_repo = StockRepository(session)
         task_repo = TaskRepository(session)
+        output = OutputFactory.create(
+            mode=COLLECTOR_OUTPUT_MODE,
+            stock_repository=stock_repo,
+        )
 
-        job = RetryFailedJob(collector, stock_repo, task_repo)
+        job = RetryFailedJob(
+            collector,
+            stock_repo,
+            task_repo,
+            output=output,
+        )
         result = job.execute()
 
     if result['success']:

@@ -22,6 +22,7 @@ from app.collectors.base_collector import BaseCollector
 from app.repositories.stock_repository import StockRepository
 from app.repositories.task_repository import TaskRepository
 from app.jobs.daily_collection_job import DailyCollectionJob
+from app.outputs.base_output import BaseOutput
 from app.utils.logger import get_logger
 from app.utils.date_utils import get_trade_days, load_trade_calendar, parse_date, to_yyyymmdd
 
@@ -37,6 +38,7 @@ class HistoryBackfillJob:
         stock_repo: StockRepository,
         task_repo: TaskRepository,
         stock_codes: Optional[List[str]] = None,
+        output: Optional[BaseOutput] = None,
     ):
         """
         Args:
@@ -49,6 +51,7 @@ class HistoryBackfillJob:
         self.stock_repo = stock_repo
         self.task_repo = task_repo
         self.stock_codes = stock_codes
+        self.output = output
 
         # 加载交易日历
         self.trade_calendar = load_trade_calendar(collector)
@@ -107,6 +110,7 @@ class HistoryBackfillJob:
             stock_repo=self.stock_repo,
             task_repo=self.task_repo,
             trade_calendar=self.trade_calendar,
+            output=self.output,
         )
 
         # 逐日执行

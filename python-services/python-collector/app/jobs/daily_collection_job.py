@@ -29,6 +29,10 @@ from app.repositories.stock_repository import StockRepository
 from app.repositories.task_repository import TaskRepository
 from app.models.collection_task import CollectionTaskRecord, TaskStatus, TaskType
 from app.models.stock_daily import STOCK_DAILY_REQUIRED
+from app.outputs.base_output import BaseOutput
+from app.outputs.daily_batch_factory import DailyOutputBatchFactory
+from app.outputs.mysql_output import MysqlOutput
+from app.outputs.output_result import OutputResult
 from app.config import COLLECTION_CONFIG
 from app.utils.logger import get_logger
 from app.utils.date_utils import is_trade_day, to_yyyymmdd, load_trade_calendar
@@ -84,6 +88,7 @@ class DailyCollectionJob:
         stock_repo: StockRepository,
         task_repo: TaskRepository,
         trade_calendar: Optional[set] = None,
+        output: Optional[BaseOutput] = None,
     ):
         """
         Args:
@@ -96,6 +101,8 @@ class DailyCollectionJob:
         self.stock_repo = stock_repo
         self.task_repo = task_repo
         self.trade_calendar = trade_calendar
+        # Preserve V0.2 behavior unless a Kafka-capable output is injected.
+        self.output = output or MysqlOutput(stock_repo)
 
     def execute(self, trade_date: str, stock_codes: Optional[List[str]] = None) -> dict:
         """
@@ -124,6 +131,9 @@ class DailyCollectionJob:
             'skipped': False,
             'error': None,
             'elapsed': 0.0,
+            'status': None,
+            'output': None,
+            'deliveries': {},
         }
 
         # ── Step 1: 交易日判断 ──
@@ -193,23 +203,47 @@ class DailyCollectionJob:
                 result['elapsed'] = time.time() - t0
                 return result
 
-            # ── Step 6: 写入数据库 ──
+            # ── Step 6: Build one batch and route it to configured outputs ──
             records = df.to_dict('records')
-            count = self.stock_repo.save_daily_records(records)
+            batch = DailyOutputBatchFactory.create(
+                records=records,
+                source=source,
+                business_date=trade_date_clean,
+                task_id=task_id,
+            )
+            output_result = self.output.deliver(batch)
+            final_status = self._delivery_status(output_result)
+            delivered_count = self._delivered_count(output_result)
+            error_message = '; '.join(output_result.errors) or None
 
-            # ── Step 7: 更新状态 ──
+            # ── Step 7: Finalize only after all configured outputs return ──
             self.task_repo.update_status(
-                task_id, TaskStatus.SUCCESS.value,
-                record_count=count,
+                task_id,
+                final_status,
+                record_count=delivered_count,
+                error_message=error_message,
             )
 
-            result['success'] = True
-            result['record_count'] = count
+            result['success'] = final_status == TaskStatus.SUCCESS.value
+            result['record_count'] = delivered_count
+            result['status'] = final_status
+            result['output'] = output_result.output_type
+            result['error'] = error_message
+            result['deliveries'] = {
+                name: {
+                    'success': detail.success,
+                    'success_count': detail.success_count,
+                    'failure_count': detail.failure_count,
+                    'errors': detail.errors,
+                }
+                for name, detail in output_result.details.items()
+            }
             result['elapsed'] = time.time() - t0
 
             logger.info(
-                f"✓ {trade_date_clean} 采集成功: {count} 条, "
-                f"耗时 {result['elapsed']:.1f}s"
+                f"{trade_date_clean} output={output_result.output_type} "
+                f"status={final_status} count={delivered_count} "
+                f"elapsed={result['elapsed']:.1f}s"
             )
             return result
 
@@ -223,6 +257,27 @@ class DailyCollectionJob:
             result['error'] = str(e)
             result['elapsed'] = time.time() - t0
             return result
+
+    @staticmethod
+    def _delivery_status(output_result: OutputResult) -> str:
+        if output_result.success:
+            return TaskStatus.SUCCESS.value
+
+        child_results = list(output_result.details.values())
+        if child_results and any(item.success for item in child_results):
+            return TaskStatus.PARTIAL_SUCCESS.value
+
+        return TaskStatus.FAILED.value
+
+    @staticmethod
+    def _delivered_count(output_result: OutputResult) -> int:
+        if not output_result.details:
+            return output_result.success_count
+
+        # Partial dual output reports the progress of its successful side.
+        return max(
+            item.success_count for item in output_result.details.values()
+        )
 
     def _collect_by_date(self, trade_date: str) -> pd.DataFrame:
         """按日期采集全市场（Tushare daily(trade_date=xxx) 接口）。"""

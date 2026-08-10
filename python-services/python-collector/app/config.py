@@ -78,6 +78,25 @@ TUSHARE_TOKEN = _require_env('TUSHARE_TOKEN')
 COLLECTOR_SOURCE = _optional_env('COLLECTOR_SOURCE', 'tushare')
 
 
+SUPPORTED_OUTPUT_MODES = frozenset({'mysql', 'kafka', 'dual'})
+
+
+def normalize_output_mode(value: str) -> str:
+    mode = value.strip().lower()
+    if mode not in SUPPORTED_OUTPUT_MODES:
+        supported = ', '.join(sorted(SUPPORTED_OUTPUT_MODES))
+        raise ValueError(
+            f"COLLECTOR_OUTPUT_MODE must be one of: {supported}; got {value!r}"
+        )
+    return mode
+
+
+# mysql keeps V0.2 behavior; kafka and dual enable the V0.3 message path.
+COLLECTOR_OUTPUT_MODE = normalize_output_mode(
+    _optional_env('COLLECTOR_OUTPUT_MODE', 'mysql')
+)
+
+
 # ── 采集参数 ─────────────────────────────────────────────────
 
 COLLECTION_CONFIG = {
@@ -137,7 +156,7 @@ def safe_config_repr() -> str:
     """返回配置摘要字符串，敏感字段已脱敏。"""
     return (
         "DATABASE: host=%s, port=%s, user=%s, password=%s, database=%s | "
-        "SOURCE: %s | TUSHARE_TOKEN: %s"
+        "SOURCE: %s | OUTPUT_MODE: %s | TUSHARE_TOKEN: %s"
         % (
             DATABASE_CONFIG['host'],
             DATABASE_CONFIG['port'],
@@ -145,6 +164,7 @@ def safe_config_repr() -> str:
             mask_secret(DB_PASSWORD),
             DATABASE_CONFIG['database'],
             COLLECTOR_SOURCE,
+            COLLECTOR_OUTPUT_MODE,
             mask_secret(TUSHARE_TOKEN),
         )
     )

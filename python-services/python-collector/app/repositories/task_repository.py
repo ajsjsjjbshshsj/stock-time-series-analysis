@@ -121,10 +121,25 @@ class TaskRepository:
             stmt = text(
                 f'UPDATE `{TABLE_COLLECTION_TASK}` '
                 f'SET status = :status, record_count = :record_count, '
+                f'error_message = :error_message, '
                 f'finished_at = :finished_at, updated_at = :updated_at '
                 f'WHERE id = :id'
             )
             params['finished_at'] = now
+            params['error_message'] = error_message
+            self.session.execute(stmt, params)
+
+        elif status == TaskStatus.PARTIAL_SUCCESS.value:
+            stmt = text(
+                f'UPDATE `{TABLE_COLLECTION_TASK}` '
+                f'SET status = :status, record_count = :record_count, '
+                f'error_message = :error_message, '
+                f'finished_at = :finished_at, updated_at = :updated_at, '
+                f'retry_count = retry_count + 1 '
+                f'WHERE id = :id'
+            )
+            params['finished_at'] = now
+            params['error_message'] = error_message
             self.session.execute(stmt, params)
 
         elif status == TaskStatus.FAILED.value:
@@ -178,9 +193,13 @@ class TaskRepository:
             f'SELECT id, task_type, business_date, source, status, '
             f'record_count, retry_count, error_message, started_at, finished_at '
             f'FROM `{TABLE_COLLECTION_TASK}` '
-            f'WHERE status = :status '
+            f'WHERE status IN (:failed_status, :partial_status) '
             f'ORDER BY created_at DESC LIMIT :limit'
-        ), {'status': TaskStatus.FAILED.value, 'limit': limit})
+        ), {
+            'failed_status': TaskStatus.FAILED.value,
+            'partial_status': TaskStatus.PARTIAL_SUCCESS.value,
+            'limit': limit,
+        })
 
         tasks = []
         for row in result:

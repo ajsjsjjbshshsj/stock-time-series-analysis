@@ -194,7 +194,7 @@ class CollectionTask(Base):
     business_date = Column(String(10), nullable=False, comment='业务日期 YYYYMMDD')
     source = Column(String(20), nullable=False, comment='数据源: tushare/akshare')
     status = Column(String(20), nullable=False, default='PENDING',
-                    comment='状态: PENDING/RUNNING/SUCCESS/FAILED')
+                    comment='状态: PENDING/RUNNING/SUCCESS/PARTIAL_SUCCESS/FAILED')
     record_count = Column(Integer, default=0, comment='采集记录数')
     retry_count = Column(Integer, default=0, comment='重试次数')
     error_message = Column(Text, comment='错误信息')

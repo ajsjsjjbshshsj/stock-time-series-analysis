@@ -23,6 +23,7 @@ from app.repositories.stock_repository import StockRepository
 from app.repositories.task_repository import TaskRepository
 from app.models.collection_task import TaskType
 from app.jobs.daily_collection_job import DailyCollectionJob
+from app.outputs.base_output import BaseOutput
 from app.config import COLLECTION_CONFIG
 from app.utils.logger import get_logger
 from app.utils.date_utils import load_trade_calendar
@@ -39,11 +40,13 @@ class RetryFailedJob:
         stock_repo: StockRepository,
         task_repo: TaskRepository,
         stock_codes: Optional[List[str]] = None,
+        output: Optional[BaseOutput] = None,
     ):
         self.collector = collector
         self.stock_repo = stock_repo
         self.task_repo = task_repo
         self.stock_codes = stock_codes
+        self.output = output
         self.max_retry_count = COLLECTION_CONFIG.get('max_retry_count', 5)
         self.trade_calendar = load_trade_calendar(collector)
 
@@ -100,6 +103,7 @@ class RetryFailedJob:
             stock_repo=self.stock_repo,
             task_repo=self.task_repo,
             trade_calendar=self.trade_calendar,
+            output=self.output,
         )
 
         for task_info in matching:
