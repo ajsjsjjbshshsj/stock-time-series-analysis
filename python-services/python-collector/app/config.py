@@ -90,6 +90,39 @@ COLLECTION_CONFIG = {
 }
 
 
+# Kafka Producer configuration
+KAFKA_CONFIG = {
+    'bootstrap.servers': _optional_env(
+        'KAFKA_BOOTSTRAP_SERVERS',
+        'localhost:9092',
+    ),
+    'client.id': _optional_env(
+        'KAFKA_CLIENT_ID',
+        'stock-python-collector-v1',
+    ),
+    'acks': _optional_env('KAFKA_ACKS', 'all'),
+    'enable.idempotence': True,
+    'compression.type': _optional_env(
+        'KAFKA_COMPRESSION_TYPE',
+        'lz4',
+    ),
+    'retries': int(_optional_env('KAFKA_RETRIES', '5')),
+    'linger.ms': int(_optional_env('KAFKA_LINGER_MS', '5')),
+    'message.timeout.ms': int(
+        _optional_env('KAFKA_MESSAGE_TIMEOUT_MS', '30000')
+    ),
+}
+
+KAFKA_TOPICS = {
+    'daily': _optional_env('KAFKA_DAILY_TOPIC', 'stock.ods.daily.v1'),
+    'basic': _optional_env('KAFKA_BASIC_TOPIC', 'stock.ods.basic.v1'),
+    'dead_letter': _optional_env(
+        'KAFKA_DLQ_TOPIC',
+        'stock.dead-letter.v1',
+    ),
+}
+
+
 # ── 日志配置 ─────────────────────────────────────────────────
 
 LOG_LEVEL = _optional_env('LOG_LEVEL', 'INFO')

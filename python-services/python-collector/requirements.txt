@@ -15,3 +15,6 @@ pymysql>=1.0.0
 
 # 测试
 pytest>=7.0.0
+
+simplejson>=3.19.0
+confluent-kafka>=2.6.0
