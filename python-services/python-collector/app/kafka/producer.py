@@ -33,6 +33,7 @@ class StockKafkaProducer:
             daily_topic if daily_topic is not None else KAFKA_TOPICS['daily']
         )
         self._delivery_callback = DeliveryCallback()
+        self._reported_failure_count = 0
 
         if client is not None:
             self._client = client
@@ -74,9 +75,15 @@ class StockKafkaProducer:
             )
 
         statistics = self.statistics
-        if statistics['failureCount']:
+        failure_count = int(statistics['failureCount'])
+        new_failure_count = failure_count - self._reported_failure_count
+        if new_failure_count > 0:
             errors = statistics['errors']
-            last_error = errors[-1] if errors else 'unknown delivery error'
+            new_errors = errors[self._reported_failure_count:failure_count]
+            self._reported_failure_count = failure_count
+            last_error = (
+                new_errors[-1] if new_errors else 'unknown delivery error'
+            )
             raise KafkaProducerError(f'Kafka delivery failed: {last_error}')
 
         return statistics

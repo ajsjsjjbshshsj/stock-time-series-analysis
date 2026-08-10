@@ -117,3 +117,25 @@ def test_close_flushes_messages():
     producer.close()
 
     client.flush.assert_called_once()
+
+
+def test_successful_batch_is_not_affected_by_previous_failure():
+    client = MagicMock()
+    client.flush.return_value = 0
+    producer = create_producer(client)
+
+    producer.send_event(create_event())
+    first_callback = client.produce.call_args.kwargs["on_delivery"]
+    first_callback(RuntimeError("first batch failed"), MagicMock())
+
+    with pytest.raises(KafkaProducerError, match="first batch failed"):
+        producer.flush()
+
+    producer.send_event(create_event())
+    second_callback = client.produce.call_args.kwargs["on_delivery"]
+    second_callback(None, MagicMock())
+
+    result = producer.flush()
+
+    assert result["successCount"] == 1
+    assert result["failureCount"] == 1
