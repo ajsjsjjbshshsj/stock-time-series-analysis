@@ -1,0 +1,19 @@
+{
+  "eventId": "TUSHARE:000001.SZ:20260703",
+  "traceId": "daily-tushare-20260703-10001",
+  "tsCode": "000001.SZ",
+  "tradeDate": "2026-07-03",
+  "open": 10.25,
+  "high": 10.68,
+  "low": 10.12,
+  "close": 10.55,
+  "preClose": 10.20,
+  "change": 0.35,
+  "pctChg": 3.4314,
+  "volume": 1250345.00,
+  "amount": 13054890.25,
+  "source": "TUSHARE",
+  "eventTime": "2026-07-03T15:00:00+08:00",
+  "ingestTime": "2026-07-03T16:20:30+08:00",
+  "schemaVersion": 1
+}

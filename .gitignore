@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+.pytest_cache/
+.superpowers/
+*.py[cod]
+*.pyc
+*.egg-info/
+*.egg
+dist/
+build/
+target/
+
+# Virtual Environment
+.venv/
+venv/
+
+# Environment Variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+
+# Data
+data/raw/*.csv
+data/processed/*.csv
+data/*.db
+data/cache/
+
+# Models
+models/
+# These are Python source models, not generated ML model artifacts.
+!python-services/python-collector/app/models/
+!python-services/python-collector/app/models/*.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Notebooks
+.ipynb_checkpoints/
+output/
+*.pth
+*.parquet
