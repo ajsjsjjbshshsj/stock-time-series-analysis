@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>消费链路监控 · Stock Analysis</title>
+    <link rel="stylesheet" href="/monitor/monitor.css">
+</head>
+<body>
+<div class="shell">
+    <header>
+        <div>
+            <p class="eyebrow">STOCK ANALYSIS · KAFKA V0.3</p>
+            <h1>消费链路监控</h1>
+            <p class="subtitle">查看当前 Java 消费进程的处理结果、协议异常和死信状态。</p>
+        </div>
+        <div class="actions">
+            <a class="button secondary" href="http://localhost:8081/" target="_blank" rel="noreferrer">打开 Kafka UI</a>
+            <button id="refresh" class="button" type="button">手动刷新</button>
+            <div id="connection" class="status"><span class="pulse"></span><span>正在连接服务</span></div>
+        </div>
+    </header>
+
+    <main>
+        <section class="panel metrics" aria-label="消费概况">
+            <div class="metric"><span class="metric-label">TOTAL CONSUMED</span><strong id="total" class="metric-value">—</strong><span class="metric-note">本进程累计接收</span></div>
+            <div class="metric"><span class="metric-label">SUCCESS</span><strong id="success" class="metric-value">—</strong><span class="metric-note">通过协议校验</span></div>
+            <div class="metric failure"><span class="metric-label">FAILURE</span><strong id="failure" class="metric-value">—</strong><span class="metric-note">已隔离的异常消息</span></div>
+            <div class="metric"><span class="metric-label">LAST EVENT</span><strong id="last" class="metric-value compact">—</strong><span class="metric-note">最近一次处理时间</span></div>
+        </section>
+
+        <section class="panel rate-panel" aria-label="成功率">
+            <div><span class="metric-label">成功率</span><strong id="rateText">—</strong></div>
+            <div class="rate-track" role="progressbar" aria-label="消费成功率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="rateBar"></span></div>
+        </section>
+
+        <div class="split">
+            <section class="panel">
+                <div class="panel-head"><h2>最近异常</h2><span>仅显示安全元数据，不保存原始消息</span></div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>时间</th><th>类型</th><th>消息</th><th>Topic / Key</th><th>位置</th></tr></thead>
+                        <tbody id="errors"><tr><td colspan="5" class="empty">正在读取异常记录…</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <aside class="panel">
+                <div class="panel-head"><h2>链路分类</h2><span>当前进程</span></div>
+                <div class="rail">
+                    <div class="rail-row"><span class="rail-dot"></span><span>日线事件</span><strong id="daily">—</strong></div>
+                    <div class="rail-row"><span class="rail-dot"></span><span>基础信息事件</span><strong id="basic">—</strong></div>
+                    <div class="rail-row"><span class="rail-dot"></span><span>JSON 解析失败</span><strong id="jsonFailure">—</strong></div>
+                    <div class="rail-row"><span class="rail-dot"></span><span>字段校验失败</span><strong id="validationFailure">—</strong></div>
+                    <div class="rail-row"><span class="rail-dot"></span><span>协议版本不支持</span><strong id="schemaFailure">—</strong></div>
+                    <div class="rail-row"><span class="rail-dot"></span><span>死信发布失败</span><strong id="dltFailure">—</strong></div>
+                </div>
+            </aside>
+        </div>
+    </main>
+    <footer id="refreshed">每 5 秒自动刷新</footer>
+</div>
+<script src="/monitor/monitor.js" defer></script>
+</body>
+</html>

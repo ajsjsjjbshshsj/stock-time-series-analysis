@@ -1,6 +1,7 @@
 package com.stock.consumer.daily;
 
 import com.stock.common.model.StockDailyEvent;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -12,7 +13,16 @@ import java.util.Objects;
 @Component
 public final class StockDailyEventValidator {
 
+    private final int supportedSchemaVersion;
+
+    public StockDailyEventValidator(@Value("${stock.kafka.supported-schema-version:1}") int supportedSchemaVersion) {
+        this.supportedSchemaVersion = supportedSchemaVersion;
+    }
+
     public void validate(String kafkaKey, StockDailyEvent event) {
+        if (event.schemaVersion() != null && event.schemaVersion() != supportedSchemaVersion) {
+            throw new UnsupportedSchemaVersionException(event.schemaVersion(), supportedSchemaVersion);
+        }
         List<String> violations = new ArrayList<>();
         requireText(event.eventId(), "eventId", violations);
         requireText(event.traceId(), "traceId", violations);
@@ -29,9 +39,7 @@ public final class StockDailyEventValidator {
         requireValue(event.eventTime(), "eventTime", violations);
         requireValue(event.ingestTime(), "ingestTime", violations);
 
-        if (!Objects.equals(1, event.schemaVersion())) {
-            violations.add("schemaVersion must equal 1");
-        }
+        requireValue(event.schemaVersion(), "schemaVersion", violations);
         if (kafkaKey == null || !Objects.equals(kafkaKey, event.tsCode())) {
             violations.add("kafkaKey must equal tsCode");
         }
