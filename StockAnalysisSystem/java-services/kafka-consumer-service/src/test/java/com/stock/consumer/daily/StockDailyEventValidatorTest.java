@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StockDailyEventValidatorTest {
 
-    private final StockDailyEventValidator validator = new StockDailyEventValidator();
+    private final StockDailyEventValidator validator = new StockDailyEventValidator(1);
 
     @Test
     void acceptsValidEventAndNullableChangeFields() {
@@ -43,16 +43,16 @@ class StockDailyEventValidatorTest {
     }
 
     @Test
-    void rejectsUnsupportedVersionAndKafkaKeyMismatch() {
+    void rejectsUnsupportedVersionSeparately() {
         StockDailyEvent event = copy(validEvent(), null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, 2, null);
 
-        StockDailyEventValidationException exception = assertThrows(
-                StockDailyEventValidationException.class,
+        UnsupportedSchemaVersionException exception = assertThrows(
+                UnsupportedSchemaVersionException.class,
                 () -> validator.validate("600000.SH", event));
 
-        assertTrue(exception.violations().stream().anyMatch(message -> message.contains("schemaVersion")));
-        assertTrue(exception.violations().stream().anyMatch(message -> message.contains("kafkaKey")));
+        assertTrue(exception.getMessage().contains("2"));
+        assertTrue(exception.getMessage().contains("1"));
     }
 
     @Test
