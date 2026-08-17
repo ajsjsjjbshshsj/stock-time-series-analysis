@@ -42,7 +42,7 @@
    - `stock_daily_decimal` → `stock_daily`
 7. 校验新表结构、索引、行数和查询能力。
 8. 执行一批真实 Tushare 数据写入并完成 MySQL/Kafka/Java 对账。
-9. 保留 `stock_daily_float_backup`，本次任务不删除备份表。
+9. 完成真实写入与端到端验收后，删除 `stock_daily_float_backup`。
 
 ## 5. 一致性检查
 
@@ -77,12 +77,15 @@ RENAME TABLE
 
 回滚后重新检查原表行数、索引和 Collector 写入。失败的新表保留用于诊断，不自动删除。
 
+快速回滚能力只保留到最终验收完成。确认新表结构、数据、索引、Collector 写入和 MySQL/Kafka/Java 对账全部通过后，按用户要求删除 `stock_daily_float_backup`。删除备份表是不可逆操作，执行后只能依赖外部数据库备份恢复旧表。
+
 ## 8. 验收标准
 
 - `stock_daily` 九个行情数值字段均为目标 `DECIMAL` 类型。
 - 原有约 484 万行数据和业务唯一键完整保留。
-- `stock_daily_float_backup` 存在且可用于回滚。
+- 在最终验收前，`stock_daily_float_backup` 存在且可用于快速回滚。
 - Python Collector 能继续写入 MySQL。
 - 真实 `dual` 批次的 MySQL、Kafka 和 Java Consumer 数量一致。
 - 新写入数据与 Tushare 在声明的小数位范围内一致。
+- 最终验收通过后删除 `stock_daily_float_backup`，并确认只保留新的 `stock_daily`。
 - 不提交 `.env`、Token、密码、数据库导出文件或运行日志。
