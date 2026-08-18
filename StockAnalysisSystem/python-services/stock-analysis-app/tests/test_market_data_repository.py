@@ -87,6 +87,19 @@ def test_load_daily_panel_filters_multiple_codes():
     assert params['code_1'] == '600000.SH'
 
 
+def test_fetch_single_keeps_plain_six_digit_code_compatibility():
+    from data_loader.market_data_repository import MarketDataRepository
+
+    with patch(
+        'database.repository.pd.read_sql', return_value=_market_frame()
+    ) as read_sql:
+        MarketDataRepository(MagicMock()).fetch_single(
+            '000001', '20260801', '20260814'
+        )
+
+    assert read_sql.call_args.kwargs['params']['code_0'] == '000001.SZ'
+
+
 def test_latest_constituent_snapshot_is_selected_when_date_omitted():
     from data_loader.market_data_repository import MarketDataRepository
 

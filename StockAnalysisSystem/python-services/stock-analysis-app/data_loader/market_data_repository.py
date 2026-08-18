@@ -20,7 +20,7 @@ class MarketDataRepository:
 
     def fetch_single(self, code, start_date, end_date):
         frame = repository.load_daily_panel(
-            self.session, [code], start_date, end_date
+            self.session, [_to_db_code(code)], start_date, end_date
         )
         return self._normalize_market_frame(frame)
 
@@ -28,8 +28,12 @@ class MarketDataRepository:
         return repository.load_stock_basic_df(self.session)
 
     def load_daily_panel(self, stock_codes, start_date=None, end_date=None):
+        normalized_codes = (
+            [_to_db_code(code) for code in stock_codes]
+            if stock_codes is not None else None
+        )
         frame = repository.load_daily_panel(
-            self.session, stock_codes, start_date, end_date
+            self.session, normalized_codes, start_date, end_date
         )
         return self._normalize_market_frame(frame)
 
@@ -57,3 +61,15 @@ class MarketDataRepository:
         normalized = normalized.loc[:, MARKET_DATA_COLUMNS]
         normalized['trade_date'] = pd.to_datetime(normalized['trade_date'])
         return normalized
+
+
+def _to_db_code(code):
+    """将旧接口接受的纯数字代码转换为数据库统一代码。"""
+    normalized = str(code).strip().upper()
+    if '.' in normalized:
+        return normalized
+    if normalized.startswith(('4', '8')):
+        return f'{normalized}.BJ'
+    if normalized.startswith(('6', '9')):
+        return f'{normalized}.SH'
+    return f'{normalized}.SZ'
