@@ -104,6 +104,32 @@ def test_backfill_reads_bounded_stock_daily_dates_and_resumes():
     sleep.assert_called_once_with(0.5)
 
 
+def test_backfill_checkpoints_each_processed_date():
+    from app.jobs.daily_basic_backfill_job import DailyBasicBackfillJob
+
+    collector = MagicMock(source_name='tushare')
+    collector.collect_daily_basic.return_value = _daily_basic_frame()
+    market_repo = MagicMock()
+    market_repo.list_stock_daily_trade_dates.return_value = [
+        date(2026, 8, 14), date(2026, 8, 17)
+    ]
+    market_repo.save_daily_basic.return_value = 1
+    task_repo = MagicMock()
+    task_repo.is_task_success.return_value = False
+    task_repo.create_task.side_effect = [40, 41]
+    checkpoint = MagicMock()
+
+    DailyBasicBackfillJob(
+        collector,
+        market_repo,
+        task_repo,
+        request_interval=0,
+        checkpoint=checkpoint,
+    ).execute('20260814', '20260817')
+
+    assert checkpoint.call_count == 2
+
+
 def test_cli_parser_accepts_new_market_data_commands():
     from app.main import build_parser
 

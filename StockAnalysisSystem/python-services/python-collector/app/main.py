@@ -228,6 +228,7 @@ def cmd_daily_basic_history(args):
             market_repo,
             task_repo,
             stock_codes=stock_codes,
+            checkpoint=session.commit,
         ).execute(args.start, args.end)
 
     logger.info(
