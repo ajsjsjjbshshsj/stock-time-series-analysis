@@ -64,7 +64,7 @@ class ConstituentCollectionJob:
             if not records:
                 raise ValueError('成分股采集返回空数据')
 
-            count = self.market_repo.save_constituents(records)
+            count = self.market_repo.replace_constituents(records)
             self.task_repo.update_status(
                 task_id, TaskStatus.SUCCESS.value, record_count=count
             )

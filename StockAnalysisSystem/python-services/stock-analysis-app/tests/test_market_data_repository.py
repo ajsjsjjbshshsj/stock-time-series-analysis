@@ -125,6 +125,17 @@ def test_latest_constituent_snapshot_is_selected_when_date_omitted():
     assert pd.api.types.is_datetime64_any_dtype(result['as_of_date'])
 
 
+def test_index_constituents_keep_plain_index_code_compatibility():
+    from data_loader.market_data_repository import MarketDataRepository
+
+    with patch(
+        'database.repository.pd.read_sql', return_value=pd.DataFrame()
+    ) as read_sql:
+        MarketDataRepository(MagicMock()).get_index_constituents('000300')
+
+    assert read_sql.call_args.kwargs['params']['group_code'] == '000300.SH'
+
+
 def test_explicit_constituent_snapshot_uses_requested_date():
     from data_loader.market_data_repository import MarketDataRepository
 

@@ -197,9 +197,14 @@ class TushareCollector(BaseCollector):
 
         result = df.copy()
         result = result[result['trade_date'].astype(str) <= as_of_clean]
-        result = result.sort_values('trade_date').drop_duplicates(
-            'con_code', keep='last'
-        )
+        if result.empty:
+            return pd.DataFrame()
+        # index_weight 的每个 trade_date 是一张完整调仓快照。只取不晚于
+        # as_of_date 的最新一张，不能把历次出现过的股票做历史并集。
+        latest_snapshot = result['trade_date'].astype(str).max()
+        result = result[
+            result['trade_date'].astype(str) == latest_snapshot
+        ].drop_duplicates('con_code', keep='last')
         return pd.DataFrame({
             'group_type': 'index',
             'group_code': index_code,

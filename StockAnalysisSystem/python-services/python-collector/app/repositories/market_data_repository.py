@@ -59,6 +59,34 @@ class MarketDataRepository:
         )
         return self._batch_execute(stmt, records, batch_size, TABLE_STOCK_CONSTITUENT)
 
+    def replace_constituents(
+        self,
+        records: List[dict],
+        batch_size: int = _BATCH_SIZE,
+    ) -> int:
+        """原子替换一张成分股快照，清除已调出的旧成员。"""
+        if not records:
+            return 0
+        snapshot = {
+            key: records[0][key]
+            for key in ('group_type', 'group_code', 'as_of_date')
+        }
+        if any(
+            any(record[key] != value for key, value in snapshot.items())
+            for record in records
+        ):
+            raise ValueError('constituent records must belong to one snapshot')
+
+        self.session.execute(
+            text(
+                f'DELETE FROM `{TABLE_STOCK_CONSTITUENT}` '
+                'WHERE group_type = :group_type AND group_code = :group_code '
+                'AND as_of_date = :as_of_date'
+            ),
+            snapshot,
+        )
+        return self.save_constituents(records, batch_size=batch_size)
+
     def list_stock_daily_trade_dates(
         self,
         start_date: Optional[date | str] = None,

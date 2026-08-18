@@ -128,10 +128,12 @@ class TestTushareCollector(unittest.TestCase):
     def test_collect_index_constituents_uses_latest_membership(self):
         client = MagicMock()
         client.index_weight.return_value = pd.DataFrame({
-            'index_code': ['000300.SH', '000300.SH', '000300.SH'],
-            'con_code': ['000001.SZ', '000001.SZ', '600000.SH'],
-            'trade_date': ['20260801', '20260814', '20260814'],
-            'weight': [0.4, 0.5, 0.6],
+            'index_code': ['000300.SH'] * 4,
+            'con_code': [
+                '000001.SZ', '000002.SZ', '000001.SZ', '600000.SH'
+            ],
+            'trade_date': ['20260801', '20260801', '20260814', '20260814'],
+            'weight': [0.4, 0.3, 0.5, 0.6],
         })
 
         from app.collectors.tushare_collector import TushareCollector

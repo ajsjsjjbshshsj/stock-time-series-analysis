@@ -18,7 +18,7 @@ def test_constituent_job_collects_and_stores_one_snapshot():
         'source': ['akshare'],
     })
     market_repo = MagicMock()
-    market_repo.save_constituents.return_value = 1
+    market_repo.replace_constituents.return_value = 1
     task_repo = MagicMock()
     task_repo.is_task_success.return_value = False
     task_repo.create_task.return_value = 31
@@ -35,7 +35,7 @@ def test_constituent_job_collects_and_stores_one_snapshot():
     task_repo.is_task_success.assert_called_once_with(
         'constituent', 'index:000300.SH:20260814', 'akshare'
     )
-    market_repo.save_constituents.assert_called_once()
+    market_repo.replace_constituents.assert_called_once()
     task_repo.update_status.assert_called_with(31, 'SUCCESS', record_count=1)
 
 

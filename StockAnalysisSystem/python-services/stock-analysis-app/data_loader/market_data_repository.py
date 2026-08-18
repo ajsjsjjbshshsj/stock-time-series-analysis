@@ -38,7 +38,9 @@ class MarketDataRepository:
         return self._normalize_market_frame(frame)
 
     def get_index_constituents(self, index_code, as_of_date=None):
-        return self._load_constituents('index', index_code, as_of_date)
+        return self._load_constituents(
+            'index', _to_index_code(index_code), as_of_date
+        )
 
     def get_industry_constituents(self, industry_code, as_of_date=None):
         return self._load_constituents('industry', industry_code, as_of_date)
@@ -73,3 +75,12 @@ def _to_db_code(code):
     if normalized.startswith(('6', '9')):
         return f'{normalized}.SH'
     return f'{normalized}.SZ'
+
+
+def _to_index_code(code):
+    """兼容旧命令中的纯 6 位指数代码。"""
+    normalized = str(code).strip().upper()
+    if '.' in normalized:
+        return normalized
+    suffix = 'SZ' if normalized.startswith('399') else 'SH'
+    return f'{normalized}.{suffix}'

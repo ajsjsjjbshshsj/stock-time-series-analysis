@@ -58,6 +58,27 @@ def test_save_constituents_uses_snapshot_business_key_upsert():
     assert 'weight = VALUES(weight)' in sql
 
 
+def test_replace_constituents_deletes_old_snapshot_members_first():
+    repo, session = _repo()
+    records = [{
+        'group_type': 'index',
+        'group_code': '000300.SH',
+        'ts_code': '000001.SZ',
+        'as_of_date': date(2026, 8, 14),
+        'weight': Decimal('0.500000'),
+        'source': 'tushare',
+    }]
+
+    assert repo.replace_constituents(records) == 1
+    delete_sql = str(session.execute.call_args_list[0].args[0])
+    assert delete_sql.startswith('DELETE FROM `stock_constituent`')
+    assert session.execute.call_args_list[0].args[1] == {
+        'group_type': 'index',
+        'group_code': '000300.SH',
+        'as_of_date': date(2026, 8, 14),
+    }
+
+
 def test_list_stock_daily_trade_dates_returns_sorted_dates():
     repo, session = _repo()
     session.execute.return_value = [
