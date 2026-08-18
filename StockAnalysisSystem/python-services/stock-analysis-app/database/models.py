@@ -239,7 +239,7 @@ class CollectionTask(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_type = Column(String(20), nullable=False, comment='任务类型: daily/history/basic/retry')
-    business_date = Column(String(10), nullable=False, comment='业务日期 YYYYMMDD')
+    business_date = Column(String(80), nullable=False, comment='业务日期或业务幂等键')
     source = Column(String(20), nullable=False, comment='数据源: tushare/akshare')
     status = Column(String(20), nullable=False, default='PENDING',
                     comment='状态: PENDING/RUNNING/SUCCESS/PARTIAL_SUCCESS/FAILED')

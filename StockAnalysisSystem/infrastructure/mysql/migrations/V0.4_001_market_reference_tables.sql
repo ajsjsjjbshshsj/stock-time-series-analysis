@@ -1,5 +1,9 @@
 -- V0.4 原始市场参考数据表：每日估值指标与指数/行业成分股快照。
 
+-- 成分股任务需以 type:code:date 作为幂等业务键；旧 YYYYMMDD 值完全兼容。
+ALTER TABLE `collection_task`
+    MODIFY COLUMN `business_date` VARCHAR(80) NOT NULL COMMENT '业务日期或业务幂等键';
+
 CREATE TABLE IF NOT EXISTS `stock_daily_basic` (
     `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     `ts_code` VARCHAR(10) NOT NULL COMMENT '统一股票代码',

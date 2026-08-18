@@ -58,7 +58,7 @@ def to_yyyymmdd(d) -> str:
     if isinstance(d, datetime):
         return d.strftime('%Y%m%d')
     if isinstance(d, date):
-        return d.strftime('%Y%mdd')
+        return d.strftime('%Y%m%d')
     return str(d).replace('-', '')
 
 
