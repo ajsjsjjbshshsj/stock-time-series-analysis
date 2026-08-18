@@ -58,23 +58,15 @@ DATABASE_CONFIG = {
     'pool_recycle': 3600,         # 连接回收周期（秒）
 }
 
-# ── Tushare API 配置 ─────────────────────────────────────────
-
-TUSHARE_TOKEN = _require_env('TUSHARE_TOKEN')  # 无默认值，缺失即报错
-
-# ── Akshare 配置（无需 token）────────────────────────────────
-
-AKSHARE_ENABLED = True
-
-# ── 数据采集配置 ─────────────────────────────────────────────
+# ── 兼容读取配置 ─────────────────────────────────────────────
 
 DATA_COLLECTION = {
     '默认开始日期': '2024-01-01',
     '默认结束日期': None,  # None 表示当前日期
     'batch_size': 100,     # 批量采集的股票数量
-    'retry_times': 3,      # 失败重试次数
-    'retry_delay': 1.0,    # 重试基础间隔（秒），指数退避
-    'request_interval': 0.5,  # 请求间隔（秒），避免频率限制
+    'retry_times': 3,      # 旧配置键，保留以兼容已有调用
+    'retry_delay': 1.0,
+    'request_interval': 0.5,
 }
 
 # ── 技术分析指标参数 ─────────────────────────────────────────
@@ -158,14 +150,12 @@ RANKING_CONFIG = {
 def safe_config_repr() -> str:
     """返回配置摘要字符串，敏感字段已脱敏，可安全写入日志。"""
     return (
-        "DATABASE_CONFIG: host=%s, port=%s, user=%s, password=%s, database=%s | "
-        "TUSHARE_TOKEN: %s"
+        "DATABASE_CONFIG: host=%s, port=%s, user=%s, password=%s, database=%s"
         % (
             DATABASE_CONFIG['host'],
             DATABASE_CONFIG['port'],
             DATABASE_CONFIG['user'],
             mask_secret(_DB_PASSWORD),
             DATABASE_CONFIG['database'],
-            mask_secret(TUSHARE_TOKEN),
         )
     )

@@ -287,22 +287,32 @@ def _safe_float(val):
 def incremental_update(stock_codes=None, use_tushare=False, delay=0.5,
                        sectors=None, index_codes=None, start_date=None):
     """
-    增量采集最新数据：从数据库读取已有数据的最新日期，
-    只采集该日期之后的新数据并写入数据库。
+    兼容旧“增量更新”入口，实际只读取 Collector 已落库的数据。
 
-    首次运行（数据库为空）时：自动获取股票列表并全量采集。
+    行情更新请先在 python-collector 执行 ``daily-market`` 或历史补采命令。
 
     参数:
         stock_codes: 股票代码列表，None则全市场
-        use_tushare: 是否使用Tushare
-        delay: 每次请求之间的延迟（秒），默认0.5秒
+        use_tushare: 已弃用，仅保留调用兼容
+        delay: 已弃用，仅保留调用兼容
         sectors: 行业板块名称列表，如 ["银行", "医药"]
         index_codes: 指数代码列表，如 ["000300"]
     返回:
         DataFrame: 增量更新后的全量面板数据
     """
+    del delay, start_date
+    if use_tushare:
+        logger.info('use_tushare 已弃用；分析应用统一读取 MySQL')
+    logger.info('读取 python-collector 已落库的最新市场数据')
+    return load_all_stock_data_from_db(
+        stock_codes=stock_codes,
+        sectors=sectors,
+        index_codes=index_codes,
+        use_tushare=use_tushare,
+    )
+
+    # 以下旧网络增量逻辑保留在本次迁移提交的历史差异中，不再执行。
     import time
-    logger.info("开始增量数据采集...")
 
     # 获取已有数据的最新日期
     try:

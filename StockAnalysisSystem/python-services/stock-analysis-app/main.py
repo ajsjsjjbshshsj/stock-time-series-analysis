@@ -74,8 +74,9 @@ def run_data_collection(stock_codes=None, use_tushare=False, delay=0.5, start_da
         start_date: 起始日期，格式 YYYYMMDD
     """
     logger.info("="*50)
-    logger.info("开始数据采集流程（增量更新）")
-    logger.info(f"数据源: {'Tushare' if use_tushare else 'Akshare'}")
+    logger.info("读取 python-collector 已落库的市场数据")
+    if use_tushare:
+        logger.info("--use_tushare 已弃用，分析端统一读取 MySQL")
     logger.info("="*50)
 
     from data_processor.panel_builder import incremental_update
@@ -83,13 +84,13 @@ def run_data_collection(stock_codes=None, use_tushare=False, delay=0.5, start_da
     panel_df = incremental_update(stock_codes=stock_codes, use_tushare=use_tushare, delay=delay, start_date=start_date)
 
     if panel_df.empty:
-        logger.error("采集结果为空。请检查:")
+        logger.error("数据库读取结果为空。请检查:")
         logger.error("  1. .env 数据库配置是否正确")
         logger.error("  2. MySQL 服务是否运行")
-        logger.error("  3. 网络连接（Akshare需要联网）")
+        logger.error("  3. python-collector 是否已完成行情采集")
         logger.error("  4. 查看上方日志中的具体失败原因")
     else:
-        logger.info(f"数据采集完成，共 {len(panel_df)} 条记录, {panel_df['ts_code'].nunique()} 只股票")
+        logger.info(f"数据加载完成，共 {len(panel_df)} 条记录, {panel_df['ts_code'].nunique()} 只股票")
 
     return panel_df
 
@@ -1133,7 +1134,7 @@ def main():
     # ---- 共享参数（parent parser） ----
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--use_tushare', action='store_true',
-                        help='使用Tushare数据源')
+                        help='兼容旧参数（已弃用，分析端统一读取 MySQL）')
     common.add_argument('--delay', type=float, default=0.5,
                         help='数据采集请求间隔（秒）')
     common.add_argument('--start_date', type=str, default=None,

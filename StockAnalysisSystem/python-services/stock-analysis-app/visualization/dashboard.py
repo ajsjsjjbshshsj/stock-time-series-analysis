@@ -223,7 +223,7 @@ def main():
 
     # 侧边栏
     st.sidebar.header("参数设置")
-    data_source = st.sidebar.selectbox("数据源", ["Akshare", "Tushare"])
+    st.sidebar.caption("数据来源：MySQL（由 python-collector 统一采集）")
     stock_code = st.sidebar.text_input("股票代码", "000001")
 
     col1, col2 = st.sidebar.columns(2)
@@ -276,7 +276,7 @@ def main():
     if st.sidebar.button("加载数据"):
         with st.spinner("正在加载数据..."):
             try:
-                collector = DataCollector(use_tushare=(data_source == "Tushare"))
+                collector = DataCollector()
 
                 df = collector.fetch_single(stock_code, start_date, end_date)
 
