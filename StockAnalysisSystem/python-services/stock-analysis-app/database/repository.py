@@ -13,6 +13,8 @@ from config.logging_config import get_logger
 from database.models import (
     TABLE_STOCK_BASIC,
     TABLE_STOCK_DAILY,
+    TABLE_STOCK_DAILY_BASIC,
+    TABLE_STOCK_CONSTITUENT,
     TABLE_STOCK_FEATURES,
     TABLE_ANALYSIS_RESULT,
 )
@@ -145,20 +147,62 @@ def load_daily_panel(session, stock_codes=None, start_date=None, end_date=None):
 
     if stock_codes:
         placeholders = ', '.join([f':code_{i}' for i in range(len(stock_codes))])
-        conditions.append(f'ts_code IN ({placeholders})')
+        conditions.append(f'sd.ts_code IN ({placeholders})')
         for i, code in enumerate(stock_codes):
             params[f'code_{i}'] = code
 
     if start_date:
-        conditions.append('trade_date >= :start_date')
+        conditions.append('sd.trade_date >= :start_date')
         params['start_date'] = pd.to_datetime(start_date).date() if isinstance(start_date, str) else start_date
     if end_date:
-        conditions.append('trade_date <= :end_date')
+        conditions.append('sd.trade_date <= :end_date')
         params['end_date'] = pd.to_datetime(end_date).date() if isinstance(end_date, str) else end_date
 
     where = ' AND '.join(conditions)
-    query = f'SELECT * FROM `{TABLE_STOCK_DAILY}` WHERE {where} ORDER BY trade_date, ts_code'
+    query = (
+        'SELECT sd.ts_code, sd.trade_date, sd.`open`, sd.high, sd.low, sd.close, '
+        'sd.pre_close, sd.`change`, sd.pct_chg, sd.vol, sd.amount, '
+        'sdb.turnover_rate, sdb.pe, sdb.pe_ttm, sdb.pb, sdb.ps, sdb.total_mv '
+        f'FROM `{TABLE_STOCK_DAILY}` sd '
+        f'LEFT JOIN `{TABLE_STOCK_DAILY_BASIC}` sdb '
+        'ON sd.ts_code = sdb.ts_code AND sd.trade_date = sdb.trade_date '
+        f'WHERE {where} ORDER BY sd.trade_date, sd.ts_code'
+    )
     return pd.read_sql(text(query), session.bind, params=params)
+
+
+def load_constituents(
+    session,
+    group_type,
+    group_code,
+    as_of_date=None,
+):
+    """读取指定指数/行业的成分股快照，日期为空时取最新快照。"""
+    params = {
+        'group_type': group_type,
+        'group_code': group_code,
+    }
+    if as_of_date is None:
+        snapshot_condition = (
+            'as_of_date = ('
+            f'SELECT MAX(as_of_date) FROM `{TABLE_STOCK_CONSTITUENT}` '
+            'WHERE group_type = :group_type AND group_code = :group_code'
+            ')'
+        )
+    else:
+        snapshot_condition = 'as_of_date = :as_of_date'
+        params['as_of_date'] = (
+            pd.to_datetime(as_of_date).date()
+            if isinstance(as_of_date, str) else as_of_date
+        )
+
+    query = text(
+        'SELECT group_type, group_code, ts_code, as_of_date, weight, source '
+        f'FROM `{TABLE_STOCK_CONSTITUENT}` '
+        'WHERE group_type = :group_type AND group_code = :group_code '
+        f'AND {snapshot_condition} ORDER BY ts_code'
+    )
+    return pd.read_sql(query, session.bind, params=params)
 
 
 def load_features_df(session, stock_codes=None, date_col='trade_date'):
