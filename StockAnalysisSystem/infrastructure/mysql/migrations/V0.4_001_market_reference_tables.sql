@@ -20,7 +20,12 @@ CREATE TABLE IF NOT EXISTS `stock_daily_basic` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uq_daily_basic_code_date` (`ts_code`, `trade_date`),
     KEY `idx_daily_basic_trade_date` (`trade_date`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='原始每日估值与换手率数据';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='原始每日估值与换手率数据';
+
+-- 兼容由旧版本创建、使用 utf8mb4_general_ci 的 stock_daily.ts_code，
+-- 同时修正本迁移脚本早期版本在 MySQL 8 上继承 0900 默认排序规则的存量表。
+ALTER TABLE `stock_daily_basic`
+    CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `stock_constituent` (
     `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -34,4 +39,7 @@ CREATE TABLE IF NOT EXISTS `stock_constituent` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uq_constituent_snapshot` (`group_type`, `group_code`, `ts_code`, `as_of_date`),
     KEY `idx_constituent_group_date` (`group_type`, `group_code`, `as_of_date`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指数和行业成分股快照';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='指数和行业成分股快照';
+
+ALTER TABLE `stock_constituent`
+    CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
