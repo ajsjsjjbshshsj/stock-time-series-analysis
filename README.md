@@ -1,93 +1,150 @@
-# kafka-stock-project
+# StockAnalysisSystem
 
+基于 Python、Kafka、Java、MySQL 的股票数据采集与分析系统。目前项目已演进到 V0.4：Python 统一负责外部市场数据采集，Kafka 与 Java 提供可回滚的消息消费和监控链路，分析应用只从 MySQL 与兼容缓存读取数据。
 
+> 本项目用于学习、工程实践和量化研究，不构成投资建议。
 
-## Getting started
+## V0.4 当前架构
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://jihulab.com/ybw-group/kafka-stock-project.git
-git branch -M main
-git push -uf origin main
+```text
+Tushare / AkShare
+       |
+       v
+Python Collector ----> MySQL ----> Stock Analysis App / Streamlit
+       |
+       v
+     Kafka ----> Java Consumer ----> DLT / Monitoring API
 ```
 
-## Integrate with your tools
+- `python-collector` 是唯一允许调用 Tushare/AkShare SDK 的服务。
+- MySQL 保存原始行情、每日估值、成分股、特征及分析结果。
+- Kafka 消息链路继承 V0.3 的标准事件、协议校验和失败隔离能力。
+- `stock-analysis-app` 负责特征工程、模型训练、预测和可视化，不再直接访问外部行情 API。
+- Kafka 不可用时可以切回 `COLLECTOR_OUTPUT_MODE=mysql`，继续使用原有数据库路径。
 
-* [Set up project integrations](https://jihulab.com/ybw-group/kafka-stock-project/-/settings/integrations)
+## 核心能力
 
-## Collaborate with your team
+- Tushare、AkShare 统一采集入口和统一股票代码格式。
+- 日线 OHLCV、股票基础资料、每日换手率/估值、指数/行业成分股采集。
+- MySQL、Kafka 或双写输出模式，以及采集任务幂等、失败记录和重试。
+- Java Kafka Consumer 协议校验、死信隔离、统计 API 和监控页面。
+- 传统特征、LightGBM 排名、Transformer 特征与模型训练。
+- Streamlit 分析页面及 Parquet、模型文件等旧缓存兼容。
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## 项目目录
 
-## Test and Deploy
+```text
+StockAnalysisSystem/
+├── python-services/
+│   ├── python-collector/        # 外部数据采集、校验、MySQL/Kafka 输出
+│   └── stock-analysis-app/     # 数据分析、特征、训练、预测和可视化
+├── java-services/
+│   ├── common-model/           # Python/Java 公共消息契约
+│   └── kafka-consumer-service/ # Kafka 消费、校验、DLT、API 和监控页
+├── infrastructure/             # Kafka、Topic 初始化、Kafka UI、MySQL 迁移
+├── scripts/                    # 冒烟测试和对账脚本
+└── docs/                       # 消息协议、测试、迁移验收和发布说明
+```
 
-Use the built-in continuous integration in GitLab.
+详细目录说明见 [StockAnalysisSystem 运行指南](StockAnalysisSystem/README.md)。
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## 核心数据表
 
-***
+| 表 | 作用 |
+|---|---|
+| `stock_basic` | 股票基础资料 |
+| `stock_daily` | 原始日线 OHLCV |
+| `stock_daily_basic` | 原始换手率、估值和总市值 |
+| `stock_constituent` | 指数及行业成分股快照 |
+| `stock_features` | 分析端生成的传统特征 |
+| `analysis_result` | 分析和预测结果 |
+| `collection_task` | 采集幂等键、运行状态和失败重试记录 |
 
-# Editing this README
+`stock_features` 与 `analysis_result` 仍由分析应用使用；V0.4 新增的是原始数据表 `stock_daily_basic` 和 `stock_constituent`。
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## 快速启动
 
-## Suggestions for a good README
+环境要求：Python 3.12、JDK 21、Maven、MySQL 8 和 Docker Desktop。
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+先进入系统目录并创建本地环境文件：
 
-## Name
-Choose a self-explaining name for your project.
+```powershell
+cd StockAnalysisSystem
+Copy-Item .env.example .env
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+在 `.env` 中填写自己的 `TUSHARE_TOKEN` 和数据库连接信息。不要提交真实 `.env`。
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+启动 Kafka、Topic 初始化任务和 Kafka UI：
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```powershell
+docker compose -f infrastructure\docker-compose.yml up -d
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+运行单日行情与每日指标采集：
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```powershell
+cd python-services\python-collector
+python -m app.main daily-market --date 20260817
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+启动 Java Consumer：
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```powershell
+cd ..\..\java-services
+mvn -pl kafka-consumer-service -am spring-boot:run
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+更多历史补采、成分股、分析应用和数据库迁移步骤见 [完整运行指南](StockAnalysisSystem/README.md)。
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+## 页面与接口
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+| 地址 | 用途 |
+|---|---|
+| [http://localhost:8080/monitor/](http://localhost:8080/monitor/) | Java 消费监控页 |
+| [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health) | Java 健康检查 |
+| [http://localhost:8080/api/consumer/statistics](http://localhost:8080/api/consumer/statistics) | 消费统计 API |
+| [http://localhost:8080/api/consumer/errors](http://localhost:8080/api/consumer/errors) | 最近错误 API |
+| [http://localhost:8081/](http://localhost:8081/) | Kafka UI |
+| [http://localhost:8501/](http://localhost:8501/) | Streamlit 分析页面（启动后） |
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+## 测试
 
-## License
-For open source projects, say how it is licensed.
+```powershell
+cd StockAnalysisSystem\python-services\python-collector
+python -m pytest tests -q
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+```powershell
+cd StockAnalysisSystem\python-services\stock-analysis-app
+python -m pytest -q
+```
+
+```powershell
+cd StockAnalysisSystem\java-services
+mvn test
+```
+
+## 文档导航
+
+- [V0.3 消息协议](StockAnalysisSystem/docs/V0.3_MESSAGE_SCHEMA.md)
+- [V0.3 测试用例](StockAnalysisSystem/docs/V0.3_TEST_CASES.md)
+- [V0.3 对账报告](StockAnalysisSystem/docs/V0.3_RECONCILIATION_REPORT.md)
+- [V0.3 发布说明](StockAnalysisSystem/docs/V0.3_RELEASE_NOTES.md)
+- [V0.4 发布说明](StockAnalysisSystem/docs/V0.4_RELEASE_NOTES.md)
+- [V0.4 市场数据迁移验收报告](StockAnalysisSystem/docs/V0.4_MARKET_DATA_MIGRATION_REPORT.md)
+- [分析端代码阅读指引](StockAnalysisSystem/python-services/stock-analysis-app/CODE_READING_GUIDE.md)
+
+## 贡献流程
+
+团队代码必须通过个人 Fork 提交：
+
+1. 将团队仓库 Fork 到个人命名空间。
+2. 从团队 `main` 创建功能分支。
+3. 代码只推送到个人 Fork。
+4. 从个人 Fork 向团队仓库创建 Merge Request。
+5. Merge Request 合并或确认不再需要前，不删除关联远程分支。
+
+## 风险提示
+
+外部数据接口可能因权限、频率限制或上游网络临时不可用。采集失败会记录在 `collection_task`，应通过重试任务恢复，不能用模拟数据冒充真实采集结果。
