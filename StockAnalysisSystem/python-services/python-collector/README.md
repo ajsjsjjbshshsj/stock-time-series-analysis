@@ -1,5 +1,14 @@
 # 数据采集服务 (Python Collector Service)
 
+## V0.4 数据职责
+
+本服务是项目中唯一允许访问 Tushare/AkShare SDK 的模块。分析应用不得联网抓取行情，只读取本服务写入的 MySQL/Kafka 数据。
+
+新增原始表：
+
+- `stock_daily_basic`：换手率、PE/PB/PS、总市值。
+- `stock_constituent`：指数/行业成分股日期快照。
+
 ## 概述
 
 V0.2 独立数据采集服务，将原项目中的股票数据采集功能从主项目中拆分出来，
@@ -28,6 +37,9 @@ python-services/python-collector/
 │   │   └── akshare_collector.py # AkShare 实现
 │   ├── jobs/
 │   │   ├── daily_collection_job.py  # 单日采集
+│   │   ├── daily_basic_collection_job.py # 单日估值指标
+│   │   ├── daily_basic_backfill_job.py   # 指标历史补采
+│   │   ├── constituent_collection_job.py # 成分股快照
 │   │   ├── history_backfill_job.py  # 历史回补
 │   │   └── retry_failed_job.py      # 失败重试
 │   ├── repositories/
@@ -80,7 +92,7 @@ pip install -r requirements.txt
 python app/main.py daily --date 2026-07-03
 
 # 使用 AkShare 数据源
-python app/main.py daily --date 2026-07-03 --source akshare
+python app/main.py --source akshare daily --date 2026-07-03
 
 # 历史数据回补
 python app/main.py history --start 2026-01-01 --end 2026-07-03
@@ -90,6 +102,15 @@ python app/main.py basic
 
 # 重试失败任务
 python app/main.py retry-failed
+
+# OHLCV 与 daily-basic 使用独立事务采集
+python -m app.main daily-market --date 20260817
+
+# 只处理 stock_daily 已存在的交易日，并逐日提交检查点
+python -m app.main daily-basic-history --start 20220104 --end 20260817
+
+# 保存指数或行业成分股快照
+python -m app.main constituent --type index --code 000300.SH --date 20260817
 ```
 
 ## 命令说明
@@ -100,6 +121,10 @@ python app/main.py retry-failed
 | `history` | 回补历史数据 | `python app/main.py history --start 20260101 --end 20260703` |
 | `basic` | 更新股票基础信息 | `python app/main.py basic` |
 | `retry-failed` | 重试失败任务 | `python app/main.py retry-failed` |
+| `daily-basic` | 采集单日换手率和估值 | `python -m app.main daily-basic --date 20260817` |
+| `daily-basic-history` | 按行情表已有日期补采 | `python -m app.main daily-basic-history --start 20220104 --end 20260817` |
+| `constituent` | 保存指数/行业快照 | `python -m app.main constituent --type index --code 000300.SH --date 20260817` |
+| `daily-market` | 分事务执行 OHLCV 和 daily-basic | `python -m app.main daily-market --date 20260817` |
 
 ### 全局参数
 
@@ -128,6 +153,8 @@ PENDING → RUNNING → SUCCESS
 
 - **行情数据**：`ts_code + trade_date` 唯一约束，INSERT IGNORE 去重
 - **任务记录**：`task_type + business_date + source` 唯一约束
+- **每日指标**：`ts_code + trade_date` 唯一约束，重复补采执行 UPSERT
+- **成分股快照**：`group_type + group_code + ts_code + as_of_date` 唯一约束
 
 重复执行同一天的采集不会产生重复行情记录。
 
@@ -160,5 +187,5 @@ python -m pytest tests/ -v
 ## 版本
 
 - V0.2.0 — 采集服务独立化
-- V0.3（规划中）— 采集链路 Kafka 消息化
-- V0.4（规划中）— Flink 实时清洗 + ClickHouse
+- V0.3 — 采集链路 Kafka 消息化
+- V0.4 — 统一 Tushare/AkShare 数据入口、daily-basic 与成分股快照

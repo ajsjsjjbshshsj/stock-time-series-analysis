@@ -172,6 +172,108 @@ def cmd_history(args):
         return 1
 
 
+def _stock_codes_for_daily_basic(source, stock_repo):
+    """AkShare 逐股采集时从本地 stock_basic 提供代码清单。"""
+    if source != 'akshare':
+        return None
+    frame = stock_repo.load_stock_basic_df()
+    if frame.empty or 'ts_code' not in frame.columns:
+        return []
+    return frame['ts_code'].dropna().drop_duplicates().tolist()
+
+
+def cmd_daily_basic(args):
+    """daily-basic 子命令：采集指定交易日的估值和换手率。"""
+    db = _init_database()
+    source = args.source or COLLECTOR_SOURCE
+    collector = _create_collector(source)
+
+    with db.session_scope() as session:
+        from app.jobs.daily_basic_collection_job import DailyBasicCollectionJob
+        from app.repositories.market_data_repository import MarketDataRepository
+        from app.repositories.stock_repository import StockRepository
+        from app.repositories.task_repository import TaskRepository
+
+        market_repo = MarketDataRepository(session)
+        task_repo = TaskRepository(session)
+        stock_codes = _stock_codes_for_daily_basic(source, StockRepository(session))
+        result = DailyBasicCollectionJob(
+            collector, market_repo, task_repo
+        ).execute(args.date, stock_codes=stock_codes)
+
+    if result['success']:
+        logger.info('✓ %s 每日指标完成: %s 条', args.date, result['record_count'])
+        return 0
+    logger.error('✗ %s 每日指标失败: %s', args.date, result.get('error'))
+    return 1
+
+
+def cmd_daily_basic_history(args):
+    """daily-basic-history 子命令：按行情表已有日期历史补采。"""
+    db = _init_database()
+    source = args.source or COLLECTOR_SOURCE
+    collector = _create_collector(source)
+
+    with db.session_scope() as session:
+        from app.jobs.daily_basic_backfill_job import DailyBasicBackfillJob
+        from app.repositories.market_data_repository import MarketDataRepository
+        from app.repositories.stock_repository import StockRepository
+        from app.repositories.task_repository import TaskRepository
+
+        market_repo = MarketDataRepository(session)
+        task_repo = TaskRepository(session)
+        stock_codes = _stock_codes_for_daily_basic(source, StockRepository(session))
+        result = DailyBasicBackfillJob(
+            collector,
+            market_repo,
+            task_repo,
+            stock_codes=stock_codes,
+            checkpoint=session.commit,
+        ).execute(args.start, args.end)
+
+    logger.info(
+        '每日指标补采完成: success=%s failed=%s skipped=%s',
+        result['success_count'], result['failed_count'], result['skipped_count'],
+    )
+    return 0 if result['failed_count'] == 0 else 1
+
+
+def cmd_constituent(args):
+    """constituent 子命令：保存指数或行业成分股快照。"""
+    db = _init_database()
+    source = args.source or COLLECTOR_SOURCE
+    collector = _create_collector(source)
+
+    with db.session_scope() as session:
+        from app.jobs.constituent_collection_job import ConstituentCollectionJob
+        from app.repositories.market_data_repository import MarketDataRepository
+        from app.repositories.task_repository import TaskRepository
+
+        result = ConstituentCollectionJob(
+            collector,
+            MarketDataRepository(session),
+            TaskRepository(session),
+        ).execute(args.group_type, args.code, args.date)
+
+    if result['success']:
+        logger.info('✓ 成分股快照完成: %s 条', result['record_count'])
+        return 0
+    logger.error('✗ 成分股快照失败: %s', result.get('error'))
+    return 1
+
+
+def cmd_daily_market(args):
+    """分别提交 OHLCV 和 daily-basic，任一失败不回滚另一项。"""
+    daily_exit = cmd_daily(args)
+    daily_basic_exit = cmd_daily_basic(args)
+    logger.info(
+        'daily-market 结果: daily=%s daily_basic=%s',
+        'SUCCESS' if daily_exit == 0 else 'FAILED',
+        'SUCCESS' if daily_basic_exit == 0 else 'FAILED',
+    )
+    return 0 if daily_exit == 0 and daily_basic_exit == 0 else 1
+
+
 def cmd_basic(args):
     """basic 子命令：更新股票基础信息"""
     db = _init_database()
@@ -274,8 +376,8 @@ def cmd_retry_failed(args):
 
 # ── 主函数 ───────────────────────────────────────────────────
 
-def main():
-    """采集服务 CLI 入口"""
+def build_parser():
+    """构建命令行解析器，便于测试所有命令契约。"""
     parser = argparse.ArgumentParser(
         description='数据采集服务 V0.2',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -285,6 +387,10 @@ def main():
   history       回补指定日期范围数据
   basic         更新股票基础信息
   retry-failed  重试失败任务
+  daily-basic  采集每日估值和换手率
+  daily-basic-history  历史补采每日指标
+  constituent  采集指数或行业成分股快照
+  daily-market 同日依次采集 OHLCV 和每日指标
 
 示例:
   python main.py daily --date 2026-07-03
@@ -329,6 +435,38 @@ def main():
     # retry-failed
     subparsers.add_parser('retry-failed', help='重试失败任务')
 
+    p_daily_basic = subparsers.add_parser(
+        'daily-basic', help='采集指定交易日的估值和换手率'
+    )
+    p_daily_basic.add_argument('--date', type=str, required=True)
+
+    p_daily_basic_history = subparsers.add_parser(
+        'daily-basic-history', help='按已有行情交易日补采每日指标'
+    )
+    p_daily_basic_history.add_argument('--start', type=str, required=True)
+    p_daily_basic_history.add_argument('--end', type=str, required=True)
+
+    p_constituent = subparsers.add_parser(
+        'constituent', help='采集指数或行业成分股快照'
+    )
+    p_constituent.add_argument(
+        '--type', dest='group_type', choices=['index', 'industry'], required=True
+    )
+    p_constituent.add_argument('--code', type=str, required=True)
+    p_constituent.add_argument('--date', type=str, required=True)
+
+    p_daily_market = subparsers.add_parser(
+        'daily-market', help='分别采集 OHLCV 和每日指标'
+    )
+    p_daily_market.add_argument('--date', type=str, required=True)
+
+    return parser
+
+
+def main():
+    """采集服务 CLI 入口"""
+    parser = build_parser()
+
     # 解析
     args = parser.parse_args()
 
@@ -342,6 +480,10 @@ def main():
         'history': cmd_history,
         'basic': cmd_basic,
         'retry-failed': cmd_retry_failed,
+        'daily-basic': cmd_daily_basic,
+        'daily-basic-history': cmd_daily_basic_history,
+        'constituent': cmd_constituent,
+        'daily-market': cmd_daily_market,
     }
 
     handler = dispatch.get(args.command)

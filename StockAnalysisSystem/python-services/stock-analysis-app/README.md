@@ -1,5 +1,7 @@
 # StockAnalysisSystem
 
+> V0.4 数据边界：本应用不再导入或调用 Tushare/AkShare。所有行情、估值和成分股由 `python-collector` 采集，本应用只读取 MySQL 与既有缓存。`--use_tushare` 参数仅为旧脚本兼容。
+
 A 股数据采集、特征工程、传统机器学习、LightGBM 排名选股、Transformer 排名选股和回测系统。
 
 ## 系统架构概览
@@ -8,7 +10,7 @@ A 股数据采集、特征工程、传统机器学习、LightGBM 排名选股、
 
 ```text
                           ┌─────────────────────────────┐
-                          │    数据源 (Tushare/Akshare)   │
+                          │ python-collector + MySQL     │
                           └──────────┬──────────────────┘
                                      │
                                      ▼
@@ -16,6 +18,8 @@ A 股数据采集、特征工程、传统机器学习、LightGBM 排名选股、
                           │    MySQL 数据库               │
                           │  stock_basic (股票基本信息)    │
                           │  stock_daily (日线行情)        │
+                          │  stock_daily_basic (估值/换手) │
+                          │  stock_constituent (成分股快照)│
                           │  stock_features (传统特征72列) │
                           │  analysis_result (分析结果)    │
                           └──────┬──────────────┬────────┘
@@ -202,8 +206,9 @@ output\result.csv
 
 ### 数据源
 
-- `--use_tushare`：使用 Tushare，需配置 `TUSHARE_TOKEN`。
-- 不传 `--use_tushare`：使用 Akshare。
+- 分析端统一读取 MySQL，不再需要 Tushare Token，也不会构造外部 SDK 客户端。
+- `--use_tushare` 仍可传入，但只会输出弃用提示。
+- 运行分析前，请先使用 `python-collector` 的 `daily-market`/历史补采命令更新数据库。
 
 ### 股票池筛选
 
@@ -222,6 +227,8 @@ output\result.csv
 |---|---|---|---|
 | `stock_basic` | ts_code, name, industry | 股票基本信息 | 全部 |
 | `stock_daily` | ts_code, trade_date, OHLCV | 日线行情 | 全部 |
+| `stock_daily_basic` | turnover_rate, pe, pb, ps, total_mv | 原始估值与换手率 | 全部（LEFT JOIN） |
+| `stock_constituent` | group_type, group_code, ts_code, as_of_date | 股票池快照 | 排名/Transformer |
 | `stock_features` | ts_code, trade_date, 72个指标列 | 传统技术指标 | 管线1(写) + 管线2(读+写) |
 | `analysis_result` | ts_code, result, prediction | 预测分析结果 | 管线1(写) |
 

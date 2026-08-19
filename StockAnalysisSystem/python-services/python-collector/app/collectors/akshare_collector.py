@@ -20,6 +20,8 @@ import akshare as ak
 import pandas as pd
 
 from app.collectors.base_collector import BaseCollector
+from app.market_data.akshare_client import AkshareClient
+from app.market_data.codes import to_ts_code
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -35,17 +37,11 @@ _AKSHARE_RENAME = {
     '成交额': 'amount',
     '涨跌额': 'change',
     '涨跌幅': 'pct_chg',
+    '换手率': 'turnover_rate',
 }
 
 
-def _to_tushare_code(code: str) -> str:
-    """将 6 位代码转为 Tushare 格式（统一 ts_code 风格）。"""
-    code = str(code).strip()
-    if '.' in code:
-        return code.upper()
-    if code.startswith(('6', '9')):
-        return f"{code}.SH"
-    return f"{code}.SZ"
+_to_tushare_code = to_ts_code
 
 
 def _normalize_akshare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -61,7 +57,7 @@ def _normalize_akshare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df = df.rename(columns=_AKSHARE_RENAME)
 
     # 添加 ts_code
-    ts_code = _to_tushare_code(symbol)
+    ts_code = to_ts_code(symbol)
     df['ts_code'] = ts_code
 
     # trade_date 转 date
@@ -79,6 +75,7 @@ def _normalize_akshare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     standard_cols = [
         'ts_code', 'trade_date', 'open', 'high', 'low', 'close',
         'pre_close', 'change', 'pct_chg', 'vol', 'amount',
+        'turnover_rate',
     ]
     for col in standard_cols:
         if col not in df.columns:
@@ -90,7 +87,8 @@ def _normalize_akshare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 class AkShareCollector(BaseCollector):
     """AkShare 数据采集器"""
 
-    def __init__(self):
+    def __init__(self, client: AkshareClient | None = None):
+        self.client = client or AkshareClient(ak)
         logger.info("AkShareCollector 初始化完成")
 
     @property
@@ -128,13 +126,7 @@ class AkShareCollector(BaseCollector):
         start_date = start_date.replace('-', '')
         end_date = end_date.replace('-', '')
 
-        df = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust="qfq",
-        )
+        df = self.client.stock_history(symbol, start_date, end_date)
 
         if df is None or df.empty:
             logger.info(f"AkShare {symbol} 日线数据: 无数据")
@@ -150,7 +142,7 @@ class AkShareCollector(BaseCollector):
 
         返回统一格式的 DataFrame（ts_code, symbol, name）。
         """
-        df = ak.stock_info_a_code_name()
+        df = self.client.stock_info()
         if df is None or df.empty:
             logger.warning("AkShare 获取股票信息为空")
             return pd.DataFrame()
@@ -159,7 +151,7 @@ class AkShareCollector(BaseCollector):
         result = pd.DataFrame()
         if '代码' in df.columns:
             result['symbol'] = df['代码']
-            result['ts_code'] = df['代码'].apply(_to_tushare_code)
+            result['ts_code'] = df['代码'].apply(to_ts_code)
         if '名称' in df.columns:
             result['name'] = df['名称']
 
@@ -181,3 +173,68 @@ class AkShareCollector(BaseCollector):
         """
         logger.warning("AkShare 无交易日历接口，将使用周末判断模式")
         return pd.DataFrame()
+
+    def collect_daily_basic(
+        self,
+        trade_date: str,
+        ts_code: str | None = None,
+    ) -> pd.DataFrame:
+        if not ts_code:
+            logger.warning("AkShare daily_basic 需要指定 ts_code")
+            return pd.DataFrame()
+        daily = self.collect_daily_single(ts_code, trade_date, trade_date)
+        if daily.empty:
+            return pd.DataFrame()
+        result = daily[['ts_code', 'trade_date', 'turnover_rate']].copy()
+        for column in ['pe', 'pe_ttm', 'pb', 'ps', 'total_mv']:
+            result[column] = None
+        return result[
+            ['ts_code', 'trade_date', 'turnover_rate',
+             'pe', 'pe_ttm', 'pb', 'ps', 'total_mv']
+        ]
+
+    def collect_index_constituents(
+        self,
+        index_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        df = self.client.index_constituents(index_code)
+        return self._normalize_constituents(
+            df, 'index', index_code, as_of_date
+        )
+
+    def collect_industry_constituents(
+        self,
+        industry_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        df = self.client.industry_constituents(industry_code)
+        return self._normalize_constituents(
+            df, 'industry', industry_code, as_of_date
+        )
+
+    def _normalize_constituents(
+        self,
+        df: pd.DataFrame,
+        group_type: str,
+        group_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        code_column = next(
+            (column for column in (
+                '代码', '品种代码', '成分券代码', 'code', 'symbol'
+            ) if column in df.columns),
+            None,
+        )
+        if code_column is None:
+            raise ValueError(f"成分股数据缺少代码列: {list(df.columns)}")
+        return pd.DataFrame({
+            'group_type': group_type,
+            'group_code': group_code,
+            'ts_code': df[code_column].map(to_ts_code),
+            'as_of_date': pd.to_datetime(as_of_date).date(),
+            'weight': None,
+            'source': self.source_name,
+        })

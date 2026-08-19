@@ -2,6 +2,16 @@
 
 本文按当前代码实际入口整理。系统主要有三条训练/预测管线：单股传统预测、传统 LightGBM 排名、Transformer 排名。
 
+## V0.4 推荐阅读顺序
+
+1. `data_loader/market_data_repository.py`：分析端稳定数据接口。
+2. `database/repository.py`：`stock_daily` LEFT JOIN `stock_daily_basic` 和成分股快照 SQL。
+3. `data_loader/collector.py`：保留旧调用签名的 MySQL 兼容门面，不再访问 SDK。
+4. `data_processor/stock_filter.py`：从 `stock_constituent` 最新快照构建股票池。
+5. `data_processor/panel_builder.py`：数据库主数据与 Parquet 兼容缓存的合并规则。
+
+外部 SDK 实现请到相邻服务 `python-services/python-collector/app/market_data` 和 `app/collectors` 阅读。
+
 ## 项目结构
 
 ```text
@@ -15,8 +25,8 @@ StockAnalysisSystem/
 │   └── logging_config.py          # 日志配置（控制台 + 文件）
 │
 ├── data_loader/
-│   ├── collector.py               # DataCollector 门面（单股采集）
-│   └── tushare_api.py             # TushareAPI / AkshareAPI 封装
+│   ├── collector.py               # 旧 DataCollector 的 MySQL 兼容门面
+│   └── market_data_repository.py  # 分析端市场数据数据库边界
 │
 ├── data_processor/
 │   ├── cleaner.py                 # DataCleaner（去重、NaN、异常值）
@@ -78,12 +88,14 @@ StockAnalysisSystem/
 
 ## 数据库表结构
 
-4 张表，定义在 `database/models.py`：
+核心表定义在 `database/models.py`：
 
 | 表名 | 主键/索引 | 主要列 | 被哪些管线使用 |
 |---|---|---|---|
 | `stock_basic` | ts_code (UNIQUE) | symbol, name, area, industry, list_date | 全部（读取股票列表） |
 | `stock_daily` | ts_code+trade_date (UNIQUE) | OHLCV, pre_close, pct_chg, vol, amount | 全部（行情数据源） |
+| `stock_daily_basic` | ts_code+trade_date (UNIQUE) | turnover_rate, pe, pe_ttm, pb, ps, total_mv | 与行情 LEFT JOIN |
+| `stock_constituent` | group+code+date (UNIQUE) | index/industry 快照、weight | 股票池筛选 |
 | `stock_features` | ts_code+trade_date (UNIQUE) | 72 个技术指标列 | 管线1(写入) + 管线2(读+写) |
 | `analysis_result` | ts_code+analysis_date (UNIQUE) | analysis_type, result, prediction, confidence | 管线1(写入) |
 
@@ -100,7 +112,7 @@ python main.py --mode demo --stock 000001 --use_tushare --model xgboost
 ```text
 main.py demo
   -> DataCollector(use_tushare=...)
-      -> TushareAPI / AkshareAPI       # 从 API 获取单股数据（不走 DB）
+      -> MarketDataRepository          # 从 MySQL 读取单股数据
   -> run_data_processing()
       -> DataCleaner                   # 去重、填充、异常值处理
       -> FeatureEngineer.calculate_all_features()   # 计算 72 列传统指标
@@ -119,14 +131,14 @@ main.py demo
 
 | 文件 | 作用 |
 |---|---|
-| `data_loader/collector.py` | 数据源封装入口 |
-| `data_loader/tushare_api.py` | Tushare / Akshare API 封装，含 `to_tushare_code()` 自动转换股票代码 |
+| `data_loader/collector.py` | 旧接口兼容门面，内部转 MySQL |
+| `data_loader/market_data_repository.py` | OHLCV、daily-basic 和成分股读取接口 |
 | `data_processor/cleaner.py` | 单股清洗 |
 | `data_processor/feature_engineer.py` | 技术指标与未来标签 |
 | `analysis/predictor.py` | 单股 XGBoost/LSTM 模型 |
 | `analysis/backtester.py` | 单股信号和预测回测 |
 
-**数据流向**：从 API 直接获取数据 → 处理 → 预测 → **写入** DB。这是唯一一条将数据写入 DB 的管线。
+**数据流向**：从 MySQL 读取 Collector 已落库数据 → 处理 → 预测 → 写入特征和分析结果。
 
 ## 管线 2：传统 LightGBM 排名
 

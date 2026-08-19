@@ -51,6 +51,55 @@ def filter_stock_list(basic_df):
     return filtered
 
 
+def save_raw_panel(panel_df, path):
+    """按旧路径和字段形状保存原始面板缓存。"""
+    raw_save = panel_df.copy()
+    if 'turnover_rate' not in raw_save.columns:
+        raw_save['turnover_rate'] = pd.NA
+    raw_save.to_parquet(path, engine='pyarrow', index=False)
+
+
+def restore_turnover_rate_from_cache(panel_df, raw_cache_path):
+    """仅为数据库缺失值补入旧缓存换手率，不覆盖数据库非空值。"""
+    if not os.path.exists(raw_cache_path):
+        return panel_df
+
+    try:
+        cached = pd.read_parquet(
+            raw_cache_path,
+            engine='pyarrow',
+            columns=['ts_code', 'trade_date', 'turnover_rate'],
+        )
+        cached['trade_date'] = pd.to_datetime(cached['trade_date'])
+        cached = cached.drop_duplicates(['ts_code', 'trade_date'], keep='last')
+        cached = cached.rename(columns={
+            'turnover_rate': '_cached_turnover_rate'
+        })
+
+        result = panel_df.copy()
+        result['trade_date'] = pd.to_datetime(result['trade_date'])
+        if 'turnover_rate' not in result.columns:
+            result['turnover_rate'] = pd.NA
+        result = result.merge(
+            cached, on=['ts_code', 'trade_date'], how='left'
+        )
+        missing = result['turnover_rate'].isna()
+        recovered = missing & result['_cached_turnover_rate'].notna()
+        result.loc[missing, 'turnover_rate'] = result.loc[
+            missing, '_cached_turnover_rate'
+        ]
+        result = result.drop(columns=['_cached_turnover_rate'])
+        if recovered.any():
+            logger.warning(
+                'daily_basic 尚未补齐，临时从 raw_panel.parquet 恢复 %s 行换手率',
+                int(recovered.sum()),
+            )
+        return result
+    except Exception as exc:
+        logger.warning('读取换手率兼容缓存失败: %s', exc)
+        return panel_df
+
+
 def load_all_stock_data_from_db(start_date=None, end_date=None,
                                 sectors=None, index_codes=None, use_tushare=False,
                                 stock_codes=None):
@@ -115,25 +164,10 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
                 if panel_df.columns.duplicated().any():
                     panel_df = panel_df.loc[:, ~panel_df.columns.duplicated()]
 
-                # 尝试从 parquet 缓存补回 turnover_rate（stock_daily 表不存此字段）
+                # DB JOIN 是主来源；旧缓存只填补尚未历史补采的空值。
                 CACHE_DIR = os.path.join(os.path.dirname(__file__), '..', 'models', 'traditional_features')
                 raw_cache = os.path.join(CACHE_DIR, 'raw_panel.parquet')
-                if os.path.exists(raw_cache) and 'turnover_rate' not in panel_df.columns:
-                    try:
-                        cached = pd.read_parquet(raw_cache, engine='pyarrow',
-                                                 columns=['ts_code', 'trade_date', 'turnover_rate'])
-                        # 统一日期类型后合并
-                        cached['trade_date'] = pd.to_datetime(cached['trade_date'])
-                        panel_df['trade_date'] = pd.to_datetime(panel_df['trade_date'])
-                        # 去重 cached 确保 merge 不产生重复列
-                        cached = cached.drop_duplicates(subset=['ts_code', 'trade_date'])
-                        panel_df = panel_df.merge(
-                            cached, on=['ts_code', 'trade_date'], how='left'
-                        )
-                        non_null = panel_df['turnover_rate'].notna().sum()
-                        logger.info(f"从 parquet 缓存补回 turnover_rate: {non_null}/{len(panel_df)} 行非空")
-                    except Exception as e:
-                        logger.warning(f"补回 turnover_rate 失败: {e}")
+                panel_df = restore_turnover_rate_from_cache(panel_df, raw_cache)
 
                 return panel_df
 
@@ -287,22 +321,32 @@ def _safe_float(val):
 def incremental_update(stock_codes=None, use_tushare=False, delay=0.5,
                        sectors=None, index_codes=None, start_date=None):
     """
-    增量采集最新数据：从数据库读取已有数据的最新日期，
-    只采集该日期之后的新数据并写入数据库。
+    兼容旧“增量更新”入口，实际只读取 Collector 已落库的数据。
 
-    首次运行（数据库为空）时：自动获取股票列表并全量采集。
+    行情更新请先在 python-collector 执行 ``daily-market`` 或历史补采命令。
 
     参数:
         stock_codes: 股票代码列表，None则全市场
-        use_tushare: 是否使用Tushare
-        delay: 每次请求之间的延迟（秒），默认0.5秒
+        use_tushare: 已弃用，仅保留调用兼容
+        delay: 已弃用，仅保留调用兼容
         sectors: 行业板块名称列表，如 ["银行", "医药"]
         index_codes: 指数代码列表，如 ["000300"]
     返回:
         DataFrame: 增量更新后的全量面板数据
     """
+    del delay, start_date
+    if use_tushare:
+        logger.info('use_tushare 已弃用；分析应用统一读取 MySQL')
+    logger.info('读取 python-collector 已落库的最新市场数据')
+    return load_all_stock_data_from_db(
+        stock_codes=stock_codes,
+        sectors=sectors,
+        index_codes=index_codes,
+        use_tushare=use_tushare,
+    )
+
+    # 以下旧网络增量逻辑保留在本次迁移提交的历史差异中，不再执行。
     import time
-    logger.info("开始增量数据采集...")
 
     # 获取已有数据的最新日期
     try:
@@ -770,8 +814,7 @@ def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
             featured_panel = pd.concat(results, ignore_index=True)
 
         # 保存原始面板缓存（供下次增量使用，保存完整数据含换手率等字段）
-        raw_save = panel_df.copy()
-        raw_save.to_parquet(raw_cache_path, engine='pyarrow', index=False)
+        save_raw_panel(panel_df, raw_cache_path)
         logger.info(f"原始面板缓存已保存: {raw_cache_path}")
 
     # 添加横截面特征（在 label 之前，因为横截面特征需要 return_1d 等时序特征）
@@ -820,8 +863,7 @@ def _prepare_panel_incremental(panel_df, cache_path, raw_cache_path, forward_day
     combined_raw = new_panel.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last')
 
     # 更新缓存（保存完整数据含换手率等字段）
-    raw_save = combined_raw.copy()
-    raw_save.to_parquet(raw_cache_path, engine='pyarrow', index=False)
+    save_raw_panel(combined_raw, raw_cache_path)
     logger.info(f"原始面板缓存已更新: {len(combined_raw)} 行")
 
     # 增量计算特征：逐股计算，只对新增数据

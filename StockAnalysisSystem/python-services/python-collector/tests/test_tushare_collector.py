@@ -100,6 +100,62 @@ class TestTushareCollector(unittest.TestCase):
         collector = TushareCollector(token='test_token')
         self.assertEqual(collector.source_name, 'tushare')
 
+    def test_collect_daily_basic_returns_protocol_columns(self):
+        client = MagicMock()
+        client.daily_basic.return_value = pd.DataFrame({
+            'ts_code': ['000001.SZ'],
+            'trade_date': ['20260814'],
+            'turnover_rate': [1.25],
+            'pe': [6.5],
+            'pe_ttm': [6.8],
+            'pb': [0.72],
+            'ps': [1.15],
+            'total_mv': [21000000.25],
+            'unused': ['ignored'],
+        })
+
+        from app.collectors.tushare_collector import TushareCollector
+        collector = TushareCollector(token='test_token', client=client)
+        df = collector.collect_daily_basic('2026-08-14')
+
+        self.assertEqual(list(df.columns), [
+            'ts_code', 'trade_date', 'turnover_rate',
+            'pe', 'pe_ttm', 'pb', 'ps', 'total_mv',
+        ])
+        self.assertIsInstance(df['trade_date'].iloc[0], date)
+        client.daily_basic.assert_called_once_with(trade_date='20260814')
+
+    def test_collect_index_constituents_uses_latest_membership(self):
+        client = MagicMock()
+        client.index_weight.return_value = pd.DataFrame({
+            'index_code': ['000300.SH'] * 4,
+            'con_code': [
+                '000001.SZ', '000002.SZ', '000001.SZ', '600000.SH'
+            ],
+            'trade_date': ['20260801', '20260801', '20260814', '20260814'],
+            'weight': [0.4, 0.3, 0.5, 0.6],
+        })
+
+        from app.collectors.tushare_collector import TushareCollector
+        collector = TushareCollector(token='test_token', client=client)
+        df = collector.collect_index_constituents('000300.SH', '20260814')
+
+        self.assertEqual(list(df['ts_code']), ['000001.SZ', '600000.SH'])
+        self.assertEqual(list(df['weight']), [0.5, 0.6])
+        self.assertTrue((df['group_type'] == 'index').all())
+
+    def test_keeps_pro_attribute_for_trade_calendar_compatibility(self):
+        pro = MagicMock()
+        from app.market_data.tushare_client import TushareClient
+        from app.collectors.tushare_collector import TushareCollector
+
+        collector = TushareCollector(
+            token='test_token',
+            client=TushareClient(pro),
+        )
+
+        self.assertIs(collector.pro, pro)
+
 
 class TestToTushareCode(unittest.TestCase):
     """to_tushare_code 转换测试"""

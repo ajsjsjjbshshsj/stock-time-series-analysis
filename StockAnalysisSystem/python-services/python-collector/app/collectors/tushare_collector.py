@@ -19,35 +19,31 @@ import tushare as ts
 
 from app.collectors.base_collector import BaseCollector
 from app.config import TUSHARE_TOKEN
+from app.market_data.codes import to_ts_code
+from app.market_data.tushare_client import TushareClient
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def to_tushare_code(code: str) -> str:
-    """
-    将 6 位股票代码转换为 Tushare 格式。
-
-    规则：
-        6/9 开头 → .SH（上海）
-        其他     → .SZ（深圳）
-        已带后缀 → 直接返回大写
-    """
-    code = str(code).strip()
-    if '.' in code:
-        return code.upper()
-    if code.startswith(('6', '9')):
-        return f"{code}.SH"
-    return f"{code}.SZ"
+to_tushare_code = to_ts_code
 
 
 class TushareCollector(BaseCollector):
     """Tushare 数据采集器"""
 
-    def __init__(self, token: str | None = None):
+    def __init__(
+        self,
+        token: str | None = None,
+        client: TushareClient | None = None,
+    ):
         self.token = token or TUSHARE_TOKEN
-        ts.set_token(self.token)
-        self.pro = ts.pro_api()
+        if client is None:
+            ts.set_token(self.token)
+            client = TushareClient(ts.pro_api())
+        self.client = client
+        # Temporary compatibility for date_utils.load_trade_calendar().
+        self.pro = getattr(client, 'pro', None)
         logger.info("TushareCollector 初始化完成")
 
     @property
@@ -66,7 +62,7 @@ class TushareCollector(BaseCollector):
         """
         trade_date_clean = trade_date.replace('-', '')
 
-        df = self.pro.daily(trade_date=trade_date_clean)
+        df = self.client.daily(trade_date=trade_date_clean)
         if df is None or df.empty:
             logger.info(f"Tushare daily({trade_date_clean}): 无数据")
             return pd.DataFrame()
@@ -94,11 +90,11 @@ class TushareCollector(BaseCollector):
         """
         采集单只股票日线数据（合并 daily + daily_basic）。
         """
-        ts_code = to_tushare_code(ts_code)
+        ts_code = to_ts_code(ts_code)
         start_date = start_date.replace('-', '')
         end_date = end_date.replace('-', '')
 
-        df = self.pro.daily(
+        df = self.client.daily(
             ts_code=ts_code,
             start_date=start_date,
             end_date=end_date,
@@ -113,7 +109,7 @@ class TushareCollector(BaseCollector):
 
         # 合并 daily_basic（估值、换手率等）
         try:
-            df2 = self.pro.daily_basic(
+            df2 = self.client.daily_basic(
                 ts_code=ts_code,
                 start_date=start_date,
                 end_date=end_date,
@@ -134,7 +130,7 @@ class TushareCollector(BaseCollector):
 
     def collect_basic(self) -> pd.DataFrame:
         """获取股票基本信息。"""
-        df = self.pro.stock_basic(
+        df = self.client.stock_basic(
             exchange='',
             list_status='L',
             fields='ts_code,symbol,name,area,industry,list_date',
@@ -155,7 +151,7 @@ class TushareCollector(BaseCollector):
         start_date = start_date.replace('-', '')
         end_date = end_date.replace('-', '')
 
-        df = self.pro.trade_cal(
+        df = self.client.trade_calendar(
             exchange='SSE',
             start_date=start_date,
             end_date=end_date,
@@ -167,3 +163,61 @@ class TushareCollector(BaseCollector):
 
         logger.info(f"Tushare 交易日历: {start_date}~{end_date}, {len(df)} 天")
         return df
+
+    def collect_daily_basic(
+        self,
+        trade_date: str,
+        ts_code: str | None = None,
+    ) -> pd.DataFrame:
+        trade_date_clean = trade_date.replace('-', '')
+        params = {'trade_date': trade_date_clean}
+        if ts_code:
+            params['ts_code'] = to_ts_code(ts_code)
+        df = self.client.daily_basic(**params)
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        columns = [
+            'ts_code', 'trade_date', 'turnover_rate',
+            'pe', 'pe_ttm', 'pb', 'ps', 'total_mv',
+        ]
+        result = df.reindex(columns=columns).copy()
+        result['trade_date'] = pd.to_datetime(result['trade_date']).dt.date
+        return result
+
+    def collect_index_constituents(
+        self,
+        index_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        as_of_clean = as_of_date.replace('-', '')
+        df = self.client.index_weight(index_code=index_code)
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        result = df.copy()
+        result = result[result['trade_date'].astype(str) <= as_of_clean]
+        if result.empty:
+            return pd.DataFrame()
+        # index_weight 的每个 trade_date 是一张完整调仓快照。只取不晚于
+        # as_of_date 的最新一张，不能把历次出现过的股票做历史并集。
+        latest_snapshot = result['trade_date'].astype(str).max()
+        result = result[
+            result['trade_date'].astype(str) == latest_snapshot
+        ].drop_duplicates('con_code', keep='last')
+        return pd.DataFrame({
+            'group_type': 'index',
+            'group_code': index_code,
+            'ts_code': result['con_code'].map(to_ts_code),
+            'as_of_date': pd.to_datetime(as_of_clean).date(),
+            'weight': result.get('weight'),
+            'source': self.source_name,
+        }).reset_index(drop=True)
+
+    def collect_industry_constituents(
+        self,
+        industry_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        logger.warning("Tushare Collector 暂不提供行业成分股接口")
+        return pd.DataFrame()

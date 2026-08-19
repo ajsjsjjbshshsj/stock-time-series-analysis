@@ -1,7 +1,8 @@
 """
 数据库表结构定义
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Index, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Numeric, DateTime, Date, Index, Text, UniqueConstraint
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.sql import func
 from database.db_connector import Base
 
@@ -10,6 +11,8 @@ from database.db_connector import Base
 
 TABLE_STOCK_BASIC = 'stock_basic'
 TABLE_STOCK_DAILY = 'stock_daily'
+TABLE_STOCK_DAILY_BASIC = 'stock_daily_basic'
+TABLE_STOCK_CONSTITUENT = 'stock_constituent'
 TABLE_STOCK_FEATURES = 'stock_features'
 TABLE_ANALYSIS_RESULT = 'analysis_result'
 TABLE_COLLECTION_TASK = 'collection_task'
@@ -56,6 +59,51 @@ class StockDaily(Base):
     __table_args__ = (
         Index('idx_code_date', 'ts_code', 'trade_date', unique=True),
         Index('idx_trade_date', 'trade_date'),
+    )
+
+
+class StockDailyBasic(Base):
+    """原始每日估值与换手率数据。"""
+    __tablename__ = TABLE_STOCK_DAILY_BASIC
+
+    id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    ts_code = Column(String(10), nullable=False, comment='统一股票代码')
+    trade_date = Column(Date, nullable=False, comment='交易日期')
+    turnover_rate = Column(Numeric(20, 6), comment='换手率（%）')
+    pe = Column(Numeric(20, 6), comment='市盈率')
+    pe_ttm = Column(Numeric(20, 6), comment='滚动市盈率')
+    pb = Column(Numeric(20, 6), comment='市净率')
+    ps = Column(Numeric(20, 6), comment='市销率')
+    total_mv = Column(Numeric(24, 4), comment='总市值（万元）')
+    source = Column(String(20), nullable=False, comment='数据源')
+    created_at = Column(DateTime, server_default=func.now(), comment='创建时间')
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment='更新时间')
+
+    __table_args__ = (
+        UniqueConstraint('ts_code', 'trade_date', name='uq_daily_basic_code_date'),
+        Index('idx_daily_basic_trade_date', 'trade_date'),
+    )
+
+
+class StockConstituent(Base):
+    """指数和行业成分股在某一日期的快照。"""
+    __tablename__ = TABLE_STOCK_CONSTITUENT
+
+    id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    group_type = Column(String(20), nullable=False, comment='分组类型：index/industry')
+    group_code = Column(String(30), nullable=False, comment='指数或行业代码')
+    ts_code = Column(String(10), nullable=False, comment='统一股票代码')
+    as_of_date = Column(Date, nullable=False, comment='快照日期')
+    weight = Column(Numeric(20, 6), comment='成分权重')
+    source = Column(String(20), nullable=False, comment='数据源')
+    created_at = Column(DateTime, server_default=func.now(), comment='创建时间')
+
+    __table_args__ = (
+        UniqueConstraint(
+            'group_type', 'group_code', 'ts_code', 'as_of_date',
+            name='uq_constituent_snapshot',
+        ),
+        Index('idx_constituent_group_date', 'group_type', 'group_code', 'as_of_date'),
     )
 
 
@@ -191,7 +239,7 @@ class CollectionTask(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_type = Column(String(20), nullable=False, comment='任务类型: daily/history/basic/retry')
-    business_date = Column(String(10), nullable=False, comment='业务日期 YYYYMMDD')
+    business_date = Column(String(80), nullable=False, comment='业务日期或业务幂等键')
     source = Column(String(20), nullable=False, comment='数据源: tushare/akshare')
     status = Column(String(20), nullable=False, default='PENDING',
                     comment='状态: PENDING/RUNNING/SUCCESS/PARTIAL_SUCCESS/FAILED')

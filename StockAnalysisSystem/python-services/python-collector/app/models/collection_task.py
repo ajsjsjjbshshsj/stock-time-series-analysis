@@ -25,6 +25,8 @@ class TaskStatus(str, Enum):
 class TaskType(str, Enum):
     """采集任务类型"""
     DAILY = 'daily'
+    DAILY_BASIC = 'daily_basic'
+    CONSTITUENT = 'constituent'
     HISTORY = 'history'
     BASIC = 'basic'
     RETRY = 'retry'
@@ -34,7 +36,7 @@ class TaskType(str, Enum):
 class CollectionTaskRecord:
     """采集任务记录"""
     task_type: str          # daily / history / basic / retry
-    business_date: str      # 业务日期 YYYYMMDD
+    business_date: str      # 业务日期或可唯一标识快照的业务键
     source: str             # tushare / akshare
     status: str = TaskStatus.PENDING.value
     record_count: int = 0

@@ -111,6 +111,30 @@ class BaseCollector(ABC):
         """
         ...
 
+    def collect_daily_basic(
+        self,
+        trade_date: str,
+        ts_code: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Collect source-provided daily valuation data when available."""
+        return pd.DataFrame()
+
+    def collect_index_constituents(
+        self,
+        index_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        """Collect an index-membership snapshot when supported."""
+        return pd.DataFrame()
+
+    def collect_industry_constituents(
+        self,
+        industry_code: str,
+        as_of_date: str,
+    ) -> pd.DataFrame:
+        """Collect an industry-membership snapshot when supported."""
+        return pd.DataFrame()
+
     @property
     @abstractmethod
     def source_name(self) -> str:
