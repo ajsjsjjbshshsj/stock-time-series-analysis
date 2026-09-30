@@ -232,11 +232,35 @@ docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager fli
 if ($LASTEXITCODE -ne 0) { throw 'Savepoint 已创建，但作业取消失败；请先检查 Flink UI。' }
 ```
 
-确认并持久记录 `$savepointPath`。用兼容 JAR 恢复时，明确将该路径传给 `flink run -s`：
+确认并持久记录 `$savepointPath`。用兼容 JAR 恢复时，明确将该路径传给 `flink run -s`。下面的 `Get-V05Setting` 与正常提交脚本采用相同的“当前进程环境变量优先、空值回退安全默认值”逻辑，并传递全部作业参数；因此自定义 Topic、group、checkpoint 和并行度等配置不会在恢复时丢失：
 
 ```powershell
 $savepointPath = 'file:/opt/flink/checkpoints/savepoints/savepoint-xxxxxxxxxxxx'
-docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink run -d -m flink-jobmanager:8081 -s $savepointPath -c com.stock.flink.DailyIndicatorJob /opt/flink/usrlib/flink-realtime-job-0.3.0-SNAPSHOT-all.jar --bootstrap-servers kafka:29092
+
+function Get-V05Setting([string]$name, [string]$fallback) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ([string]::IsNullOrWhiteSpace($value)) { return $fallback }
+    return $value
+}
+
+$jobArgs = @(
+    '--bootstrap-servers', (Get-V05Setting 'FLINK_KAFKA_BOOTSTRAP_SERVERS' 'kafka:29092'),
+    '--input-topic', (Get-V05Setting 'FLINK_INPUT_TOPIC' 'stock.ods.daily.v1'),
+    '--output-topic', (Get-V05Setting 'FLINK_OUTPUT_TOPIC' 'stock.dws.daily-indicator.v1'),
+    '--late-topic', (Get-V05Setting 'FLINK_LATE_TOPIC' 'stock.late.daily.v1'),
+    '--dead-letter-topic', (Get-V05Setting 'FLINK_DLT_TOPIC' 'stock.flink.dead-letter.v1'),
+    '--group-id', (Get-V05Setting 'FLINK_CONSUMER_GROUP' 'stock-flink-daily-indicator-v1'),
+    '--checkpoint-uri', (Get-V05Setting 'FLINK_CHECKPOINT_URI' 'file:///opt/flink/checkpoints'),
+    '--checkpoint-interval-ms', (Get-V05Setting 'FLINK_CHECKPOINT_INTERVAL_MS' '10000'),
+    '--checkpoint-timeout-ms', (Get-V05Setting 'FLINK_CHECKPOINT_TIMEOUT_MS' '60000'),
+    '--checkpoint-min-pause-ms', (Get-V05Setting 'FLINK_CHECKPOINT_MIN_PAUSE_MS' '5000'),
+    '--kafka-transaction-timeout-ms', (Get-V05Setting 'FLINK_KAFKA_TRANSACTION_TIMEOUT_MS' '600000'),
+    '--parallelism', (Get-V05Setting 'FLINK_PARALLELISM' '3'),
+    '--schema-version', (Get-V05Setting 'FLINK_SCHEMA_VERSION' '1')
+)
+
+$jarInContainer = '/opt/flink/usrlib/flink-realtime-job-0.3.0-SNAPSHOT-all.jar'
+docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink run -d -m flink-jobmanager:8081 -s $savepointPath -c com.stock.flink.DailyIndicatorJob $jarInContainer @jobArgs
 if ($LASTEXITCODE -ne 0) { throw '从 savepoint 恢复失败；不要删除原 savepoint。' }
 ```
 
