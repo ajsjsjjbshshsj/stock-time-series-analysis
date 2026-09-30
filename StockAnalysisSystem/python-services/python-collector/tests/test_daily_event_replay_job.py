@@ -224,6 +224,7 @@ def test_cli_flushes_exactly_once_per_nonempty_database_batch(
     db.session_scope.side_effect = session_scope
     client = MagicMock()
     client.flush.return_value = 0
+    client.close.side_effect = client.flush  # Mimic native implicit flush.
     client.produce.side_effect = lambda **kwargs: kwargs['on_delivery'](
         None, MagicMock()
     )
@@ -241,5 +242,6 @@ def test_cli_flushes_exactly_once_per_nonempty_database_batch(
     assert code == 0
     assert client.produce.call_count == record_count
     assert client.flush.call_count == expected_flushes
-    client.close.assert_called_once_with()
+    client.close.assert_not_called()
+    assert producer._client is None
     db.close.assert_called_once_with()
