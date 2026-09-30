@@ -216,14 +216,31 @@ D:\Python\python.exe scripts\verify_v05_flink.py --scenario invalid
 
 ### 5. 升级、停止和回滚
 
-升级前先从 Flink UI 或 CLI 取得 Job ID，并创建 savepoint：
+升级前先从 Flink UI 或 CLI 取得 Job ID。以下命令必须在同一个 PowerShell 会话中分步执行；只有 savepoint 命令成功且返回了可解析的路径，脚本才会继续取消作业：
 
 ```powershell
-docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink savepoint <job-id> file:///opt/flink/checkpoints/savepoints
-docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink cancel <job-id>
+$jobId = '<job-id>'
+$savepointOutput = docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink savepoint $jobId file:///opt/flink/checkpoints/savepoints
+if ($LASTEXITCODE -ne 0) { throw 'Savepoint 创建失败；作业保持运行，禁止 cancel。' }
+
+$savepointText = $savepointOutput -join "`n"
+$savepointPath = [regex]::Match($savepointText, 'file:/\S+').Value.TrimEnd('.')
+if ([string]::IsNullOrWhiteSpace($savepointPath)) { throw '未解析到 savepoint 路径；作业保持运行，禁止 cancel。' }
+Write-Host "Savepoint 已确认：$savepointPath"
+
+docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink cancel $jobId
+if ($LASTEXITCODE -ne 0) { throw 'Savepoint 已创建，但作业取消失败；请先检查 Flink UI。' }
 ```
 
-确认 savepoint 命令成功并记录返回路径后才能取消。回滚 V0.5 时只取消 Flink 作业，并将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，也不要执行 `docker compose down -v`。需要恢复 V0.5 时，用兼容 JAR 从已记录的 savepoint 启动作业。
+确认并持久记录 `$savepointPath`。用兼容 JAR 恢复时，明确将该路径传给 `flink run -s`：
+
+```powershell
+$savepointPath = 'file:/opt/flink/checkpoints/savepoints/savepoint-xxxxxxxxxxxx'
+docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink run -d -m flink-jobmanager:8081 -s $savepointPath -c com.stock.flink.DailyIndicatorJob /opt/flink/usrlib/flink-realtime-job-0.3.0-SNAPSHOT-all.jar --bootstrap-servers kafka:29092
+if ($LASTEXITCODE -ne 0) { throw '从 savepoint 恢复失败；不要删除原 savepoint。' }
+```
+
+回滚 V0.5 时只取消 Flink 作业，并将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，也不要执行 `docker compose down -v`。
 
 ## Stock Analysis App
 
