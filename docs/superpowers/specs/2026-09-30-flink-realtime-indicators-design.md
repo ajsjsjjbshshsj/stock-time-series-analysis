@@ -43,17 +43,19 @@ ClickHouse 落库和业务页面接入留给后续独立阶段。
 
 | 项目 | 选择 |
 |---|---|
-| Flink | Apache Flink 2.3.0 |
+| Flink | Apache Flink 2.2.0 |
 | Java | Java 21 |
 | API | Java DataStream API |
-| Kafka Connector | `flink-connector-kafka` 2.3.0 |
+| Kafka Connector | `flink-connector-kafka` 5.0.0-2.2 |
 | 部署 | Docker Compose Session Cluster |
 | 状态 | Flink Managed Keyed State |
 | 交付语义 | Exactly-once |
 | 序列化 | Jackson camelCase JSON |
 | 数值 | `BigDecimal`，6 位小数，`HALF_UP` |
 
-Flink 2.3.0 是设计时的稳定版本。Flink 2.x 支持 Java 21；官方文档推荐本地
+Flink 2.2.0 与 Kafka Connector 5.0.0-2.2 是当前可发布、版本匹配的组合。最初设计的
+Flink 2.3.0 在 Maven Central 尚无对应 Kafka Connector，Flink 2.3 官方 Kafka 文档也明确
+标注连接器尚未提供，因此不能用于本项目的 Kafka 主链路。Flink 2.x 支持 Java 21；官方文档推荐本地
 Docker Compose 使用 Session Cluster。Kafka exactly-once 要求启用 checkpoint、使用事务
 KafkaSink，并让消费者使用 `read_committed`。
 
@@ -61,8 +63,9 @@ KafkaSink，并让消费者使用 `read_committed`。
 
 - <https://flink.apache.org/downloads/>
 - <https://flink.apache.org/2025/03/24/apache-flink-2.0.0-a-new-era-of-real-time-data-processing/>
-- <https://nightlies.apache.org/flink/flink-docs-release-2.3/docs/deployment/resource-providers/standalone/docker/>
-- <https://nightlies.apache.org/flink/flink-docs-release-2.3/docs/connectors/datastream/kafka/>
+- <https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/deployment/resource-providers/standalone/docker/>
+- <https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/connectors/datastream/kafka/>
+- <https://repo1.maven.org/maven2/org/apache/flink/flink-connector-kafka/maven-metadata.xml>
 
 ## 5. 模块边界
 
@@ -254,7 +257,7 @@ Flink 作业独立验证输入，不能依赖另一个 consumer group 已经校�
 - 三个 V0.5 Kafka Topic 的初始化命令。
 
 使用已通过 `docker manifest inspect` 验证的固定官方镜像标签
-`flink:2.3.0-scala_2.12-java21`，禁止使用 `latest`。
+`flink:2.2.0-scala_2.12-java21`，禁止使用 `latest`。
 
 Flink 容器内 Web UI 仍为 8081，宿主机映射为 `8082:8081`，避免与现有 Kafka UI
 `8081:8080` 冲突。Session Cluster 启动后，通过显式命令提交 shaded job JAR，不由容器

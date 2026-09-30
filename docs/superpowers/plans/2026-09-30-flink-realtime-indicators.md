@@ -2,16 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a Java 21 Apache Flink 2.3.0 job that consumes `StockDailyEvent`, maintains a 20-trading-day keyed window, and publishes exactly-once daily indicator, late-data, and dead-letter Kafka events.
+**Goal:** Build a Java 21 Apache Flink 2.2.0 job that consumes `StockDailyEvent`, maintains a 20-trading-day keyed window, and publishes exactly-once daily indicator, late-data, and dead-letter Kafka events.
 
 **Architecture:** Add a focused `flink-realtime-job` Maven module beside the existing shared model and Spring consumer. The job parses raw Kafka records, validates the V1 contract, keys valid events by `tsCode`, stores at most 20 daily points in managed state, computes six decimal indicators, and routes main, late, and invalid results to separate transactional Kafka sinks. Python Collector supplies an explicit chronological database replay command for state warmup, while Docker Compose supplies a Flink Session Cluster and durable checkpoint volume.
 
-**Tech Stack:** Java 21, Apache Flink 2.3.0 DataStream API, `flink-connector-kafka` 2.3.0, Jackson, Maven, JUnit 5, Python 3.12, SQLAlchemy, confluent-kafka, pytest, Kafka 4.1.0, Docker Compose.
+**Tech Stack:** Java 21, Apache Flink 2.2.0 DataStream API, `flink-connector-kafka` 5.0.0-2.2, Jackson, Maven, JUnit 5, Python 3.12, SQLAlchemy, confluent-kafka, pytest, Kafka 4.1.0, Docker Compose.
 
 ## Global Constraints
 
 - Use Java DataStream API; do not introduce Flink SQL or PyFlink.
-- Use the verified image `flink:2.3.0-scala_2.12-java21`; never use `latest`.
+- Use the verified image `flink:2.2.0-scala_2.12-java21`; never use `latest`.
+- Use `flink-connector-kafka:5.0.0-2.2`; Flink 2.3 has no published matching Kafka connector as of this plan's implementation, so do not mix 2.3 core with a 2.2 connector.
 - Input Topic stays `stock.ods.daily.v1`; do not change `StockDailyEvent` V1.
 - Main output is `stock.dws.daily-indicator.v1`; late output is `stock.late.daily.v1`; invalid output is `stock.flink.dead-letter.v1`.
 - Kafka Key is `tsCode` for valid and late events; invalid events preserve the original Key.
@@ -231,9 +232,10 @@ StockAnalysisSystem/.env
 ```
 
 Add `<module>flink-realtime-job</module>` to the parent. In the new module POM set
-`flink.version=2.3.0`, add `common-model`, `flink-streaming-java` and `flink-clients`
-as `provided`, add `flink-connector-kafka:2.3.0`, Jackson, JUnit, and
-`flink-test-utils:2.3.0` for tests. Configure `maven-shade-plugin` to produce
+`flink.version=2.2.0` and `flink.kafka.connector.version=5.0.0-2.2`, add `common-model`,
+`flink-streaming-java` and `flink-clients` as `provided`, add the versioned
+`flink-connector-kafka`, Jackson, JUnit, and `flink-test-utils:2.2.0` for tests.
+Configure `maven-shade-plugin` to produce
 `flink-realtime-job-${project.version}-all.jar` with main class
 `com.stock.flink.DailyIndicatorJob` and exclude signature files.
 
@@ -246,7 +248,10 @@ as `provided`, add `flink-connector-kafka:2.3.0`, Jackson, JUnit, and
     <version>0.3.0-SNAPSHOT</version>
   </parent>
   <artifactId>flink-realtime-job</artifactId>
-  <properties><flink.version>2.3.0</flink.version></properties>
+  <properties>
+    <flink.version>2.2.0</flink.version>
+    <flink.kafka.connector.version>5.0.0-2.2</flink.kafka.connector.version>
+  </properties>
   <dependencies>
     <dependency>
       <groupId>com.stock</groupId><artifactId>common-model</artifactId>
@@ -262,7 +267,7 @@ as `provided`, add `flink-connector-kafka:2.3.0`, Jackson, JUnit, and
     </dependency>
     <dependency>
       <groupId>org.apache.flink</groupId><artifactId>flink-connector-kafka</artifactId>
-      <version>${flink.version}</version>
+      <version>${flink.kafka.connector.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.flink</groupId><artifactId>flink-test-utils</artifactId>
@@ -743,7 +748,7 @@ git commit -m "feat: wire exactly once flink kafka job"
 def test_compose_declares_flink_and_v05_topics():
     text = COMPOSE.read_text(encoding='utf-8')
     for value in [
-        'flink:2.3.0-scala_2.12-java21',
+        'flink:2.2.0-scala_2.12-java21',
         'flink-jobmanager', 'flink-taskmanager',
         '8082:8081', 'flink_checkpoints',
         'stock.dws.daily-indicator.v1',
@@ -783,7 +788,7 @@ Set Kafka `KAFKA_TRANSACTION_MAX_TIMEOUT_MS=900000`, which is greater than the j
 
 ```yaml
 flink-jobmanager:
-  image: flink:2.3.0-scala_2.12-java21
+  image: flink:2.2.0-scala_2.12-java21
   container_name: stock-flink-jobmanager
   command: jobmanager
   depends_on:
@@ -806,7 +811,7 @@ flink-jobmanager:
     retries: 12
 
 flink-taskmanager:
-  image: flink:2.3.0-scala_2.12-java21
+  image: flink:2.2.0-scala_2.12-java21
   container_name: stock-flink-taskmanager
   command: taskmanager
   depends_on:
