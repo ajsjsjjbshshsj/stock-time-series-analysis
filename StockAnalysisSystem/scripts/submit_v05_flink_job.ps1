@@ -21,8 +21,17 @@ if ([string]::IsNullOrWhiteSpace($jdkHome)) {
 }
 $javaExe = Join-Path $jdkHome 'bin/java.exe'
 if (-not (Test-Path $javaExe)) { throw "JDK executable not found: $javaExe" }
-$javaVersion = (& $javaExe -version 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0 -or $javaVersion -notmatch '(?:openjdk|java) version "21(?:\.|\")') {
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 promotes native stderr to a terminating error under Stop.
+    $ErrorActionPreference = 'Continue'
+    $javaVersion = (& $javaExe -version 2>&1 | Out-String)
+    $versionExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+if ($versionExitCode -ne 0 -or $javaVersion -notmatch '(?:openjdk|java) version "21(?:\.|\")') {
     throw "JDK 21 is required; found: $javaVersion"
 }
 $env:JAVA_HOME = $jdkHome

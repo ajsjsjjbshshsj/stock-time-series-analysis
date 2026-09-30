@@ -28,6 +28,22 @@ def test_compose_declares_flink_session_cluster():
     assert "flink_checkpoints:" in text.split("\nvolumes:\n", 1)[1]
 
 
+def test_flink_checkpoint_volume_is_initialized_before_cluster_start():
+    text = COMPOSE.read_text(encoding="utf-8")
+    assert "  flink-checkpoints-init:\n" in text
+    init = service_block(text, "flink-checkpoints-init")
+    assert "image: flink:2.2.0-scala_2.12-java21" in init
+    assert 'user: "0:0"' in init
+    assert "flink_checkpoints:/opt/flink/checkpoints" in init
+    assert "mkdir -p /opt/flink/checkpoints" in init
+    assert "chown 9999:9999 /opt/flink/checkpoints" in init
+    assert "rm " not in init
+    for name in ("flink-jobmanager", "flink-taskmanager"):
+        service = service_block(text, name)
+        assert "flink-checkpoints-init:" in service
+        assert "condition: service_completed_successfully" in service
+
+
 def test_compose_initializes_v05_topics_without_losing_existing_topics():
     text = COMPOSE.read_text(encoding="utf-8")
     init = service_block(text, "kafka-init")
@@ -64,3 +80,13 @@ def test_submit_script_builds_waits_and_passes_job_configuration():
         "--checkpoint-uri",
     ):
         assert value in text
+
+
+def test_submit_script_captures_java_stderr_without_power_shell_51_termination():
+    text = SUBMIT.read_text(encoding="utf-8")
+    assert "$previousErrorActionPreference = $ErrorActionPreference" in text
+    assert "$ErrorActionPreference = 'Continue'" in text
+    assert "$javaVersion = (& $javaExe -version 2>&1 | Out-String)" in text
+    assert "$versionExitCode = $LASTEXITCODE" in text
+    assert "$ErrorActionPreference = $previousErrorActionPreference" in text
+    assert "$versionExitCode -ne 0" in text
