@@ -84,6 +84,19 @@ class ParseAndValidateProcessFunctionTest {
         assertEquals(raw.payload(), deadLetters().getFirst().originalPayload());
     }
 
+    @Test
+    void shouldRouteNegativeCloseToDeadLetterBeforeKeyedState() throws Exception {
+        RawKafkaRecord raw = raw("000001.SZ", validJson().replace("\"close\":10.55", "\"close\":-0.01"));
+
+        harness.processElement(raw, 1L);
+
+        assertTrue(harness.extractOutputValues().isEmpty(),
+                "a rejected event must not reach the valid stream that feeds keyed state");
+        assertEquals(1, deadLetters().size());
+        assertEquals("VALIDATION", deadLetters().getFirst().errorType());
+        assertTrue(deadLetters().getFirst().errorMessage().contains("close"));
+    }
+
     private List<FlinkDeadLetterEvent> deadLetters() {
         var output = harness.getSideOutput(FlinkOutputTags.DEAD_LETTER);
         return output == null ? List.of() : output.stream().map(record -> record.getValue()).toList();

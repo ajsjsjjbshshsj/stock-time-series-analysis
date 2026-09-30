@@ -29,6 +29,9 @@ public final class StockDailyEventValidator {
         if (!Objects.equals(event.schemaVersion(), supportedSchemaVersion)) {
             errors.add("unsupported schemaVersion");
         }
+        if (event.close() != null && event.close().signum() < 0) {
+            errors.add("close must be greater than or equal to zero");
+        }
         if (event.volume() != null && event.volume().signum() < 0) {
             errors.add("volume must be non-negative");
         }

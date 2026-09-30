@@ -5,6 +5,7 @@ from pathlib import Path
 SYSTEM = Path(__file__).resolve().parents[3]
 COMPOSE = SYSTEM / "infrastructure" / "docker-compose.yml"
 SUBMIT = SYSTEM / "scripts" / "submit_v05_flink_job.ps1"
+ENV_EXAMPLE = SYSTEM / ".env.example"
 
 
 def service_block(text: str, name: str) -> str:
@@ -78,8 +79,12 @@ def test_submit_script_builds_waits_and_passes_job_configuration():
         "--late-topic",
         "--dead-letter-topic",
         "--checkpoint-uri",
+        "--deployment-namespace",
+        "FLINK_DEPLOYMENT_NAMESPACE",
     ):
         assert value in text
+
+    assert "FLINK_DEPLOYMENT_NAMESPACE=stock-flink" in ENV_EXAMPLE.read_text(encoding="utf-8")
 
 
 def test_submit_script_captures_java_stderr_without_power_shell_51_termination():

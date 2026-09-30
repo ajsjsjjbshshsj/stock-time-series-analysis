@@ -94,17 +94,21 @@ public final class DailyIndicatorJob {
 
     static KafkaSink<StockDailyIndicatorEvent> mainSink(FlinkJobConfig config) {
         return sink(config, JsonKafkaRecordSerializationSchema.indicators(config.outputTopic()),
-                "stock-flink-indicator-v1-main-");
+                transactionalIdPrefix(config, "main"));
     }
 
     static KafkaSink<LateStockDailyEvent> lateSink(FlinkJobConfig config) {
         return sink(config, JsonKafkaRecordSerializationSchema.late(config.lateTopic()),
-                "stock-flink-indicator-v1-late-");
+                transactionalIdPrefix(config, "late"));
     }
 
     static KafkaSink<FlinkDeadLetterEvent> deadLetterSink(FlinkJobConfig config) {
         return sink(config, JsonKafkaRecordSerializationSchema.deadLetters(config.deadLetterTopic()),
-                "stock-flink-indicator-v1-dlt-");
+                transactionalIdPrefix(config, "dlt"));
+    }
+
+    private static String transactionalIdPrefix(FlinkJobConfig config, String sinkName) {
+        return config.deploymentNamespace() + "-indicator-v1-" + sinkName + "-";
     }
 
     private static <T> KafkaSink<T> sink(

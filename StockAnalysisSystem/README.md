@@ -256,13 +256,19 @@ $jobArgs = @(
     '--checkpoint-min-pause-ms', (Get-V05Setting 'FLINK_CHECKPOINT_MIN_PAUSE_MS' '5000'),
     '--kafka-transaction-timeout-ms', (Get-V05Setting 'FLINK_KAFKA_TRANSACTION_TIMEOUT_MS' '600000'),
     '--parallelism', (Get-V05Setting 'FLINK_PARALLELISM' '3'),
-    '--schema-version', (Get-V05Setting 'FLINK_SCHEMA_VERSION' '1')
+    '--schema-version', (Get-V05Setting 'FLINK_SCHEMA_VERSION' '1'),
+    '--deployment-namespace', (Get-V05Setting 'FLINK_DEPLOYMENT_NAMESPACE' 'stock-flink')
 )
 
 $jarInContainer = '/opt/flink/usrlib/flink-realtime-job-0.3.0-SNAPSHOT-all.jar'
 docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink run -d -m flink-jobmanager:8081 -s $savepointPath -c com.stock.flink.DailyIndicatorJob $jarInContainer @jobArgs
 if ($LASTEXITCODE -ne 0) { throw '从 savepoint 恢复失败；不要删除原 savepoint。' }
 ```
+
+`FLINK_DEPLOYMENT_NAMESPACE` namespaces Kafka transactional IDs when multiple deployments share
+one Kafka cluster. Its default `stock-flink` preserves the existing
+`stock-flink-indicator-v1-{main|late|dlt}-` prefixes; assign a unique, stable value per deployment
+to avoid producer fencing.
 
 回滚 V0.5 时只取消 Flink 作业，并将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，也不要执行 `docker compose down -v`。
 

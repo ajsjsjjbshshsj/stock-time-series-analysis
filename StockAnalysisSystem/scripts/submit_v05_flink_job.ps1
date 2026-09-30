@@ -84,7 +84,8 @@ $jobArgs = @(
     '--checkpoint-min-pause-ms', (Get-Setting 'FLINK_CHECKPOINT_MIN_PAUSE_MS' '5000'),
     '--kafka-transaction-timeout-ms', (Get-Setting 'FLINK_KAFKA_TRANSACTION_TIMEOUT_MS' '600000'),
     '--parallelism', (Get-Setting 'FLINK_PARALLELISM' '3'),
-    '--schema-version', (Get-Setting 'FLINK_SCHEMA_VERSION' '1')
+    '--schema-version', (Get-Setting 'FLINK_SCHEMA_VERSION' '1'),
+    '--deployment-namespace', (Get-Setting 'FLINK_DEPLOYMENT_NAMESPACE' 'stock-flink')
 )
 & docker compose -f $composeFile exec -T flink-jobmanager flink run -d -m flink-jobmanager:8081 -c com.stock.flink.DailyIndicatorJob $jarInContainer @jobArgs
 if ($LASTEXITCODE -ne 0) { throw 'Flink job submission failed.' }

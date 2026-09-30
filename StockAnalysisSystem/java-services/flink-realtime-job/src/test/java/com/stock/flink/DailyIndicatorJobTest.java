@@ -35,7 +35,8 @@ class DailyIndicatorJobTest {
     private static final FlinkJobConfig CONFIG = new FlinkJobConfig(
             "broker:9092", "stock.ods.daily.v1", "stock.dws.daily-indicator.v1",
             "stock.late.daily.v1", "stock.flink.dead-letter.v1", "stock-flink-daily-indicator-v1",
-            "file:///tmp/test-flink-checkpoints", 10_000L, 60_000L, 5_000L, 600_000L, 3, 1);
+            "file:///tmp/test-flink-checkpoints", 10_000L, 60_000L, 5_000L, 600_000L, 3, 1,
+            "team-a-stock-flink");
 
     @Test
     void shouldConfigureExactlyOnceCheckpointsAndFixedDelayRestart() {
@@ -75,13 +76,13 @@ class DailyIndicatorJobTest {
     @Test
     void shouldMakeAllThreeSinksTransactionalWithDistinctStablePrefixes() throws Exception {
         Map<String, KafkaSink<?>> sinks = Map.of(
-                "stock-flink-indicator-v1-main-", DailyIndicatorJob.mainSink(CONFIG),
-                "stock-flink-indicator-v1-late-", DailyIndicatorJob.lateSink(CONFIG),
-                "stock-flink-indicator-v1-dlt-", DailyIndicatorJob.deadLetterSink(CONFIG));
+                "team-a-stock-flink-indicator-v1-main-", DailyIndicatorJob.mainSink(CONFIG),
+                "team-a-stock-flink-indicator-v1-late-", DailyIndicatorJob.lateSink(CONFIG),
+                "team-a-stock-flink-indicator-v1-dlt-", DailyIndicatorJob.deadLetterSink(CONFIG));
         Map<String, String> topics = Map.of(
-                "stock-flink-indicator-v1-main-", CONFIG.outputTopic(),
-                "stock-flink-indicator-v1-late-", CONFIG.lateTopic(),
-                "stock-flink-indicator-v1-dlt-", CONFIG.deadLetterTopic());
+                "team-a-stock-flink-indicator-v1-main-", CONFIG.outputTopic(),
+                "team-a-stock-flink-indicator-v1-late-", CONFIG.lateTopic(),
+                "team-a-stock-flink-indicator-v1-dlt-", CONFIG.deadLetterTopic());
 
         for (var entry : sinks.entrySet()) {
             KafkaSink<?> sink = entry.getValue();

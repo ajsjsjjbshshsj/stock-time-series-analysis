@@ -24,6 +24,7 @@ class FlinkJobConfigTest {
         assertEquals(600_000L, config.kafkaTransactionTimeoutMs());
         assertEquals(3, config.parallelism());
         assertEquals(1, config.supportedSchemaVersion());
+        assertEquals("stock-flink", config.deploymentNamespace());
     }
 
     @Test
@@ -35,7 +36,8 @@ class FlinkJobConfigTest {
                 "--late-topic", "late",
                 "--dead-letter-topic", "dead-letter",
                 "--group-id", "test-group",
-                "--checkpoint-uri", "file:///tmp/checkpoints"
+                "--checkpoint-uri", "file:///tmp/checkpoints",
+                "--deployment-namespace", "team-a-stock-flink"
         });
 
         assertEquals("localhost:9092", config.bootstrapServers());
@@ -45,6 +47,7 @@ class FlinkJobConfigTest {
         assertEquals("dead-letter", config.deadLetterTopic());
         assertEquals("test-group", config.consumerGroup());
         assertEquals("file:///tmp/checkpoints", config.checkpointUri());
+        assertEquals("team-a-stock-flink", config.deploymentNamespace());
     }
 
     @Test
@@ -53,7 +56,7 @@ class FlinkJobConfigTest {
                 "--checkpoint-interval-ms", "1000",
                 "--checkpoint-timeout-ms", "2000",
                 "--checkpoint-min-pause-ms", "3000",
-                "--kafka-transaction-timeout-ms", "4000",
+                "--kafka-transaction-timeout-ms", "32001",
                 "--parallelism", "2",
                 "--schema-version", "1"
         });
@@ -61,7 +64,7 @@ class FlinkJobConfigTest {
         assertEquals(1000L, config.checkpointIntervalMs());
         assertEquals(2000L, config.checkpointTimeoutMs());
         assertEquals(3000L, config.checkpointMinPauseMs());
-        assertEquals(4000L, config.kafkaTransactionTimeoutMs());
+        assertEquals(32001L, config.kafkaTransactionTimeoutMs());
         assertEquals(2, config.parallelism());
     }
 
@@ -75,5 +78,29 @@ class FlinkJobConfigTest {
             assertThrows(IllegalArgumentException.class,
                     () -> FlinkJobConfig.fromArgs(new String[] {"--" + option, "0"}), option);
         }
+    }
+
+    @Test
+    void shouldRejectTransactionTimeoutEqualToCheckpointAndRestartBudget() {
+        assertThrows(IllegalArgumentException.class, () -> FlinkJobConfig.fromArgs(new String[] {
+                "--checkpoint-timeout-ms", "60000",
+                "--kafka-transaction-timeout-ms", "90000"
+        }));
+    }
+
+    @Test
+    void shouldAcceptTransactionTimeoutGreaterThanCheckpointAndRestartBudget() {
+        FlinkJobConfig config = FlinkJobConfig.fromArgs(new String[] {
+                "--checkpoint-timeout-ms", "60000",
+                "--kafka-transaction-timeout-ms", "90001"
+        });
+
+        assertEquals(90001L, config.kafkaTransactionTimeoutMs());
+    }
+
+    @Test
+    void shouldRejectBlankDeploymentNamespace() {
+        assertThrows(IllegalArgumentException.class,
+                () -> FlinkJobConfig.fromArgs(new String[] {"--deployment-namespace", " "}));
     }
 }
