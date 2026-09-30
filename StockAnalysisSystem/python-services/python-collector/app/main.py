@@ -209,7 +209,7 @@ def cmd_replay_daily_events(args):
     finally:
         if producer is not None:
             try:
-                producer.close()
+                producer.close(flush=False)
             except Exception:
                 if failure is None:
                     failure = ReplayFailure(

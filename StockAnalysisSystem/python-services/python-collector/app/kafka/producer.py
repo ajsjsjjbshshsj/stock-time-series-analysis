@@ -88,8 +88,14 @@ class StockKafkaProducer:
 
         return statistics
 
-    def close(self) -> dict[str, object]:
-        return self.flush()
+    def close(self, flush: bool = True) -> dict[str, object]:
+        """Release the client, optionally flushing pending deliveries first."""
+        try:
+            return self.flush() if flush else self.statistics
+        finally:
+            close_client = getattr(self._client, 'close', None)
+            if callable(close_client):
+                close_client()
 
     @property
     def statistics(self) -> dict[str, object]:

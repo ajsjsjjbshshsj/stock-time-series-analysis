@@ -1,6 +1,10 @@
 """Read-only MySQL daily history replay into the existing Kafka input topic."""
 
 from app.events.event_factory import EventFactory
+from app.utils.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class ReplayFailure(RuntimeError):
@@ -31,10 +35,22 @@ class DailyEventReplayJob:
                 start_date, end_date, batch_size
             ):
                 for record in batch:
-                    event = EventFactory.create_daily_event(
-                        record, trace_id=trace_id
-                    )
-                    self.producer.send_event(event)
+                    try:
+                        event = EventFactory.create_daily_event(
+                            record, trace_id=trace_id
+                        )
+                        self.producer.send_event(event)
+                    except Exception:
+                        # Settle earlier accepted records, but keep the record
+                        # error primary and do not count this incomplete batch.
+                        try:
+                            self.producer.flush()
+                        except Exception as settle_exc:
+                            logger.warning(
+                                'Kafka replay partial-batch settlement failed: %s',
+                                type(settle_exc).__name__,
+                            )
+                        raise
                 self.producer.flush()
                 published_count += len(batch)
                 batch_count += 1

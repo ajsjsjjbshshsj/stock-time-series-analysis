@@ -73,7 +73,37 @@ def test_replay_stops_on_first_kafka_error_with_confirmed_counts(failure_at):
     assert error.value.published_count == 1
     assert error.value.batch_count == 1
     assert producer.send_event.call_count == 2
-    assert producer.flush.call_count == (1 if failure_at == 'send' else 2)
+    assert producer.flush.call_count == 2
+
+
+@pytest.mark.parametrize('settlement_fails', [False, True])
+def test_replay_settles_partial_batch_once_but_keeps_enqueue_error_primary(
+    settlement_fails
+):
+    from app.jobs.daily_event_replay_job import DailyEventReplayJob, ReplayFailure
+
+    repository = MagicMock()
+    repository.iter_daily_records.return_value = [[
+        record('000001.SZ'), record('000002.SZ'), record('000003.SZ')
+    ]]
+    producer = MagicMock()
+    enqueue_error = RuntimeError('enqueue failed')
+    producer.send_event.side_effect = [None, enqueue_error]
+    if settlement_fails:
+        producer.flush.side_effect = RuntimeError('secret payload')
+
+    with patch('app.jobs.daily_event_replay_job.logger', create=True) as logger:
+        with pytest.raises(ReplayFailure) as error:
+            DailyEventReplayJob(repository, producer).execute(START, END, 3)
+
+    assert error.value.__cause__ is enqueue_error
+    assert error.value.published_count == 0
+    assert error.value.batch_count == 0
+    assert producer.send_event.call_count == 2
+    producer.flush.assert_called_once_with()
+    if settlement_fails:
+        assert logger.warning.called
+        assert 'secret payload' not in str(logger.method_calls)
 
 
 def test_replay_rejects_reversed_range_before_reading():
@@ -138,7 +168,7 @@ def test_cli_uses_direct_producer_and_closes_both_resources():
 
     assert code == 0
     job.return_value.execute.assert_called_once_with(START, END, 2)
-    producer.close.assert_called_once_with()
+    producer.close.assert_called_once_with(flush=False)
     db.close.assert_called_once_with()
     db.create_tables.assert_not_called()
 
@@ -167,5 +197,49 @@ def test_cli_reports_replay_failure_without_logging_broker_details():
 
     assert code == 1
     assert 'broker' not in str(logger.method_calls).lower()
-    producer.close.assert_called_once_with()
+    producer.close.assert_called_once_with(flush=False)
+
+
+@pytest.mark.parametrize('record_count,expected_flushes', [
+    (0, 0), (1, 1), (3, 2),
+])
+def test_cli_flushes_exactly_once_per_nonempty_database_batch(
+    record_count, expected_flushes
+):
+    from app.kafka.producer import StockKafkaProducer
+    from app.main import cmd_replay_daily_events
+
+    db = MagicMock()
+    session = MagicMock()
+    rows = [record(f'{index:06d}.SZ').to_dict()
+            for index in range(record_count)]
+    for row in rows:
+        del row['source']
+    session.execute.return_value.mappings.return_value = iter(rows)
+
+    @contextmanager
+    def session_scope():
+        yield session
+
+    db.session_scope.side_effect = session_scope
+    client = MagicMock()
+    client.flush.return_value = 0
+    client.produce.side_effect = lambda **kwargs: kwargs['on_delivery'](
+        None, MagicMock()
+    )
+    producer = StockKafkaProducer(
+        client=client,
+        producer_config={'bootstrap.servers': 'localhost:9092'},
+        daily_topic='stock.ods.daily.v1',
+    )
+    with patch('database.db_connector.DatabaseConnector', return_value=db), \
+         patch('app.kafka.producer.StockKafkaProducer', return_value=producer):
+        code = cmd_replay_daily_events(MagicMock(
+            start='20260801', end='20260828', batch_size=2
+        ))
+
+    assert code == 0
+    assert client.produce.call_count == record_count
+    assert client.flush.call_count == expected_flushes
+    client.close.assert_called_once_with()
     db.close.assert_called_once_with()

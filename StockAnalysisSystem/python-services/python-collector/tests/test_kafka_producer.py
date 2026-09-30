@@ -117,6 +117,17 @@ def test_close_flushes_messages():
     producer.close()
 
     client.flush.assert_called_once()
+    client.close.assert_called_once_with()
+
+
+def test_close_without_flush_releases_client_without_extra_flush():
+    client = MagicMock()
+    producer = create_producer(client)
+
+    producer.close(flush=False)
+
+    client.flush.assert_not_called()
+    client.close.assert_called_once_with()
 
 
 def test_successful_batch_is_not_affected_by_previous_failure():
