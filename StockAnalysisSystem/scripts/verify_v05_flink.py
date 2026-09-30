@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -19,6 +20,7 @@ OUTPUT_FIELDS = {
     "volMa5", "volMa10", "volumeRatio", "windowSize", "isWarmup",
     "calculationTime", "schemaVersion",
 }
+DECIMAL_FIELDS = ("close", "volume", "pctChg", "ma5", "ma10", "ma20", "volMa5", "volMa10", "volumeRatio")
 RECOVERY_FILE = Path(__file__).resolve().parents[1] / ".tmp" / "v05-recovery.json"
 
 
@@ -88,6 +90,12 @@ def validate_results(records, expected=None, allowed_duplicate_ids=frozenset()):
         seen.add(event_id)
         assert record["key"] == value["tsCode"], f"Kafka key mismatch for {event_id}"
         assert set(value) == OUTPUT_FIELDS, f"JSON fields mismatch for {event_id}: {set(value) ^ OUTPUT_FIELDS}"
+        for field in DECIMAL_FIELDS:
+            number = value[field]
+            if number is not None:
+                assert isinstance(number, Decimal) and number.as_tuple().exponent == -6, (
+                    f"{field} decimal scale must be 6 for {event_id}; got {number!r}"
+                )
         assert value["schemaVersion"] == 1, f"schemaVersion mismatch for {event_id}"
         timestamp = datetime.fromisoformat(value["calculationTime"])
         assert timestamp.utcoffset() is not None, f"calculationTime lacks timezone for {event_id}"
@@ -183,6 +191,40 @@ def choose_job_id(explicit, scenario, manifest, base_url, timeout):
     return resolve_job_id(base_url, timeout)
 
 
+def inspect_taskmanager(timeout):
+    try:
+        process = subprocess.run(
+            ["docker", "inspect", "--type", "container", "stock-flink-taskmanager"],
+            capture_output=True, text=True, check=True, timeout=min(timeout, 10),
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"could not inspect stock-flink-taskmanager: {error}") from error
+    containers = json.loads(process.stdout)
+    assert len(containers) == 1, f"expected one stock-flink-taskmanager container, got {len(containers)}"
+    container = containers[0]
+    labels = container["Config"]["Labels"]
+    return {
+        "containerId": container["Id"],
+        "containerName": container["Name"],
+        "composeProject": labels["com.docker.compose.project"],
+        "composeService": labels["com.docker.compose.service"],
+        "startedAt": container["State"]["StartedAt"],
+        "running": container["State"]["Running"],
+        "restartCount": container["RestartCount"],
+    }
+
+
+def validate_restart_evidence(before, after):
+    assert before["composeService"] == "flink-taskmanager", "before composeService is not flink-taskmanager"
+    for field in ("containerId", "containerName", "composeProject", "composeService"):
+        assert after[field] == before[field], f"TaskManager {field} changed across restart"
+    assert after["running"], "TaskManager is not running after restart"
+    prior = datetime.fromisoformat(before["startedAt"].replace("Z", "+00:00"))
+    current = datetime.fromisoformat(after["startedAt"].replace("Z", "+00:00"))
+    assert prior.utcoffset() is not None and current.utcoffset() is not None, "TaskManager StartedAt lacks timezone"
+    assert current > prior, f"TaskManager StartedAt did not advance: {before['startedAt']} -> {after['startedAt']}"
+
+
 def job_state(base_url, job_id, timeout):
     job = get_json(f"{base_url}/jobs/{job_id}", timeout)
     assert job["state"] == "RUNNING", f"Flink job is {job['state']}"
@@ -205,19 +247,27 @@ def wait_for_job_running(base_url, job_id, timeout):
 
 def completed_checkpoint(base_url, job_id, timeout):
     data = get_json(f"{base_url}/jobs/{job_id}/checkpoints", timeout)
-    latest = data.get("latest", {}).get("completed")
-    return None if latest is None else latest["id"]
+    return data.get("latest", {}).get("completed")
 
 
-def wait_for_checkpoint(base_url, job_id, after, timeout):
+def checkpoint_is_after_barrier(checkpoint, after_id, barrier_ms):
+    return (
+        checkpoint is not None
+        and checkpoint.get("status") == "COMPLETED"
+        and (after_id is None or checkpoint["id"] > after_id)
+        and checkpoint["trigger_timestamp"] >= barrier_ms
+    )
+
+
+def wait_for_checkpoint(base_url, job_id, after_id, barrier_ms, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         job_state(base_url, job_id, timeout)
         checkpoint = completed_checkpoint(base_url, job_id, timeout)
-        if checkpoint is not None and (after is None or checkpoint > after):
+        if checkpoint_is_after_barrier(checkpoint, after_id, barrier_ms):
             return checkpoint
         time.sleep(1)
-    raise TimeoutError(f"no completed checkpoint after {after} within {timeout}s")
+    raise TimeoutError(f"no completed checkpoint after ID {after_id} and observation {barrier_ms}ms within {timeout}s")
 
 
 def open_consumer(bootstrap, topic, timeout, from_end=True):
@@ -302,6 +352,34 @@ def make_producer(bootstrap):
 
 def send_rows(producer, args, rows):
     return publish(producer, args.input_topic, [{"key": row["tsCode"], "payload": row} for row in rows], args.timeout)
+
+
+def reconsume_committed(bootstrap, topic, code, expected, timeout, quiet=25):
+    """Rewind a new read_committed group after a barrier checkpoint and catch late replays."""
+    consumer = open_consumer(bootstrap, topic, timeout, from_end=False)
+    try:
+        actual = collect(consumer, {code}, len(expected), timeout, quiet=quiet)
+        validate_results(actual, expected)
+        return actual
+    finally:
+        consumer.close()
+
+
+def observation_epoch_ms():
+    return time.time_ns() // 1_000_000
+
+
+def recovery_manifest(run_id, code, job_id, taskmanager, checkpoint, barrier_ms, actual, rows):
+    return {
+        "runId": run_id, "tsCode": code, "jobId": job_id,
+        "taskmanager": taskmanager,
+        "observationBarrierMs": barrier_ms,
+        "checkpointId": checkpoint["id"],
+        "checkpointTriggerTimestamp": checkpoint["trigger_timestamp"],
+        "eventIds": [item["value"]["eventId"] for item in actual],
+        "sourceEventIds": [row["eventId"] for row in rows],
+        "writtenAt": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def scenario_valid(args):
@@ -394,49 +472,59 @@ def scenario_invalid(args):
 
 
 def scenario_recovery_before(args):
-    assert not RECOVERY_FILE.exists(), f"recovery manifest already exists: {RECOVERY_FILE}; preserve/resolve it before a new run"
+    recovery_file = getattr(args, "recovery_file", RECOVERY_FILE)
+    assert not recovery_file.exists(), f"recovery manifest already exists: {recovery_file}; preserve/resolve it before a new run"
     run_id, code, _ = new_run()
     main = open_consumer(args.bootstrap_servers, args.output_topic, args.timeout)
     try:
+        taskmanager = inspect_taskmanager(args.timeout)
+        assert taskmanager["running"] and taskmanager["composeService"] == "flink-taskmanager", "TaskManager not running"
         baseline = completed_checkpoint(args.flink_url, args.job_id, args.timeout)
         producer = make_producer(args.bootstrap_servers)
         rows = build_rows(code, run_id, 10)
         send_rows(producer, args, rows)
-        actual = collect(main, {code}, 10, args.timeout)
-        validate_results(actual, expected_indicators(rows))
-        checkpoint = wait_for_checkpoint(args.flink_url, args.job_id, baseline, args.timeout)
-        manifest = {
-            "runId": run_id, "tsCode": code, "jobId": args.job_id, "checkpointId": checkpoint,
-            "eventIds": [item["value"]["eventId"] for item in actual],
-            "sourceEventIds": [row["eventId"] for row in rows],
-            "writtenAt": datetime.now(timezone.utc).isoformat(),
-        }
-        RECOVERY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RECOVERY_FILE.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        return {"manifest": str(RECOVERY_FILE), "checkpointId": checkpoint, "stock": code, "committed": 10}
+        expected = expected_indicators(rows)
+        validate_results(collect(main, {code}, 10, args.timeout, quiet=0), expected)
+        barrier_ms = observation_epoch_ms()
+        checkpoint = wait_for_checkpoint(
+            args.flink_url, args.job_id, None if baseline is None else baseline["id"], barrier_ms, args.timeout)
+        actual = reconsume_committed(args.bootstrap_servers, args.output_topic, code, expected, args.timeout)
+        manifest = recovery_manifest(run_id, code, args.job_id, taskmanager, checkpoint, barrier_ms, actual, rows)
+        recovery_file.parent.mkdir(parents=True, exist_ok=True)
+        recovery_file.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return {"manifest": str(recovery_file), "checkpointId": checkpoint["id"],
+                "checkpointTriggerTimestamp": checkpoint["trigger_timestamp"], "stock": code, "committed": 10}
     finally:
         main.close()
 
 
 def scenario_recovery_after(args):
-    manifest = json.loads(RECOVERY_FILE.read_text(encoding="utf-8"))
+    recovery_file = getattr(args, "recovery_file", RECOVERY_FILE)
+    manifest = json.loads(recovery_file.read_text(encoding="utf-8"))
     run_id, code = manifest["runId"], manifest["tsCode"]
     assert args.job_id == manifest["jobId"], "recovery Job ID does not match manifest"
     assert len(manifest["eventIds"]) == 10 and len(set(manifest["eventIds"])) == 10, "invalid recovery manifest IDs"
+    assert manifest["checkpointTriggerTimestamp"] >= manifest["observationBarrierMs"], "pre-restart checkpoint predates observation"
     wait_for_job_running(args.flink_url, args.job_id, args.timeout)
+    taskmanager = inspect_taskmanager(args.timeout)
+    validate_restart_evidence(manifest["taskmanager"], taskmanager)
     main = open_consumer(args.bootstrap_servers, args.output_topic, args.timeout, from_end=False)
     try:
         producer = make_producer(args.bootstrap_servers)
         send_rows(producer, args, build_rows(code, run_id, 10, start=11))
-        actual = collect(main, {code}, 20, args.timeout, quiet=15)
         expected = expected_indicators(build_rows(code, run_id, 20))
-        validate_results(actual, expected)
+        validate_results(collect(main, {code}, 20, args.timeout, quiet=0), expected)
+        barrier_ms = observation_epoch_ms()
+        checkpoint = wait_for_checkpoint(args.flink_url, args.job_id, manifest["checkpointId"], barrier_ms, args.timeout)
+        actual = reconsume_committed(args.bootstrap_servers, args.output_topic, code, expected, args.timeout)
         before_ids = [item["value"]["eventId"] for item in actual if item["value"]["tradeDate"] <= "2026-08-10"]
         assert set(before_ids) == set(manifest["eventIds"]), "pre-restart committed event IDs changed"
         assert len({item["value"]["tradeDate"] for item in actual}) == 20, "missing or duplicated recovery date"
-        checkpoint = wait_for_checkpoint(args.flink_url, args.job_id, manifest["checkpointId"], args.timeout)
         return {"runId": run_id, "stock": code, "committed": 20,
-                "beforeCheckpointId": manifest["checkpointId"], "afterCheckpointId": checkpoint}
+                "taskmanagerStartedAtBefore": manifest["taskmanager"]["startedAt"],
+                "taskmanagerStartedAtAfter": taskmanager["startedAt"],
+                "beforeCheckpointId": manifest["checkpointId"], "afterCheckpointId": checkpoint["id"],
+                "afterCheckpointTriggerTimestamp": checkpoint["trigger_timestamp"]}
     finally:
         main.close()
 
@@ -457,12 +545,14 @@ def main(argv=None):
     parser.add_argument("--dlt-topic", default="stock.flink.dead-letter.v1")
     parser.add_argument("--flink-url", default="http://localhost:8082")
     parser.add_argument("--job-id", help="Flink Job ID; discovered by name when omitted")
+    parser.add_argument("--recovery-file", type=Path, default=RECOVERY_FILE,
+                        help="Recovery manifest path; use a new path for each recovery run")
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args(argv)
     args.flink_url = args.flink_url.rstrip("/")
     started = time.monotonic()
     try:
-        manifest = json.loads(RECOVERY_FILE.read_text(encoding="utf-8")) if args.scenario == "recovery-after" else None
+        manifest = json.loads(args.recovery_file.read_text(encoding="utf-8")) if args.scenario == "recovery-after" else None
         args.job_id = choose_job_id(args.job_id, args.scenario, manifest, args.flink_url, args.timeout)
         if args.scenario == "recovery-after":
             wait_for_job_running(args.flink_url, args.job_id, args.timeout)

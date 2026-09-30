@@ -1,9 +1,13 @@
 import importlib.util
+import json
+import sys
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import simplejson
 
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "verify_v05_flink.py"
@@ -175,3 +179,199 @@ def test_recovery_after_uses_saved_job_id_during_restart(monkeypatch):
 
     assert MODULE.choose_job_id(None, "recovery-after", manifest, "http://flink", 5) == "saved-job"
     assert MODULE.choose_job_id("explicit", "recovery-after", manifest, "http://flink", 5) == "explicit"
+
+
+def test_result_validation_rejects_numerically_equal_wrong_decimal_scale():
+    expected = MODULE.expected_indicators(fixture_rows(20))[-1]
+    decimal_fields = ("close", "volume", "pctChg", "ma5", "ma10", "ma20", "volMa5", "volMa10", "volumeRatio")
+
+    for field in decimal_fields:
+        record = result_record(expected)
+        record["value"][field] = expected[field].quantize(Decimal("0.0000001"))
+        assert record["value"][field] == expected[field]
+        with pytest.raises(AssertionError, match=rf"{field}.*scale"):
+            MODULE.validate_results([record], [expected])
+
+    record = result_record(expected)
+    record["value"]["close"] = int(expected["close"])
+    with pytest.raises(AssertionError, match="close.*scale"):
+        MODULE.validate_results([record], [expected])
+
+
+def taskmanager_fixture(started_at="2026-09-30T10:00:00Z"):
+    return {
+        "containerId": "stable-container-id", "containerName": "/stock-flink-taskmanager",
+        "composeProject": "infrastructure", "composeService": "flink-taskmanager",
+        "startedAt": started_at, "running": True,
+    }
+
+
+def test_restart_evidence_requires_same_container_and_newer_started_at():
+    before = taskmanager_fixture()
+    MODULE.validate_restart_evidence(before, taskmanager_fixture("2026-09-30T10:01:00Z"))
+
+    with pytest.raises(AssertionError, match="StartedAt"):
+        MODULE.validate_restart_evidence(before, taskmanager_fixture())
+    with pytest.raises(AssertionError, match="containerId"):
+        MODULE.validate_restart_evidence(before, {**taskmanager_fixture("2026-09-30T10:01:00Z"), "containerId": "replacement"})
+    with pytest.raises(AssertionError, match="composeService"):
+        MODULE.validate_restart_evidence(before, {**taskmanager_fixture("2026-09-30T10:01:00Z"), "composeService": "kafka"})
+
+
+def test_checkpoint_must_be_completed_and_triggered_after_observation():
+    checkpoint = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+    assert MODULE.checkpoint_is_after_barrier(checkpoint, after_id=20, barrier_ms=1500)
+    assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "trigger_timestamp": 1499}, 20, 1500)
+    assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "id": 20}, 20, 1500)
+    assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "status": "IN_PROGRESS"}, 20, 1500)
+
+
+def test_wait_for_checkpoint_ignores_new_id_triggered_before_barrier(monkeypatch):
+    stale = {"id": 21, "status": "COMPLETED", "trigger_timestamp": 1499}
+    fresh = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+    checks = iter([stale, fresh])
+    monkeypatch.setattr(MODULE, "completed_checkpoint", lambda *_args: next(checks))
+    monkeypatch.setattr(MODULE, "job_state", lambda *_args: {"state": "RUNNING"})
+    monkeypatch.setattr(MODULE.time, "sleep", lambda _seconds: None)
+
+    assert MODULE.wait_for_checkpoint("http://flink", "job", 20, 1500, 5) == fresh
+
+
+def test_recovery_manifest_keeps_restart_and_checkpoint_barriers():
+    row = fixture_rows(1)[0]
+    actual = [result_record(MODULE.expected_indicators([row])[0])]
+    checkpoint = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+
+    manifest = MODULE.recovery_manifest("run", row["tsCode"], "job", taskmanager_fixture(), checkpoint, 1400, actual, [row])
+
+    assert manifest["taskmanager"] == taskmanager_fixture()
+    assert manifest["observationBarrierMs"] == 1400
+    assert manifest["checkpointId"] == 22
+    assert manifest["checkpointTriggerTimestamp"] == 1500
+
+
+class FakeKafkaMessage:
+    def __init__(self, record):
+        self.record = record
+
+    def error(self):
+        return None
+
+    def key(self):
+        return self.record["key"].encode("utf-8")
+
+    def value(self):
+        return simplejson.dumps(self.record["value"], use_decimal=True).encode("utf-8")
+
+    def topic(self):
+        return "stock.dws.daily-indicator.v1"
+
+    def partition(self):
+        return 1
+
+    def offset(self):
+        return 7
+
+
+def test_post_checkpoint_reconsume_detects_delayed_committed_duplicate(monkeypatch):
+    expected = MODULE.expected_indicators(fixture_rows(1))[0]
+    message = FakeKafkaMessage(result_record(expected))
+    messages = iter([message, None, None, message])
+    consumer = SimpleNamespace(poll=lambda _timeout: next(messages, None), close=lambda: None)
+    opened = []
+
+    def open_fresh(*args, **kwargs):
+        opened.append(kwargs)
+        return consumer
+
+    monkeypatch.setattr(MODULE, "open_consumer", open_fresh)
+
+    with pytest.raises(AssertionError, match="extra committed output"):
+        MODULE.reconsume_committed("localhost:9092", "stock.dws.daily-indicator.v1", expected["tsCode"], [expected], 5, quiet=1)
+    assert opened == [{"from_end": False}]
+
+
+def test_open_consumer_seeks_each_partition_to_high_only_for_live_tail(monkeypatch):
+    class FakeConsumer:
+        def __init__(self, config):
+            self.config = config
+            self.seeks = []
+
+        def subscribe(self, topics):
+            self.topics = topics
+
+        def assignment(self):
+            return [SimpleNamespace(topic="out", partition=0), SimpleNamespace(topic="out", partition=1)]
+
+        def get_watermark_offsets(self, partition, timeout):
+            return 0, 12 + partition.partition
+
+        def seek(self, partition):
+            self.seeks.append((partition.topic, partition.partition, partition.offset))
+
+    monkeypatch.setitem(sys.modules, "confluent_kafka", SimpleNamespace(
+        Consumer=FakeConsumer,
+        TopicPartition=lambda topic, partition, offset: SimpleNamespace(topic=topic, partition=partition, offset=offset),
+    ))
+
+    tail = MODULE.open_consumer("localhost:9092", "out", 5, from_end=True)
+    rewind = MODULE.open_consumer("localhost:9092", "out", 5, from_end=False)
+
+    assert tail.config["isolation.level"] == "read_committed"
+    assert tail.seeks == [("out", 0, 12), ("out", 1, 13)]
+    assert rewind.seeks == []
+    assert tail.config["group.id"] != rewind.config["group.id"]
+
+
+def test_recovery_before_records_post_observation_checkpoint_and_container(monkeypatch):
+    row = fixture_rows(1)[0]
+    actual = [result_record(MODULE.expected_indicators([row])[0])]
+    saved = {}
+    events = []
+    file = SimpleNamespace(
+        exists=lambda: False,
+        parent=SimpleNamespace(mkdir=lambda **_kwargs: None),
+        write_text=lambda contents, **_kwargs: saved.update(json.loads(contents)),
+    )
+    monkeypatch.setattr(MODULE, "RECOVERY_FILE", file)
+    monkeypatch.setattr(MODULE, "new_run", lambda: ("run", row["tsCode"], "other"))
+    monkeypatch.setattr(MODULE, "build_rows", lambda *_args: [row])
+    monkeypatch.setattr(MODULE, "open_consumer", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(MODULE, "make_producer", lambda *_args: object())
+    monkeypatch.setattr(MODULE, "send_rows", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "collect", lambda *_args, **_kwargs: events.append("observed") or actual)
+    monkeypatch.setattr(MODULE, "inspect_taskmanager", lambda *_args: taskmanager_fixture())
+    monkeypatch.setattr(MODULE, "completed_checkpoint", lambda *_args: {"id": 20})
+    monkeypatch.setattr(MODULE, "observation_epoch_ms", lambda: 1400, raising=False)
+    monkeypatch.setattr(MODULE, "wait_for_checkpoint", lambda _url, _job, after_id, barrier, _timeout: (
+        events.append(("checkpoint", after_id, barrier)) or
+        {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+    ))
+    monkeypatch.setattr(MODULE, "reconsume_committed", lambda *_args, **_kwargs: events.append("reconsumed") or actual, raising=False)
+    args = SimpleNamespace(timeout=5, flink_url="http://flink", job_id="job",
+                           bootstrap_servers="localhost:9092", output_topic="out")
+
+    MODULE.scenario_recovery_before(args)
+
+    assert events == ["observed", ("checkpoint", 20, 1400), "reconsumed"]
+    assert saved["taskmanager"] == taskmanager_fixture()
+    assert saved["checkpointTriggerTimestamp"] == 1500
+    assert saved["observationBarrierMs"] == 1400
+
+
+def test_recovery_after_rejects_no_restart_before_publishing(monkeypatch):
+    before = taskmanager_fixture()
+    manifest = {
+        "runId": "run", "tsCode": "V05TEST.SZ", "jobId": "job", "taskmanager": before,
+        "eventIds": [f"id-{n}" for n in range(10)], "checkpointId": 20,
+        "observationBarrierMs": 1400, "checkpointTriggerTimestamp": 1500,
+    }
+    monkeypatch.setattr(MODULE, "RECOVERY_FILE", SimpleNamespace(read_text=lambda **_kwargs: json.dumps(manifest)))
+    monkeypatch.setattr(MODULE, "inspect_taskmanager", lambda *_args: taskmanager_fixture())
+    monkeypatch.setattr(MODULE, "wait_for_job_running", lambda *_args: None)
+    monkeypatch.setattr(MODULE, "open_consumer", lambda *_args, **_kwargs: pytest.fail("must not read/publish before restart proof"))
+    args = SimpleNamespace(timeout=5, flink_url="http://flink", job_id="job",
+                           bootstrap_servers="localhost:9092", output_topic="out")
+
+    with pytest.raises(AssertionError, match="StartedAt"):
+        MODULE.scenario_recovery_after(args)
