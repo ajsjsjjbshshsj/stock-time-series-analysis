@@ -219,8 +219,9 @@ def test_restart_evidence_requires_same_container_and_newer_started_at():
 
 
 def test_checkpoint_must_be_completed_and_triggered_after_observation():
-    checkpoint = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+    checkpoint = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1501}
     assert MODULE.checkpoint_is_after_barrier(checkpoint, after_id=20, barrier_ms=1500)
+    assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "trigger_timestamp": 1500}, 20, 1500)
     assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "trigger_timestamp": 1499}, 20, 1500)
     assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "id": 20}, 20, 1500)
     assert not MODULE.checkpoint_is_after_barrier({**checkpoint, "status": "IN_PROGRESS"}, 20, 1500)
@@ -228,13 +229,24 @@ def test_checkpoint_must_be_completed_and_triggered_after_observation():
 
 def test_wait_for_checkpoint_ignores_new_id_triggered_before_barrier(monkeypatch):
     stale = {"id": 21, "status": "COMPLETED", "trigger_timestamp": 1499}
-    fresh = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1500}
+    fresh = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1501}
     checks = iter([stale, fresh])
     monkeypatch.setattr(MODULE, "completed_checkpoint", lambda *_args: next(checks))
     monkeypatch.setattr(MODULE, "job_state", lambda *_args: {"state": "RUNNING"})
     monkeypatch.setattr(MODULE.time, "sleep", lambda _seconds: None)
 
     assert MODULE.wait_for_checkpoint("http://flink", "job", 20, 1500, 5) == fresh
+
+
+def test_wait_for_checkpoint_ignores_equal_trigger_timestamp(monkeypatch):
+    equal = {"id": 21, "status": "COMPLETED", "trigger_timestamp": 1500}
+    later = {"id": 22, "status": "COMPLETED", "trigger_timestamp": 1501}
+    checks = iter([equal, later])
+    monkeypatch.setattr(MODULE, "completed_checkpoint", lambda *_args: next(checks))
+    monkeypatch.setattr(MODULE, "job_state", lambda *_args: {"state": "RUNNING"})
+    monkeypatch.setattr(MODULE.time, "sleep", lambda _seconds: None)
+
+    assert MODULE.wait_for_checkpoint("http://flink", "job", 20, 1500, 5) == later
 
 
 def test_recovery_manifest_keeps_restart_and_checkpoint_barriers():
@@ -304,7 +316,7 @@ def test_open_consumer_seeks_each_partition_to_high_only_for_live_tail(monkeypat
             return [SimpleNamespace(topic="out", partition=0), SimpleNamespace(topic="out", partition=1)]
 
         def get_watermark_offsets(self, partition, timeout):
-            return 0, 12 + partition.partition
+            return 3 + partition.partition, 12 + partition.partition
 
         def seek(self, partition):
             self.seeks.append((partition.topic, partition.partition, partition.offset))
@@ -319,8 +331,49 @@ def test_open_consumer_seeks_each_partition_to_high_only_for_live_tail(monkeypat
 
     assert tail.config["isolation.level"] == "read_committed"
     assert tail.seeks == [("out", 0, 12), ("out", 1, 13)]
-    assert rewind.seeks == []
+    assert rewind.seeks == [("out", 0, 3), ("out", 1, 4)]
     assert tail.config["group.id"] != rewind.config["group.id"]
+
+
+def test_fresh_consumer_rewinds_assignment_time_polled_message(monkeypatch):
+    first = SimpleNamespace(offset=lambda: 5)
+    second = SimpleNamespace(offset=lambda: 6)
+
+    class RaceConsumer:
+        def __init__(self, _config):
+            self.assigned = False
+            self.position = 0
+            self.seeks = []
+
+        def subscribe(self, _topics):
+            pass
+
+        def assignment(self):
+            return [SimpleNamespace(topic="out", partition=0)] if self.assigned else []
+
+        def poll(self, _timeout):
+            if not self.assigned:
+                self.assigned = True
+            message = (first, second)[self.position]
+            self.position += 1
+            return message
+
+        def get_watermark_offsets(self, _partition, timeout):
+            return 5, 7
+
+        def seek(self, partition):
+            self.seeks.append(partition.offset)
+            self.position = partition.offset - 5
+
+    monkeypatch.setitem(sys.modules, "confluent_kafka", SimpleNamespace(
+        Consumer=RaceConsumer,
+        TopicPartition=lambda topic, partition, offset: SimpleNamespace(topic=topic, partition=partition, offset=offset),
+    ))
+
+    consumer = MODULE.open_consumer("localhost:9092", "out", 5, from_end=False)
+
+    assert consumer.seeks == [5]
+    assert consumer.poll(0).offset() == 5
 
 
 def test_recovery_before_records_post_observation_checkpoint_and_container(monkeypatch):

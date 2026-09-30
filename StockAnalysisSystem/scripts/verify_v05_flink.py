@@ -255,7 +255,7 @@ def checkpoint_is_after_barrier(checkpoint, after_id, barrier_ms):
         checkpoint is not None
         and checkpoint.get("status") == "COMPLETED"
         and (after_id is None or checkpoint["id"] > after_id)
-        and checkpoint["trigger_timestamp"] >= barrier_ms
+        and checkpoint["trigger_timestamp"] > barrier_ms
     )
 
 
@@ -282,10 +282,10 @@ def open_consumer(bootstrap, topic, timeout, from_end=True):
     if not partitions:
         consumer.close()
         raise TimeoutError(f"no consumer assignment for {topic}")
-    if from_end:
-        for partition in partitions:
-            _, high = consumer.get_watermark_offsets(partition, timeout=min(timeout, 5))
-            consumer.seek(TopicPartition(topic, partition.partition, high))
+    for partition in partitions:
+        low, high = consumer.get_watermark_offsets(partition, timeout=min(timeout, 5))
+        # Assignment polling may already have returned a record; rewind fresh readers explicitly.
+        consumer.seek(TopicPartition(topic, partition.partition, high if from_end else low))
     return consumer
 
 
