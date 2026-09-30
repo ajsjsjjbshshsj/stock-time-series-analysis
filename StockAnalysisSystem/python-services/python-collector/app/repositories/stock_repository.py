@@ -94,7 +94,8 @@ class StockRepository:
     # ── 读取操作 ──────────────────────────────────────────────
 
     def iter_daily_records(
-        self, start_date: date, end_date: date, batch_size: int = _BATCH_SIZE
+        self, start_date: date, end_date: date, batch_size: int = _BATCH_SIZE,
+        ts_code: Optional[str] = None,
     ):
         """Stream inclusive, deterministically ordered stock_daily rows in batches."""
         if batch_size <= 0:
@@ -102,15 +103,18 @@ class StockRepository:
         if start_date > end_date:
             raise ValueError('start_date 不能晚于 end_date')
 
+        ts_code_filter = 'AND ts_code = :ts_code ' if ts_code is not None else ''
         stmt = text(
             'SELECT ts_code, trade_date, open, high, low, close, pre_close, '
             '`change`, pct_chg, vol, amount '
             'FROM stock_daily WHERE trade_date BETWEEN :start AND :end '
+            f'{ts_code_filter}'
             'ORDER BY trade_date ASC, ts_code ASC'
         ).execution_options(stream_results=True, yield_per=batch_size)
-        rows = self.session.execute(
-            stmt, {'start': start_date, 'end': end_date}
-        ).mappings()
+        params = {'start': start_date, 'end': end_date}
+        if ts_code is not None:
+            params['ts_code'] = ts_code
+        rows = self.session.execute(stmt, params).mappings()
         batch = []
         for row in rows:
             batch.append(StockDailyRecord(**dict(row), source='MYSQL_REPLAY'))

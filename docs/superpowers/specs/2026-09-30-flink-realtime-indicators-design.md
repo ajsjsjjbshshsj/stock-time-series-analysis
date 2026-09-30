@@ -109,10 +109,10 @@ java-services/
 建议命令形态：
 
 ```powershell
-python -m app.main replay-daily-events --start 20260801 --end 20260828
+python -m app.main replay-daily-events --start 20260801 --end 20260828 --ts-code 000001.SZ
 ```
 
-重放范围必须至少覆盖 20 个实际交易日；若范围不足，Flink 仍按 warmup 规则输出。
+真实对账默认应先通过 `--ts-code` 限定一只股票；省略该参数才重放全市场，以保持原有兼容行为。股票代码会在创建 MySQL/Kafka 资源前完成去空白、大写规范化和格式校验，数据库查询使用绑定参数。重放范围必须至少覆盖该股票 20 个实际交易日；若范围不足，Flink 仍按 warmup 规则输出。
 
 ## 6. Kafka Topic
 

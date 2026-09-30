@@ -177,7 +177,11 @@ def cmd_history(args):
 def cmd_replay_daily_events(args):
     """只读本地 stock_daily，向现有 Kafka 日线主题重放事件。"""
     from database.db_connector import DatabaseConnector
-    from app.jobs.daily_event_replay_job import DailyEventReplayJob, ReplayFailure
+    from app.jobs.daily_event_replay_job import (
+        DailyEventReplayJob,
+        ReplayFailure,
+        normalize_replay_ts_code,
+    )
     from app.kafka.producer import StockKafkaProducer
     from app.repositories.stock_repository import StockRepository
     from app.utils.date_utils import parse_date
@@ -188,6 +192,8 @@ def cmd_replay_daily_events(args):
         raise ValueError('start_date 不能晚于 end_date')
     if args.batch_size <= 0:
         raise ValueError('batch-size 必须大于 0')
+    ts_code = normalize_replay_ts_code(args.ts_code)
+    replay_scope = ts_code or 'ALL'
 
     db = None
     producer = None
@@ -200,7 +206,7 @@ def cmd_replay_daily_events(args):
         with db.session_scope() as session:
             result = DailyEventReplayJob(
                 StockRepository(session), producer
-            ).execute(start_date, end_date, args.batch_size)
+            ).execute(start_date, end_date, args.batch_size, ts_code)
     except ReplayFailure as exc:
         failure = exc
     except Exception:
@@ -228,12 +234,14 @@ def cmd_replay_daily_events(args):
 
     if failure is not None:
         logger.error(
-            'Kafka 历史重放失败: 已确认 %s 条、%s 批',
+            'Kafka 历史重放失败 [%s..%s, tsCode=%s]: 已确认 %s 条、%s 批',
+            start_date, end_date, replay_scope,
             failure.published_count, failure.batch_count,
         )
         return 1
     logger.info(
-        'Kafka 历史重放完成: %s 条、%s 批',
+        'Kafka 历史重放完成 [%s..%s, tsCode=%s]: %s 条、%s 批',
+        start_date, end_date, replay_scope,
         result['published_count'], result['batch_count'],
     )
     return 0
@@ -504,6 +512,10 @@ def build_parser():
     p_replay.add_argument('--start', required=True)
     p_replay.add_argument('--end', required=True)
     p_replay.add_argument('--batch-size', type=int, default=5000)
+    p_replay.add_argument(
+        '--ts-code', default=None,
+        help='仅重放一只股票（如 000001.SZ）；省略则重放全市场',
+    )
 
     # basic
     subparsers.add_parser('basic', help='更新股票基础信息')

@@ -101,11 +101,30 @@ class TestStockRepository(unittest.TestCase):
         self.assertEqual(second[0].trade_date, date(2026, 8, 2))
         stmt, params = session.execute.call_args.args
         self.assertIn('BETWEEN :start AND :end', str(stmt))
+        self.assertNotIn('ts_code = :ts_code', str(stmt))
         self.assertIn('ORDER BY trade_date ASC, ts_code ASC', str(stmt))
         self.assertEqual(params, {
             'start': date(2026, 8, 1), 'end': date(2026, 8, 2)
         })
         self.assertTrue(stmt.get_execution_options().get('stream_results'))
+
+    def test_iter_daily_records_filters_one_stock_with_bound_parameter(self):
+        repo, session = self._make_repo()
+        session.execute.return_value.mappings.return_value = iter([])
+
+        list(repo.iter_daily_records(
+            date(2026, 8, 1), date(2026, 8, 28), batch_size=20,
+            ts_code='000001.SZ',
+        ))
+
+        stmt, params = session.execute.call_args.args
+        self.assertIn('AND ts_code = :ts_code', str(stmt))
+        self.assertIn('ORDER BY trade_date ASC, ts_code ASC', str(stmt))
+        self.assertEqual(params, {
+            'start': date(2026, 8, 1),
+            'end': date(2026, 8, 28),
+            'ts_code': '000001.SZ',
+        })
 
     def test_iter_daily_records_rejects_nonpositive_batch_size(self):
         repo, session = self._make_repo()

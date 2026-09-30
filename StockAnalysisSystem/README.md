@@ -186,15 +186,19 @@ powershell -ExecutionPolicy Bypass -File scripts\submit_v05_flink_job.ps1
 
 提交脚本会拒绝重复提交同名的运行中作业。提交后在 Flink UI 检查 `stock-daily-indicator-v1` 为 `RUNNING`、TaskManager 为 1 个且有 3 个 slot。
 
-### 3. 用数据库历史数据预热 20 个交易日
+### 3. 用数据库历史数据预热并对账 20 个交易日
 
 选择数据库中实际存在、按时间连续的至少 20 个交易日；日期边界为包含关系。重放命令只读 MySQL 并写 Kafka，不受 `COLLECTOR_OUTPUT_MODE` 影响，也不会回写数据库。
 
+真实对账时先限定一只股票，避免误把全市场历史数据写入 Kafka。`--ts-code` 会去除首尾空白、转为大写，并接受 `000001`（自动规范为 `000001.SZ`）或完整的 `000001.SZ`；非法或空值会在打开数据库和 Kafka 连接前失败。
+
 ```powershell
 cd python-services\python-collector
-D:\Python\python.exe -m app.main replay-daily-events --start 20260801 --end 20260828 --batch-size 5000
+D:\Python\python.exe -m app.main replay-daily-events --start 20260801 --end 20260828 --ts-code 000001.SZ --batch-size 5000
 cd ..\..
 ```
+
+确认需要全市场预热时才省略 `--ts-code`；省略后的行为与旧版本一致。查询始终使用参数化条件，并严格按 `trade_date ASC, ts_code ASC` 发布。完成或失败日志只记录日期、规范化股票代码和确认计数，不输出数据库或 Kafka 凭据。
 
 ### 4. 以 `read_committed` 消费结果并运行验收
 

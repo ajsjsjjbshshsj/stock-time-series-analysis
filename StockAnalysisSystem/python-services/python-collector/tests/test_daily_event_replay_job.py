@@ -40,9 +40,10 @@ def test_replay_creates_real_events_and_flushes_each_batch():
         START, END, batch_size=2
     )
 
-    repository.iter_daily_records.assert_called_once_with(START, END, 2)
+    repository.iter_daily_records.assert_called_once_with(START, END, 2, None)
     assert result == {
         'success': True, 'published_count': 3, 'batch_count': 2,
+        'start_date': START, 'end_date': END, 'ts_code': None,
     }
     assert [item if item == 'flush' else item.ts_code for item in calls] == [
         '000001.SZ', '000002.SZ', 'flush', '000001.SZ', 'flush',
@@ -122,11 +123,20 @@ def test_cli_parses_replay_arguments():
 
     args = build_parser().parse_args([
         'replay-daily-events', '--start', '20260801', '--end', '2026-08-28',
-        '--batch-size', '7',
+        '--batch-size', '7', '--ts-code', '000001.sz',
     ])
-    assert (args.command, args.start, args.end, args.batch_size) == (
-        'replay-daily-events', '20260801', '2026-08-28', 7,
+    assert (args.command, args.start, args.end, args.batch_size, args.ts_code) == (
+        'replay-daily-events', '20260801', '2026-08-28', 7, '000001.sz',
     )
+
+
+def test_cli_ts_code_defaults_to_none():
+    from app.main import build_parser
+
+    args = build_parser().parse_args([
+        'replay-daily-events', '--start', '20260801', '--end', '20260828',
+    ])
+    assert args.ts_code is None
 
 
 @pytest.mark.parametrize('start,end,size', [
@@ -158,16 +168,19 @@ def test_cli_uses_direct_producer_and_closes_both_resources():
     producer = MagicMock()
     with patch('database.db_connector.DatabaseConnector', return_value=db), \
          patch('app.kafka.producer.StockKafkaProducer', return_value=producer), \
-         patch('app.jobs.daily_event_replay_job.DailyEventReplayJob') as job:
+         patch('app.jobs.daily_event_replay_job.DailyEventReplayJob') as job, \
+         patch('app.main.logger') as logger:
         job.return_value.execute.return_value = {
             'success': True, 'published_count': 3, 'batch_count': 2,
         }
         code = cmd_replay_daily_events(MagicMock(
-            start='20260801', end='20260828', batch_size=2
+            start='20260801', end='20260828', batch_size=2,
+            ts_code=' 000001.sz ',
         ))
 
     assert code == 0
-    job.return_value.execute.assert_called_once_with(START, END, 2)
+    job.return_value.execute.assert_called_once_with(START, END, 2, '000001.SZ')
+    assert logger.info.call_args.args[1:4] == (START, END, '000001.SZ')
     producer.close.assert_called_once_with(flush=False)
     db.close.assert_called_once_with()
     db.create_tables.assert_not_called()
@@ -192,7 +205,7 @@ def test_cli_reports_replay_failure_without_logging_broker_details():
          patch('app.main.logger') as logger:
         job.return_value.execute.side_effect = ReplayFailure(1, 1)
         code = cmd_replay_daily_events(MagicMock(
-            start='20260801', end='20260828', batch_size=2
+            start='20260801', end='20260828', batch_size=2, ts_code=None
         ))
 
     assert code == 1
@@ -236,7 +249,7 @@ def test_cli_flushes_exactly_once_per_nonempty_database_batch(
     with patch('database.db_connector.DatabaseConnector', return_value=db), \
          patch('app.kafka.producer.StockKafkaProducer', return_value=producer):
         code = cmd_replay_daily_events(MagicMock(
-            start='20260801', end='20260828', batch_size=2
+            start='20260801', end='20260828', batch_size=2, ts_code=None
         ))
 
     assert code == 0
@@ -245,3 +258,51 @@ def test_cli_flushes_exactly_once_per_nonempty_database_batch(
     client.close.assert_not_called()
     assert producer._client is None
     db.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize('ts_code', ['', '   ', 'not-a-stock', '12345.SZ', '000001.XX'])
+def test_cli_rejects_invalid_ts_code_before_opening_resources(ts_code):
+    from app.main import cmd_replay_daily_events
+
+    args = MagicMock(
+        start='20260801', end='20260828', batch_size=5000, ts_code=ts_code,
+    )
+    with patch('database.db_connector.DatabaseConnector') as connector, \
+         patch('app.kafka.producer.StockKafkaProducer') as producer:
+        with pytest.raises(ValueError, match='ts-code'):
+            cmd_replay_daily_events(args)
+
+    connector.assert_not_called()
+    producer.assert_not_called()
+
+
+def test_single_stock_twenty_day_replay_preserves_event_semantics():
+    from app.jobs.daily_event_replay_job import DailyEventReplayJob
+
+    repository = MagicMock()
+    records = [
+        record('000001.SZ', date(2026, 8, day)) for day in range(1, 21)
+    ]
+    repository.iter_daily_records.return_value = [records[:7], records[7:14], records[14:]]
+    producer = MagicMock()
+
+    result = DailyEventReplayJob(repository, producer).execute(
+        date(2026, 8, 1), date(2026, 8, 20), batch_size=7,
+        ts_code='000001.SZ',
+    )
+
+    repository.iter_daily_records.assert_called_once_with(
+        date(2026, 8, 1), date(2026, 8, 20), 7, '000001.SZ'
+    )
+    assert producer.send_event.call_count == 20
+    assert producer.flush.call_count == 3
+    events = [call.args[0] for call in producer.send_event.call_args_list]
+    assert [event.trade_date for event in events] == [
+        date(2026, 8, day) for day in range(1, 21)
+    ]
+    assert {event.ts_code for event in events} == {'000001.SZ'}
+    assert result == {
+        'success': True, 'published_count': 20, 'batch_count': 3,
+        'start_date': date(2026, 8, 1), 'end_date': date(2026, 8, 20),
+        'ts_code': '000001.SZ',
+    }
