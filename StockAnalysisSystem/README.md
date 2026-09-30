@@ -1,6 +1,6 @@
-# StockAnalysisSystem V0.4
+# StockAnalysisSystem V0.5
 
-V0.4 在 V0.3 Kafka 消息链路基础上统一了市场数据入口：所有 Tushare/AkShare SDK 调用集中在 Python Collector，分析应用只读取 MySQL 和兼容缓存。项目保留 MySQL 单写模式，因此 Kafka 故障不会阻断原有采集与分析流程。
+V0.5 在 V0.4 统一市场数据入口的基础上增加 Flink 实时指标链路。Java 21/Flink 2.2.0 作业从 Kafka 读取日线事件，按股票维护最多 20 个交易日的 keyed state，输出六位小数的 MA5/10/20、成交量均线和量比。V0.4 的 MySQL 采集、Java Consumer、分析和可视化链路保持独立，可在 Flink 停用时继续运行。
 
 ```text
 Tushare / AkShare
@@ -10,7 +10,11 @@ python-collector
   |          |
   v          v
 MySQL      Kafka ---> Java Consumer ---> DLT / Monitoring API
-  |
+  |          |
+  |          +----> Flink realtime job
+  |                    |---> daily indicator topic
+  |                    |---> late-data topic
+  |                    +---> Flink dead-letter topic
   v
 stock-analysis-app ---> Streamlit / Features / Models / Results
 ```
@@ -21,8 +25,9 @@ stock-analysis-app ---> Streamlit / Features / Models / Results
 |---|---|---|
 | `python-services/python-collector` | 外部数据采集、标准化、校验、MySQL/Kafka 输出、任务重试 | 特征工程和模型训练 |
 | `java-services/kafka-consumer-service` | Kafka 消费、协议校验、DLT、统计 API 和监控页面 | 调用市场数据 SDK |
+| `java-services/flink-realtime-job` | 消费日线事件、维护 20 日状态、计算实时指标、隔离迟到/非法事件 | 读写 MySQL、训练模型 |
 | `python-services/stock-analysis-app` | MySQL/兼容缓存读取、特征工程、训练、预测和可视化 | 直接调用 Tushare/AkShare |
-| `infrastructure` | Kafka、Topic、Kafka UI 和 MySQL 迁移脚本 | 业务分析逻辑 |
+| `infrastructure` | Kafka、Flink Session Cluster、Topic、Kafka UI 和 MySQL 迁移脚本 | 业务分析逻辑 |
 
 ## 目录
 
@@ -43,7 +48,8 @@ StockAnalysisSystem/
 │       └── tests/
 ├── java-services/
 │   ├── common-model/             # StockDailyEvent / StockBasicEvent
-│   └── kafka-consumer-service/   # Consumer、DLT、监控 API
+│   ├── kafka-consumer-service/   # Consumer、DLT、监控 API
+│   └── flink-realtime-job/       # V0.5 实时指标作业
 ├── infrastructure/
 │   ├── docker-compose.yml
 │   └── mysql/migrations/
@@ -90,12 +96,14 @@ COLLECTOR_OUTPUT_MODE=mysql
 
 ## 基础设施
 
-Docker Compose 当前启动 Kafka、Topic 初始化任务和 Kafka UI：
+Docker Compose 启动 Kafka、Topic 初始化任务、Kafka UI 和 Flink Session Cluster：
 
 ```powershell
 docker compose -f infrastructure\docker-compose.yml up -d
 docker compose -f infrastructure\docker-compose.yml ps
 ```
+
+Flink UI 位于 [http://localhost:8082](http://localhost:8082)，Kafka UI 位于 [http://localhost:8081](http://localhost:8081)。
 
 检查 Topic：
 
@@ -154,6 +162,69 @@ Java 服务负责：
 - 将无法处理的事件隔离到 `stock.dead-letter.v1`。
 - 暴露健康检查、消费统计、最近错误和监控页面。
 
+## Flink 实时指标
+
+实际版本组合固定为 Flink `2.2.0`、Kafka Connector `5.0.0-2.2`、Docker 镜像 `flink:2.2.0-scala_2.12-java21`。不要将 Flink core 单独升级为 2.3；当前没有与之匹配的已发布 Kafka Connector。
+
+### 1. 构建 JAR
+
+```powershell
+cd java-services
+mvn -q -pl flink-realtime-job -am package
+cd ..
+```
+
+产物为 `java-services/flink-realtime-job/target/flink-realtime-job-0.3.0-SNAPSHOT-all.jar`。
+
+### 2. 启动基础设施并提交一次作业
+
+```powershell
+docker compose -f infrastructure\docker-compose.yml up -d
+docker compose -f infrastructure\docker-compose.yml ps
+powershell -ExecutionPolicy Bypass -File scripts\submit_v05_flink_job.ps1
+```
+
+提交脚本会拒绝重复提交同名的运行中作业。提交后在 Flink UI 检查 `stock-daily-indicator-v1` 为 `RUNNING`、TaskManager 为 1 个且有 3 个 slot。
+
+### 3. 用数据库历史数据预热 20 个交易日
+
+选择数据库中实际存在、按时间连续的至少 20 个交易日；日期边界为包含关系。重放命令只读 MySQL 并写 Kafka，不受 `COLLECTOR_OUTPUT_MODE` 影响，也不会回写数据库。
+
+```powershell
+cd python-services\python-collector
+D:\Python\python.exe -m app.main replay-daily-events --start 20260801 --end 20260828 --batch-size 5000
+cd ..\..
+```
+
+### 4. 以 `read_committed` 消费结果并运行验收
+
+生产消费者必须设置 `isolation.level=read_committed`，否则可能看到尚未由 checkpoint 提交的事务消息。可用 Kafka CLI 验证主输出：
+
+```powershell
+docker compose -f infrastructure\docker-compose.yml exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:29092 --topic stock.dws.daily-indicator.v1 --from-beginning --consumer-property isolation.level=read_committed
+```
+
+在另一个终端运行确定性 smoke test：
+
+```powershell
+D:\Python\python.exe scripts\verify_v05_flink.py --scenario valid
+D:\Python\python.exe scripts\verify_v05_flink.py --scenario late
+D:\Python\python.exe scripts\verify_v05_flink.py --scenario invalid
+```
+
+完整 checkpoint/重启验收步骤见 [V0.5 测试用例](docs/V0.5_TEST_CASES.md)。
+
+### 5. 升级、停止和回滚
+
+升级前先从 Flink UI 或 CLI 取得 Job ID，并创建 savepoint：
+
+```powershell
+docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink savepoint <job-id> file:///opt/flink/checkpoints/savepoints
+docker compose -f infrastructure\docker-compose.yml exec -T flink-jobmanager flink cancel <job-id>
+```
+
+确认 savepoint 命令成功并记录返回路径后才能取消。回滚 V0.5 时只取消 Flink 作业，并将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，也不要执行 `docker compose down -v`。需要恢复 V0.5 时，用兼容 JAR 从已记录的 savepoint 启动作业。
+
 ## Stock Analysis App
 
 分析端的数据入口已经改为 MySQL：
@@ -182,6 +253,7 @@ python -m streamlit run visualization\dashboard.py
 | [http://localhost:8080/api/consumer/statistics](http://localhost:8080/api/consumer/statistics) | 消费统计 |
 | [http://localhost:8080/api/consumer/errors](http://localhost:8080/api/consumer/errors) | 最近错误 |
 | [http://localhost:8081/](http://localhost:8081/) | Kafka UI |
+| [http://localhost:8082/](http://localhost:8082/) | Flink JobManager UI |
 | [http://localhost:8501/](http://localhost:8501/) | Streamlit 分析页面 |
 
 Java 监控数据仅保存在当前进程内存中，服务重启后重新统计；错误列表不保存完整原始 JSON payload。
@@ -209,6 +281,15 @@ cd java-services
 mvn test
 ```
 
+Flink 模块打包与 V0.5 smoke test：
+
+```powershell
+cd java-services
+mvn -q -pl flink-realtime-job -am package
+cd ..
+D:\Python\python.exe scripts\verify_v05_flink.py --scenario valid
+```
+
 Kafka 和 Java 启动后，在 `StockAnalysisSystem` 根目录执行冒烟测试：
 
 ```powershell
@@ -223,6 +304,7 @@ python scripts\verify_v03_smoke.py --scenario all --count 20
 - 历史 daily-basic 未补齐：分析端仅对空值使用旧 `raw_panel.parquet` 换手率。
 - 外部接口失败：任务进入 `FAILED`，使用 `retry-failed` 恢复，不能写入模拟数据冒充成功。
 - 代码回滚：保留 `stock_daily_basic` 与 `stock_constituent`，它们不破坏旧分析表。
+- Flink 作业故障：V0.4 不依赖 Flink；取消 Flink 作业并保持 Kafka/MySQL/Java Consumer/Analysis App 运行。
 
 ## 文档
 
@@ -232,6 +314,9 @@ python scripts\verify_v03_smoke.py --scenario all --count 20
 - [V0.3 发布说明](docs/V0.3_RELEASE_NOTES.md)
 - [V0.4 发布说明](docs/V0.4_RELEASE_NOTES.md)
 - [V0.4 市场数据迁移验收报告](docs/V0.4_MARKET_DATA_MIGRATION_REPORT.md)
+- [V0.5 发布说明](docs/V0.5_RELEASE_NOTES.md)
+- [V0.5 测试用例](docs/V0.5_TEST_CASES.md)
+- [V0.5 对账报告](docs/V0.5_RECONCILIATION_REPORT.md)
 - [Analysis App 代码阅读指引](python-services/stock-analysis-app/CODE_READING_GUIDE.md)
 
 ## 团队提交流程
