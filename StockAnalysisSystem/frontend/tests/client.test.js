@@ -9,8 +9,19 @@ test('接入模式只请求已实现的监控 API，其余页面保持明确的�
     return new Response(JSON.stringify({ totalConsumed: 12 }), { status: 200 })
   }, mockDelayMs: 0 })
   assert.deepEqual(await request(() => ({ simulated: true }), '/api/consumer/statistics'), { totalConsumed: 12 })
-  assert.deepEqual(await request(() => ({ simulated: true }), '/api/analysis/models'), { simulated: true })
+  assert.deepEqual(await request(() => ({ simulated: true }), '/api/analysis/features/catalog'), { simulated: true })
   assert.deepEqual(calls, ['/api/consumer/statistics'])
+})
+
+test('prediction exact allowlist forwards abort options and never falls back', async () => {
+  const calls = []
+  const controller = new AbortController()
+  const client = createRequestClient({ mode: 'hybrid', mockDelayMs: 0, fetchImpl: async (url, options) => { calls.push(url); assert.ok(options.signal); return new Response('[]') } })
+  for (const path of ['/api/analysis/models?ts_code=000001.SZ', '/api/analysis/models/m-1/importance?top=15', '/api/analysis/prediction/000001.SZ?model=m-1&limit=500', '/api/analysis/results/000001.SZ']) assert.deepEqual(await client(() => 'mock', path, { signal: controller.signal }), [])
+  assert.equal(await client(() => 'mock', '/api/analysis/models/m-1/train'), 'mock')
+  assert.equal(calls.length, 4)
+  const failing = createRequestClient({ mode: 'hybrid', fetchImpl: async () => new Response('{}', { status: 503 }) })
+  await assert.rejects(failing(() => 'mock', '/api/analysis/prediction/000001.SZ?model=m'), /503/)
 })
 
 test('真实接口失败不使用演示数据替代', async () => {

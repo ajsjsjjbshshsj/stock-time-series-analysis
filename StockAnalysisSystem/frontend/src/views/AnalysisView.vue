@@ -17,13 +17,13 @@
     <p v-if="loading" role="status">股票池加载中…</p>
     <p v-else-if="error" role="alert">{{ error }} <button @click="loadPool">重试股票池</button></p>
     <p v-else-if="!pool.length" role="status">股票池为空，暂无可查询股票。</p>
-    <p v-if="live" class="muted">仅综合概览已接入真实行情；其他分析尚未接入，切换演示模式查看。</p>
+    <p v-if="live" class="muted">综合概览与模型预测已接入真实数据；其他分析尚未接入，切换演示模式查看。</p>
 
     <div class="tabs">
       <button
         v-for="t in TABS" :key="t.key"
         class="tab-btn" :class="{ active: activeTab === t.key }"
-        :disabled="live && t.key !== 'overview'" :title="live && t.key !== 'overview' ? '尚未接入，切换演示模式查看' : ''"
+        :disabled="live && !['overview', 'prediction'].includes(t.key)" :title="live && !['overview', 'prediction'].includes(t.key) ? '尚未接入，切换演示模式查看' : ''"
         @click="activeTab = t.key"
       >{{ t.label }}</button>
     </div>
