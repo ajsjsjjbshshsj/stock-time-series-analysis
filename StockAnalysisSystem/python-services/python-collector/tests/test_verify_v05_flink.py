@@ -62,6 +62,24 @@ def test_lag_validation_requires_every_partition_caught_up():
         isolated.validate_partition_lag([{'partition': 0, 'high': 20, 'committed': 19}])
 
 
+def test_restore_requires_matching_id_and_normalized_checkpoint_path():
+    spec = importlib.util.spec_from_file_location('isolated', SCRIPT.with_name('verify_v05_isolated.py'))
+    isolated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated)
+    pointer = 'file:///opt/flink/checkpoints/isolated/job/chk-2'
+    isolated.validate_restored_checkpoint(
+        {'id': 2, 'external_path': 'file:/opt/flink/checkpoints/isolated/job/chk-2'}, 2, pointer,
+    )
+    with pytest.raises(AssertionError, match='checkpoint path'):
+        isolated.validate_restored_checkpoint(
+            {'id': 2, 'external_path': 'file:/opt/flink/checkpoints/another/job/chk-2'}, 2, pointer,
+        )
+    with pytest.raises(AssertionError, match='checkpoint path'):
+        isolated.validate_restored_checkpoint({'id': 2}, 2, pointer)
+    with pytest.raises(AssertionError, match='retained checkpoint'):
+        isolated.validate_restored_checkpoint({'id': 3, 'external_path': pointer}, 2, pointer)
+
+
 def fixture_rows(count=20, ts_code="V05TEST.SZ"):
     return [
         {

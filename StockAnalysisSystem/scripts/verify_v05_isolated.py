@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('v05', ROOT / 'scripts/verify_v05_flink.py')
@@ -30,6 +31,16 @@ URL = 'http://localhost:8082'
 def require_empty_cluster(jobs):
     if jobs:
         raise RuntimeError('isolated fault verification refuses existing jobs; use an empty cluster')
+
+
+def validate_restored_checkpoint(restored, checkpoint_id, pointer):
+    if not restored or restored.get('id') != checkpoint_id:
+        raise AssertionError('JobManager resubmit did not restore the retained checkpoint')
+    path = restored.get('external_path')
+    # URI splitting treats file:/ and file:/// alike without conflating different
+    # paths, hosts, queries or fragments belonging to different checkpoints.
+    if not path or urlsplit(path) != urlsplit(pointer):
+        raise AssertionError('JobManager restored checkpoint path does not match retained pointer')
 
 
 def validate_partition_lag(partitions):
@@ -153,8 +164,7 @@ def recovery(topics, options):
     wait_cluster()
     restored = submit(options, pointer)
     restored_stats = v05.get_json(f'{URL}/jobs/{restored}/checkpoints', 5)['latest'].get('restored')
-    if not restored_stats or restored_stats['id'] != checkpoint['id']:
-        raise AssertionError('JobManager resubmit did not restore the retained checkpoint')
+    validate_restored_checkpoint(restored_stats, checkpoint['id'], pointer)
     v05.send_rows(producer, args, rows[15:])
     expected = v05.expected_indicators(rows)
     actual = v05.reconsume_committed('localhost:9092', topics['output'], code, expected, 180, quiet=25)
