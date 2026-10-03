@@ -62,7 +62,7 @@ def evaluate(frame, ts_code, calendar):
                 target_start=_day(evaluation.target_date.iloc[0]), target_end=_day(evaluation.target_date.iloc[-1]),
                 count=len(evaluation)), metrics=fold_metrics))
     rows = prepared['frame']
-    report = dict(schema_version=1, report_id=uuid4().hex, ts_code=ts_code, target=TARGET,
+    report = dict(schema_version=1, report_id='eval_' + uuid4().hex, ts_code=ts_code, target=TARGET,
         horizon=1, units='fractional_return', protocol_id='v08_expanding_3x100_1',
         evaluation_kind='retrospective_walk_forward', history_previously_observed=True,
         prospective_validation=False, created_at=datetime.now(timezone.utc).isoformat(),

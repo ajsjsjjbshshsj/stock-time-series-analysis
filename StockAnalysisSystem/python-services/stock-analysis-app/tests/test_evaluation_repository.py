@@ -23,13 +23,13 @@ def test_publish_file_first_and_exact_read(connector, tmp_path, report):
     def inspect(conn, cursor, statement, parameters, context, many):
         statements.append(statement)
         if statement.startswith('INSERT'):
-            assert (tmp_path / ('eval_'+report['report_id']) / 'report.json').is_file()
+            assert (tmp_path / report['report_id'] / 'report.json').is_file()
     event.listen(connector.engine, 'before_cursor_execute', inspect)
     repo = EvaluationRepository(connector, store)
     assert repo.publish(report) == report['report_id']
     assert repo.get('000001.SZ', report['report_id']) == report
     assert len(repo.list('000001.SZ')) == 1
-    assert repo.get('000001.SZ', '0'*32) is None
+    assert repo.get('000001.SZ', 'eval_'+'0'*32) is None
     with connector.engine.connect() as db:
         row = db.execute(text('SELECT * FROM analysis_result')).mappings().one()
         assert row['prediction'] is None and row['confidence'] is None
@@ -53,7 +53,7 @@ def test_database_failure_preserves_unlisted_orphan(connector, tmp_path, report,
     connector.session_scope = broken
     repo = EvaluationRepository(connector, ReportStore(tmp_path))
     with pytest.raises(DependencyError, match='Evaluation database unavailable'): repo.publish(report)
-    assert (tmp_path / ('eval_'+report['report_id']) / 'report.json').is_file()
+    assert (tmp_path / report['report_id'] / 'report.json').is_file()
     connector.session_scope = original
     assert repo.list('000001.SZ') == []
 

@@ -50,7 +50,7 @@ def test_empty_and_limits():
     '?ts_code=000001.SZ&limit=-1', '?ts_code=000001.SZ&limit=abc',
     '?ts_code=000001.SZ&limit=20&limit=20', '?ts_code=000001.SZ&train=true',
     '?ts_code=000001.SZ&ts_code=000001.SZ', '/000001.SZ/invalid',
-    '/000001.SZ/'+'a'*32+'?limit=1',
+    '/000001.SZ/eval_'+'a'*32+'?limit=1',
 ])
 def test_strict_requests(path):
     repo = Evaluations()
@@ -78,7 +78,7 @@ def test_detail_complete_bound_and_readonly(report):
 
 def test_missing_report():
     with client(Evaluations()) as http:
-        assert http.get('/api/analysis/evaluations/000001.SZ/'+'f'*32).status_code == 404
+        assert http.get('/api/analysis/evaluations/000001.SZ/eval_'+'f'*32).status_code == 404
 
 
 @pytest.mark.parametrize('method', ['stock_exists', 'list', 'get'])
@@ -88,7 +88,7 @@ def test_dependency_failure_sanitized(method):
     setattr(stock if method == 'stock_exists' else repo, method, fail)
     from api.forecast import create_app
     with TestClient(create_app(stock, repo)) as http:
-        path = '/api/analysis/evaluations?ts_code=000001.SZ' if method != 'get' else '/api/analysis/evaluations/000001.SZ/'+'a'*32
+        path = '/api/analysis/evaluations?ts_code=000001.SZ' if method != 'get' else '/api/analysis/evaluations/000001.SZ/eval_'+'a'*32
         response = http.get(path)
         assert response.status_code == 503
         assert response.json() == {'detail': 'Evaluation dependency unavailable'}
@@ -119,7 +119,7 @@ class Repo:
     def __getattr__(self, name): raise AssertionError(name)
 with TestClient(create_app(Stock(), Repo())) as http:
     assert http.get('/api/analysis/evaluations?ts_code=000001.SZ').json() == []
-    assert http.get('/api/analysis/evaluations/000001.SZ/'+'a'*32).status_code == 404
+    assert http.get('/api/analysis/evaluations/000001.SZ/eval_'+'a'*32).status_code == 404
 for module in ('config.settings', 'database.db_connector', 'sklearn', 'xgboost',
                'analysis.evaluation.training', 'analysis.forecast.training', 'analysis.forecast.features'):
     assert module not in sys.modules, module

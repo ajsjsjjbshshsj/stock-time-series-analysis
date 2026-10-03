@@ -39,12 +39,12 @@ def test_cli_fixed_pipeline_and_sanitized_failure(monkeypatch,capsys):
     monkeypatch.setattr(cli,'load_calendar',lambda p: {'calendar': True})
     monkeypatch.setattr(cli,'validate_calendar',lambda c,s: calls.append('calendar'))
     monkeypatch.setattr(cli.ForecastRepository,'load_market',lambda self,*args: calls.append('select') or 'frame')
-    monkeypatch.setattr(cli,'evaluate',lambda *args: calls.append('evaluate') or dict(report_id='a'*32,ts_code='000001.SZ'))
+    monkeypatch.setattr(cli,'evaluate',lambda *args: calls.append('evaluate') or dict(report_id='eval_'+'a'*32,ts_code='000001.SZ'))
     monkeypatch.setattr(cli.EvaluationRepository,'publish',lambda self,r: calls.append('publish') or r['report_id'])
     args=['--stock','000001.SZ','--start','2020-01-01','--end','2024-01-01','--calendar','calendar.json']
     assert cli.main(args) == 0
     assert calls == ['calendar','select','evaluate','publish']
-    assert capsys.readouterr().out == 'Published '+'a'*32+' for 000001.SZ\n'
+    assert capsys.readouterr().out == 'Published eval_'+'a'*32+' for 000001.SZ\n'
     monkeypatch.setattr(cli.EvaluationRepository,'publish',lambda *a: (_ for _ in ()).throw(RuntimeError('secret password SQL')))
     assert cli.main(args) == 1
     output = capsys.readouterr()
@@ -96,7 +96,7 @@ def test_real_connector_logs_are_suppressed_and_logging_restored(
         if failure == 'training':
             training_logger.error('private training failure')
             raise RuntimeError('private training failure')
-        return {'report_id': 'a' * 32}
+        return {'report_id': 'eval_' + 'a' * 32}
 
     monkeypatch.setattr(cli, 'evaluate', train)
     monkeypatch.setattr(cli.EvaluationRepository, 'publish', lambda self, r: r['report_id'])
@@ -108,7 +108,7 @@ def test_real_connector_logs_are_suppressed_and_logging_restored(
         assert logging.root.manager.disable == previous_disable
         output = capsys.readouterr()
         assert result == (1 if failure else 0)
-        assert output.out == ('' if failure else 'Published ' + 'a' * 32 + ' for 000001.SZ\n')
+        assert output.out == ('' if failure else 'Published eval_' + 'a' * 32 + ' for 000001.SZ\n')
         assert output.err == ('Evaluation failed: check inputs, history, reports and database availability.\n'
                               if failure else '')
         training_logger.warning('logging restored')

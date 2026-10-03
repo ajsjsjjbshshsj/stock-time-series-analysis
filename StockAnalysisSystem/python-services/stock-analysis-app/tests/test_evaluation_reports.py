@@ -21,10 +21,10 @@ def test_roundtrip_no_overwrite(tmp_path, report):
     summary = store.save(report)
     assert 'series' not in summary and 'source_continuity' not in summary
     assert store.load(summary) == report
-    original = (store.root / ('eval_'+report['report_id']) / 'report.json').read_bytes()
+    original = (store.root / report['report_id'] / 'report.json').read_bytes()
     with pytest.raises(ValueError):
         store.save(report)
-    assert (store.root / ('eval_'+report['report_id']) / 'report.json').read_bytes() == original
+    assert (store.root / report['report_id'] / 'report.json').read_bytes() == original
 
 
 @pytest.mark.parametrize('change', ['missing', 'bytes', 'hash', 'stock', 'projection', 'tamper', 'large', 'duplicate', 'nonfinite'])
@@ -32,7 +32,7 @@ def test_load_fails_closed(tmp_path, report, change):
     from analysis.evaluation.reports import ReportStore
     store = ReportStore(tmp_path)
     summary = copy.deepcopy(store.save(report))
-    path = tmp_path / ('eval_'+report['report_id']) / 'report.json'
+    path = tmp_path / report['report_id'] / 'report.json'
     if change == 'missing': path.unlink()
     if change == 'bytes': summary['report_bytes'] += 1
     if change == 'hash': summary['report_sha256'] = '0'*64
@@ -57,7 +57,7 @@ def test_failed_file_operation_never_exposes_report(tmp_path, report, monkeypatc
     if failure == 'fsync': monkeypatch.setattr(reports.os, 'fsync', broken)
     else: monkeypatch.setattr(Path, 'rename', broken)
     with pytest.raises((OSError, ValueError)): reports.ReportStore(tmp_path).save(report)
-    assert not (tmp_path / ('eval_'+report['report_id'])).exists()
+    assert not (tmp_path / report['report_id']).exists()
 
 
 def test_reparse_root_and_escape_rejected(tmp_path, report, monkeypatch):

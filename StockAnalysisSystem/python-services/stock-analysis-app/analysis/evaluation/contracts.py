@@ -44,7 +44,7 @@ def _hash(value):
 
 
 def validate_report_id(value):
-    if type(value) is not str or not re.fullmatch('[0-9a-f]{32}', value):
+    if type(value) is not str or not re.fullmatch('eval_[0-9a-f]{32}', value):
         raise ValueError('Invalid report ID')
     return value
 

@@ -48,7 +48,7 @@ class ReportStore:
             raise ValueError('Evaluation report exceeds size bound')
         summary = make_summary(report, hashlib.sha256(raw).hexdigest(), len(raw))
         encode_summary(summary)
-        target = self.root / ('eval_' + report['report_id'])
+        target = self.root / report['report_id']
         self._check(target)
         if target.exists():
             raise ValueError('Evaluation report already exists')
@@ -76,7 +76,7 @@ class ReportStore:
 
     def load(self, summary):
         validate_summary(summary)
-        path = self.root / ('eval_' + summary['report_id']) / 'report.json'
+        path = self.root / summary['report_id'] / 'report.json'
         try:
             self._check(path)
             info = path.lstat()
