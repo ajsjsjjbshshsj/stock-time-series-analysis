@@ -4,6 +4,8 @@ import pandas as pd
 from sqlalchemy import text
 from .contracts import ANALYSIS_TYPE, validate_date, validate_model_id, validate_payload, validate_stock, parse_payload
 
+PUBLICATION_TEXT_BYTES = 65535  # Existing analysis_result.result MySQL TEXT budget.
+
 
 class DependencyError(RuntimeError):
     """Sanitized database dependency failure."""
@@ -48,7 +50,9 @@ class ForecastRepository:
                 raise ValueError('Publication differs from frozen model')
         if payload['data_cutoff'] < frozen['data_cutoff']:
             raise ValueError('Publication cutoff regressed')
-        serialized = json.dumps(payload, allow_nan=False)
+        serialized = json.dumps(payload, allow_nan=False, separators=(',', ':'))
+        if len(serialized.encode('utf-8')) > PUBLICATION_TEXT_BYTES:
+            raise ValueError('Forecast publication exceeds 65535 UTF-8 byte storage bound')
         try:
             with self.connector.session_scope() as session:
                 session.execute(text('''INSERT INTO analysis_result

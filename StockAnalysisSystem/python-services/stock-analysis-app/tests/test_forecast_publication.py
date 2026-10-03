@@ -242,3 +242,39 @@ def test_publish_extension_keeps_original_calendar_proof(connector, tmp_path, fo
     repo = ForecastRepository(connector, store)
     repo.publish(revised)
     assert repo.get('000001.SZ', payload['model_id'])['source_continuity'] == payload['source_continuity']
+
+
+def test_long_verified_history_publishes_lossless_compact_json_within_text_budget(connector):
+    import pandas as pd
+    from types import SimpleNamespace
+    from analysis.forecast.training import train_forecast
+    from analysis.forecast.repository import ForecastRepository
+    frame = pd.concat([history()] * 3, ignore_index=True).iloc[:1150].copy()
+    frame['trade_date'] = pd.bdate_range('2022-01-04', periods=len(frame))
+    _, payload = train_forecast(frame, '000001.SZ', calendar(frame))
+    compact = json.dumps(payload, allow_nan=False, separators=(',', ':'))
+    assert len(json.dumps(payload).encode('utf-8')) > 65535
+    assert len(compact.encode('utf-8')) <= 65535
+    store = SimpleNamespace(load=lambda model_id: (None, payload))
+    ForecastRepository(connector, store).publish(payload)
+    with connector.engine.connect() as db:
+        stored = db.execute(text('SELECT result FROM analysis_result')).scalar_one()
+    assert stored == compact
+    assert len(stored.encode('utf-8')) <= 65535
+    assert json.loads(stored) == payload
+
+
+def test_publication_text_utf8_bound_rejects_before_sql_and_preserves_rows(connector, forecast, monkeypatch):
+    from types import SimpleNamespace
+    from analysis.forecast.repository import ForecastRepository
+    _, payload = forecast
+    payload = copy.deepcopy(payload)
+    payload['storage_note'] = '界' * 12000
+    assert len(json.dumps(payload, separators=(',', ':')).encode('utf-8')) > 65535
+    store = SimpleNamespace(load=lambda model_id: (None, payload))
+    with monkeypatch.context() as isolated:
+        isolated.setattr(connector, 'session_scope', lambda: pytest.fail('oversize publication reached SQL'))
+        with pytest.raises(ValueError, match='65535.*UTF-8|UTF-8.*65535'):
+            ForecastRepository(connector, store).publish(payload)
+    with connector.engine.connect() as db:
+        assert db.execute(text('SELECT COUNT(*) FROM analysis_result')).scalar_one() == 0
