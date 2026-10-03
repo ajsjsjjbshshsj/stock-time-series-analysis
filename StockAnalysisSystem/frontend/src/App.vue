@@ -21,7 +21,7 @@
 
       <div class="sidebar-footer">
         python-collector · java kafka-consumer<br />
-        stock-analysis-app · Flink · v0.5
+        stock-analysis-app · Flink · v0.6
       </div>
     </aside>
 
@@ -69,7 +69,7 @@ const theme = useThemeStore()
 
 const navRoutes = computed(() => router.getRoutes().filter((r) => r.meta?.title))
 const sourceLabel = computed(() => dataSource.value === 'hybrid' && route.name === 'monitor'
-  ? '监控接口数据' : '演示数据 · 非真实行情')
+  ? '监控接口数据' : dataSource.value === 'hybrid' && route.name === 'analysis' ? '真实行情 · 概览已接入' : '演示数据 · 非真实行情')
 
 // 顶栏时钟
 const clock = ref('')

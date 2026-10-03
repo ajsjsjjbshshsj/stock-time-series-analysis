@@ -1,4 +1,6 @@
-# StockAnalysisSystem V0.5
+# StockAnalysisSystem V0.6
+
+V0.6 新增独立 Market API（8083）与 ClickHouse 持久指标。分析概览使用真实股票池、MySQL Kline 和按日期关联的 ClickHouse MA；监控保留原消费 API，其余页面为演示占位。已有 Kafka/Flink 部署只启动新增 ClickHouse，不重建现有服务。安全运行顺序、查询边界、fail-closed 恢复与只读对账见 [V0.6 业务运行指南](docs/V0.6_CLICKHOUSE_MARKET_API.md)。
 
 V0.5 在 V0.4 统一市场数据入口的基础上增加 Flink 实时指标链路。Java 21/Flink 2.2.0 作业从 Kafka 读取日线事件，按股票维护最多 20 个交易日的 keyed state，输出六位小数的 MA5/10/20、成交量均线和量比。V0.4 的 MySQL 采集、Java Consumer、分析和可视化链路保持独立，可在 Flink 停用时继续运行。
 

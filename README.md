@@ -1,10 +1,12 @@
 # StockAnalysisSystem
 
-基于 Python、Kafka、Java、Flink、MySQL 的股票数据采集与分析系统。V0.5 在 V0.4 数据链路旁新增 Flink 实时日线指标：20 个交易日托管状态、事务 Kafka 输出、迟到和非法事件隔离。Python 仍统一负责外部市场数据采集，离线分析应用仍只从 MySQL 与兼容缓存读取数据。
+基于 Python、Kafka、Java、Flink、MySQL、ClickHouse 的股票数据采集与分析系统。V0.6 在 V0.5 的 20 日状态与事务 Kafka 指标链路后新增 ClickHouse 持久化、Market API 和真实 Vue 分析概览。Python 仍统一负责外部市场数据采集，离线分析应用仍只从 MySQL 与兼容缓存读取数据。
 
 > 本项目用于学习、工程实践和量化研究，不构成投资建议。
 
-## V0.5 当前架构
+## V0.6 当前架构
+
+新增 ClickHouse 持久指标与独立 Market API（8083），Vue 分析概览读取真实 MySQL Kline 和 ClickHouse MA，监控页保留原 Consumer API。其余页面仍为演示占位。已有 Kafka/Flink 集群升级时只添加 ClickHouse，不重建集群或删除 checkpoint；启动、查询边界及只读历史对账见 [V0.6 业务运行指南](StockAnalysisSystem/docs/V0.6_CLICKHOUSE_MARKET_API.md)。
 
 ```text
 Tushare / AkShare
@@ -15,7 +17,12 @@ Python Collector ----> MySQL ----> Stock Analysis App / Streamlit
        v
      Kafka ----> Java Consumer ----> DLT / Monitoring API
        |
-       +------> Flink ----> daily-indicator / late / Flink DLT
+       +------> Flink ----> daily-indicator ----> Market API Consumer ----> ClickHouse
+                          late / Flink DLT                  |                  |
+MySQL ---------------------------------------------------> Market API <-------+
+                                                               |
+                                                               v
+                                                         Vue 分析概览
 ```
 
 - `python-collector` 是唯一允许调用 Tushare/AkShare SDK 的服务。

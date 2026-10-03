@@ -19,7 +19,9 @@ export function setDataSource(value) {
 export function createRequestClient({ mode = 'mock', base = '', fetchImpl = globalThis.fetch, timeoutMs = 8000, mockDelayMs = 200 } = {}) {
   return async (mockProducer, path, options = {}) => {
     const selected = typeof mode === 'function' ? mode() : mode
-    if (normalizeMode(selected) === 'mock' || !LIVE_PATHS.has(path.split('?')[0])) {
+    const pathname = path.split('?')[0]
+    const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || /^\/api\/analysis\/(kline|indicators)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname)
+    if (normalizeMode(selected) === 'mock' || !live) {
       if (mockDelayMs) await new Promise((resolve) => setTimeout(resolve, mockDelayMs))
       return mockProducer()
     }
@@ -37,9 +39,9 @@ export function createRequestClient({ mode = 'mock', base = '', fetchImpl = glob
       }
       try { return await response.json() } catch { throw new Error('接口返回的内容不是有效 JSON') }
     } catch (error) {
-      if (timedOut) throw new Error('请求超时，请检查 Java 消费服务是否启动')
+      if (timedOut) throw new Error('请求超时，请检查后端服务是否启动')
       if (error.name === 'AbortError') throw error
-      if (error instanceof TypeError) throw new Error('无法连接消费服务，请检查服务地址和代理配置')
+      if (error instanceof TypeError) throw new Error('无法连接后端服务，请检查服务地址和代理配置')
       throw error
     } finally {
       clearTimeout(timer)

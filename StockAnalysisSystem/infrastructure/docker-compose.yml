@@ -1,4 +1,24 @@
 services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: stock-clickhouse
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8123:8123"
+    environment:
+      CLICKHOUSE_DB: stock_analytics
+      CLICKHOUSE_USER: stock_app
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD must be set}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8123/ping >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   kafka:
     image: apache/kafka:4.1.0
     container_name: stock-kafka
@@ -141,5 +161,6 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
 volumes:
+  clickhouse_data:
   kafka_data:
   flink_checkpoints:

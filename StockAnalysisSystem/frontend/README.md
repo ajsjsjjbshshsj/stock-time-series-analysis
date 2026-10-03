@@ -29,7 +29,7 @@ npm test           # 接口行为回归
 
 ## 切换到真实后端
 
-顶栏“数据模式”可以随时切换，选择保存在浏览器。默认是演示模式。选择“接入现有 API”后，只有监控页读取当前已实现的三个接口；采集、分析和总览仍明确显示演示数据。
+顶栏“数据模式”可以随时切换，选择保存在浏览器。默认是演示模式。选择“接入现有 API”后，监控页与分析综合概览读取真实接口；分析其他八个标签禁用，切换演示模式后可查看原有演示。采集和系统总览仍显示演示数据。分析顶栏标识“真实行情 · 概览已接入”，不表示模型或预测已接入。
 
 也可以使用 `.env.local` 配置首次打开页面的默认值（已有浏览器选择优先）：
 
@@ -37,6 +37,7 @@ npm test           # 接口行为回归
 # .env.local
 VITE_DATA_SOURCE=hybrid
 CONSUMER_API_TARGET=http://127.0.0.1:8080
+MARKET_API_TARGET=http://127.0.0.1:8083
 ```
 
 Vite 开发服务器代理监控请求到 Java 服务，避免开发时的跨域问题；修改环境文件后重启 Vite。`http` 配置值兼容为 `hybrid`。生产部署需要同源反向代理转发 `/api/consumer/*` 和 `/actuator/health`；`vite preview` 本身不提供该代理。也可设置 `VITE_API_BASE` 指向允许该页面来源的 API 地址。
@@ -46,7 +47,15 @@ Vite 开发服务器代理监控请求到 Java 服务，避免开发时的跨域
 端点现状：
 
 - **已存在的真实端点**（kafka-consumer-service）：`GET /api/consumer/statistics`、`GET /api/consumer/errors`、`GET /actuator/health`
-- **设计约定端点**（后端需增加薄封装）：`/api/collector/*`、`/api/analysis/*`、`/api/consumer/{topics,trend,validate,samples}`
+- **设计约定端点**（未接入）：`/api/collector/*`、其余分析端点、`/api/consumer/{topics,trend,validate,samples}`
+
+| 已实现行情 GET（market-api-service，8083） | 数据来源与边界 |
+|---|---|
+| `/api/analysis/stocks` | MySQL stock_basic 股票池 |
+| `/api/analysis/kline/{tsCode}` | MySQL stock_daily，最新有界区间，按交易日升序 |
+| `/api/analysis/indicators/{tsCode}` | ClickHouse 中已落库的 Flink MA5/10/20，最新有界区间 |
+
+生产同源代理也需转发上述三个具体行情路径到 8083；监控仍转发至 8080。真实请求失败显示错误和手动重试，不回退演示行情。切换股票和离开页面取消请求，并拒绝过期响应。指标按交易日对齐，预热 null 不改为零、不从收盘价重算，真实模式不含 MA60。界面显示覆盖数、最新 K 线与指标日期、最新 MA 值和窗口；历史部分覆盖不代表每日更新或完整覆盖。
 
 以上约定端点目前继续使用演示数据，不会在接入模式下发送请求。后续按指标落库和查询 API 的实际字段逐页接入，不能仅切换环境变量就把全部图表变为真实数据。Java Consumer 统计与 Flink 指标作业是不同链路，监控页的计数不包含 Flink 输出。
 
