@@ -1,4 +1,6 @@
-# StockAnalysisSystem V0.6
+# StockAnalysisSystem V0.7
+
+V0.7 新增单股真实 XGBoost 回归预测：显式离线训练及加载模型推理发布、Python 只读 API（8084）、真实预测标签页和独立 Decimal 对账器。GET 不训练、不自动建表；旧 CLI、缓存、原始行情和 Kafka/Flink 链路保持不变。数据截止日不等于今天，未复权收益率和源记录完整性的边界见 [V0.7 运行指南](docs/V0.7_SINGLE_STOCK_PREDICTION.md)。下文 V0.6 的演示占位不再包含预测标签。
 
 V0.6 新增独立 Market API（8083）与 ClickHouse 持久指标。分析概览使用真实股票池、MySQL Kline 和按日期关联的 ClickHouse MA；监控保留原消费 API，其余页面为演示占位。已有 Kafka/Flink 部署只启动新增 ClickHouse，不重建现有服务。安全运行顺序、查询边界、fail-closed 恢复与只读对账见 [V0.6 业务运行指南](docs/V0.6_CLICKHOUSE_MARKET_API.md)。
 

@@ -4,6 +4,10 @@
 
 > 本项目用于学习、工程实践和量化研究，不构成投资建议。
 
+## V0.7 单股预测
+
+V0.7 新增显式离线 XGBoost 训练/加载推理、Python 只读 API（8084）及真实预测标签页。真实模式开放概览与预测；API 使用小数收益率、页面转换百分比，GET 不训练。冻结测试与最新无标签预测分开显示并比较零收益基线。数据截止日不是今天；未复权收盘价、历史缺口与估值修订的边界见 [V0.7 业务运行指南](StockAnalysisSystem/docs/V0.7_SINGLE_STOCK_PREDICTION.md)。旧管线、缓存和 Kafka/Flink 数据保持不变。下文 V0.6 架构中的演示占位不再包含预测标签。
+
 ## V0.6 当前架构
 
 新增 ClickHouse 持久指标与独立 Market API（8083），Vue 分析概览读取真实 MySQL Kline 和 ClickHouse MA，监控页保留原 Consumer API。其余页面仍为演示占位。已有 Kafka/Flink 集群升级时只添加 ClickHouse，不重建集群或删除 checkpoint；启动、查询边界及只读历史对账见 [V0.6 业务运行指南](StockAnalysisSystem/docs/V0.6_CLICKHOUSE_MARKET_API.md)。
