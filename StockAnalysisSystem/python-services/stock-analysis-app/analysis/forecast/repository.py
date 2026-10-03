@@ -2,7 +2,6 @@
 import json
 import pandas as pd
 from sqlalchemy import text
-from .artifacts import ArtifactStore
 from .contracts import ANALYSIS_TYPE, validate_date, validate_model_id, validate_payload, validate_stock, parse_payload
 
 
@@ -13,7 +12,7 @@ class DependencyError(RuntimeError):
 class ForecastRepository:
     def __init__(self, connector, artifact_store=None):
         self.connector = connector
-        self.artifact_store = artifact_store or ArtifactStore()
+        self.artifact_store = artifact_store
 
     def load_market(self, ts_code, start, end):
         validate_stock(ts_code)
@@ -39,6 +38,9 @@ class ForecastRepository:
 
     def publish(self, payload):
         validate_payload(payload)
+        if self.artifact_store is None:
+            from .artifacts import ArtifactStore
+            self.artifact_store = ArtifactStore()
         # Validate files FIRST; append-only predict revisions may only change latest/cutoff.
         _, frozen = self.artifact_store.load(payload['model_id'])
         for key in frozen:
@@ -80,6 +82,8 @@ class ForecastRepository:
         valid = []
         for row in rows:
             try:
+                if not isinstance(row['result'], (str, bytes)) or len(row['result']) > 2 * 1024 * 1024:
+                    raise ValueError('Publication exceeds JSON size bound')
                 payload = parse_payload(row['result'])
                 if payload['ts_code'] == row['ts_code']:
                     valid.append(payload)
@@ -128,3 +132,12 @@ class ForecastRepository:
         except Exception:
             raise DependencyError('Forecast database unavailable') from None
         return True
+
+    def stock_exists(self, ts_code):
+        validate_stock(ts_code)
+        try:
+            with self.connector.session_scope() as session:
+                return session.execute(text('SELECT 1 FROM stock_basic WHERE ts_code=:stock LIMIT 1'),
+                                       dict(stock=ts_code)).first() is not None
+        except Exception:
+            raise DependencyError('Forecast database unavailable') from None
