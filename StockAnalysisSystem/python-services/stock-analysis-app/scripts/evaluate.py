@@ -1,5 +1,6 @@
 """Explicit offline retrospective evaluation; import and help never connect."""
 import argparse
+import logging
 import sys
 from analysis.forecast.contracts import validate_date, validate_stock
 from analysis.forecast.continuity import load_calendar, validate_calendar
@@ -13,7 +14,12 @@ def main(argv=None):
     for name in ('stock', 'start', 'end', 'calendar'):
         parser.add_argument('--'+name, required=True)
     args = parser.parse_args(argv)
+    previous_logging_disable = logging.root.manager.disable
     try:
+        # This offline command has a deliberately minimal public output contract.
+        # Drop records (rather than capturing them), including lazy import,
+        # connector construction/closure and training diagnostics.
+        logging.disable(sys.maxsize)
         validate_stock(args.stock)
         if args.stock != '000001.SZ':
             raise ValueError('Unsupported evaluation stock')
@@ -34,6 +40,8 @@ def main(argv=None):
     except Exception:
         print('Evaluation failed: check inputs, history, reports and database availability.', file=sys.stderr)
         return 1
+    finally:
+        logging.disable(previous_logging_disable)
 
 
 if __name__ == '__main__':
