@@ -61,7 +61,7 @@ class ForecastRepository:
             raise DependencyError('Forecast database unavailable') from None
         return payload['model_id']
 
-    def _records(self, ts_code=None, limit=100, model_id=None):
+    def _records(self, ts_code=None, limit=100, model_id=None, include_publication_id=False):
         where = 'analysis_type=:type'
         params = dict(type=ANALYSIS_TYPE)
         if ts_code is not None:
@@ -75,7 +75,8 @@ class ForecastRepository:
             params['model_match'] = '%'+model_id+'%'
         try:
             with self.connector.session_scope() as session:
-                rows = session.execute(text('SELECT ts_code, result FROM analysis_result WHERE '+where+
+                columns = 'id, ts_code, result' if include_publication_id else 'ts_code, result'
+                rows = session.execute(text('SELECT '+columns+' FROM analysis_result WHERE '+where+
                     ' ORDER BY id DESC LIMIT :limit'), params).mappings().all()
         except Exception:
             raise DependencyError('Forecast database unavailable') from None
@@ -86,7 +87,7 @@ class ForecastRepository:
                     raise ValueError('Publication exceeds JSON size bound')
                 payload = parse_payload(row['result'])
                 if payload['ts_code'] == row['ts_code']:
-                    valid.append(payload)
+                    valid.append(dict(payload, publication_id=row['id']) if include_publication_id else payload)
                 elif model_id is not None:
                     raise DependencyError('Forecast publication unavailable')
             except (ValueError, TypeError):
@@ -122,8 +123,8 @@ class ForecastRepository:
         return next((p for p in self._records(limit=100, model_id=model_id) if p['model_id'] == model_id), None)
 
     def results(self, ts_code, limit=20):
-        return [{k: p[k] for k in ('model_id', 'ts_code', 'data_cutoff', 'target', 'horizon', 'metrics', 'latest')}
-                for p in self._records(ts_code, self._limit(limit))]
+        return [{k: p[k] for k in ('publication_id', 'model_id', 'ts_code', 'data_cutoff', 'target', 'horizon', 'metrics', 'latest')}
+                for p in self._records(ts_code, self._limit(limit), include_publication_id=True)]
 
     def health(self):
         try:

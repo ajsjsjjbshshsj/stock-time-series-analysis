@@ -36,7 +36,7 @@
       </div>
       <div class="card">
         <div class="card-title">特征重要性 Top15（{{ importance?.importance_method || model.importance_method }}）</div>
-        <p v-if="detailLoading" role="status">重要性加载中…</p><p v-else-if="importanceError" role="alert">{{ importanceError }}</p>
+        <p v-if="importanceLoading" role="status">重要性加载中…</p><p v-else-if="importanceError" role="alert">{{ importanceError }}</p>
         <ChartBox v-else-if="importance?.feature_importance.length" :option="importanceOption" :height="260" />
         <p v-else class="muted">暂无特征重要性。</p>
       </div>
@@ -45,25 +45,25 @@
       <div class="card">
         <div class="card-title">预测 vs 实际（下一交易日收益率 %）</div>
         <div class="card-sub">冻结独立测试样本 · {{ prediction?.test_series.length || 0 }} 个信号日 · 按信号日与目标日对齐</div>
-        <p v-if="detailLoading" role="status">预测加载中…</p><p v-else-if="predictionError" role="alert">{{ predictionError }} <button class="btn btn-sm" @click="selectModel(selected)">重试</button></p>
+        <p v-if="predictionLoading" role="status">预测加载中…</p><p v-else-if="predictionError" role="alert">{{ predictionError }} <button class="btn btn-sm" @click="selectModel(selected)">重试</button></p>
         <ChartBox v-else-if="prediction?.test_series.length" :option="predictionOption" :height="260" />
         <p v-else class="muted">暂无独立测试结果。</p>
       </div>
       <div class="card">
         <div class="card-title">最新信号 · 下一交易日</div>
-        <template v-if="prediction?.latest && !detailLoading">
+        <template v-if="prediction?.latest && !predictionLoading">
           <p class="muted">信号日 {{ prediction.latest.signal_date }} → {{ prediction.latest.target_date || '下一交易日（日期待交易日历确认）' }}</p>
           <p class="num latest-return">{{ percent(prediction.latest.predicted_return) }}</p>
           <p>预测收盘到收盘收益率</p><p class="muted">真实收益率：未知 · 尚未观测，不参与测试评估。</p>
           <p class="muted">{{ cutoffLabel }}</p>
         </template>
-        <p v-else class="muted">{{ detailLoading ? '最新信号加载中…' : '暂无最新预测。' }}</p>
+        <p v-else class="muted">{{ predictionLoading ? '最新信号加载中…' : '暂无最新预测。' }}</p>
       </div>
     </div>
     <div class="card section">
       <div class="card-title">analysis_result 发布摘要</div>
       <p v-if="resultLoading" role="status">发布摘要加载中…</p><p v-else-if="resultError" role="alert">{{ resultError }}</p>
-      <DataTable v-else-if="results.length" :columns="resultColumns" :rows="results" row-key="model_id" />
+      <DataTable v-else-if="results.length" :columns="resultColumns" :rows="results" row-key="publication_id" />
       <p v-else class="muted">暂无发布结果。</p>
     </div>
   </div>
@@ -74,13 +74,13 @@ import ChartBox from '../../components/ChartBox.vue'
 import DataTable from '../../components/DataTable.vue'
 import { getModels, getPrediction, getFeatureImportance, getAnalysisResults } from '../../api/analysis.js'
 import { dataSource } from '../../api/client.js'
-import { returnPercent, createGenerationGuard } from '../../utils/prediction.js'
+import { returnPercent, createGenerationGuard, settleDetailRequest } from '../../utils/prediction.js'
 import { useThemeStore } from '../../stores/theme.js'
 import { baseOption, xAxis, yAxis, lineSeries, barSeries } from '../../utils/chart.js'
 const props = defineProps({ tsCode: { type: String, required: true } })
 const theme = useThemeStore()
 const models = ref([]), selected = ref(''), results = ref([]), prediction = ref(null), importance = ref(null)
-const modelLoading = ref(false), resultLoading = ref(false), detailLoading = ref(false)
+const modelLoading = ref(false), resultLoading = ref(false), predictionLoading = ref(false), importanceLoading = ref(false)
 const modelError = ref(''), resultError = ref(''), predictionError = ref(''), importanceError = ref('')
 const stockGuard = createGenerationGuard(), detailGuard = createGenerationGuard()
 const model = computed(() => prediction.value?.metadata || models.value.find(m => m.model_id === selected.value))
@@ -90,17 +90,24 @@ const percent = value => value === null || value === undefined ? '未定义' : `
 const metric = (value, key) => value === null || value === undefined ? '未定义' : key === 'r2' ? value.toFixed(4) : `${returnPercent(value).toFixed(4)} pp`
 async function selectModel(id) {
   const run = detailGuard.next(), code = props.tsCode
-  selected.value = id; prediction.value = null; importance.value = null; predictionError.value = ''; importanceError.value = ''; detailLoading.value = true
+  selected.value = id; prediction.value = null; importance.value = null; predictionError.value = ''; importanceError.value = ''; predictionLoading.value = true; importanceLoading.value = true
   await Promise.all([
-    getPrediction(code, id, { signal: run.signal }).then(dto => { if (run.current()) prediction.value = dto }).catch(e => { if (run.current() && e.name !== 'AbortError') predictionError.value = e.message }),
-    getFeatureImportance(id, 15, { signal: run.signal }).then(dto => { if (dto.ts_code !== code) throw new Error('重要性与股票不匹配'); if (run.current()) importance.value = dto }).catch(e => { if (run.current() && e.name !== 'AbortError') importanceError.value = e.message }),
+    settleDetailRequest(getPrediction(code, id, { signal: run.signal }), run, {
+      success(dto) { prediction.value = dto },
+      error(e) { predictionError.value = e.message },
+      settled() { predictionLoading.value = false },
+    }),
+    settleDetailRequest(getFeatureImportance(id, 15, { signal: run.signal }), run, {
+      success(dto) { if (dto.ts_code !== code) throw new Error('重要性与股票不匹配'); importance.value = dto },
+      error(e) { importanceError.value = e.message },
+      settled() { importanceLoading.value = false },
+    }),
   ])
-  if (run.current()) detailLoading.value = false
 }
 async function loadStock() {
   const run = stockGuard.next(), code = props.tsCode
   detailGuard.cancel(); models.value = []; selected.value = ''; prediction.value = null; importance.value = null; results.value = []
-  modelError.value = ''; resultError.value = ''; predictionError.value = ''; importanceError.value = ''; detailLoading.value = false
+  modelError.value = ''; resultError.value = ''; predictionError.value = ''; importanceError.value = ''; predictionLoading.value = false; importanceLoading.value = false
   modelLoading.value = true; resultLoading.value = true
   await Promise.all([
     getModels(code, { signal: run.signal }).then(rows => { if (!run.current()) return; models.value = rows; if (rows.length) selectModel(rows[0].model_id) }).catch(e => { if (run.current() && e.name !== 'AbortError') modelError.value = e.message }).finally(() => { if (run.current()) modelLoading.value = false }),
@@ -117,7 +124,7 @@ const importanceOption = computed(() => {
   const rows = [...(importance.value?.feature_importance || [])].reverse()
   return { ...baseOption(theme.isDark), grid: { left: 8, right: 24, top: 8, bottom: 2, containLabel: true }, xAxis: yAxis(theme.isDark), yAxis: xAxis(theme.isDark, { data: rows.map(r => r.feature), axisLabel: { fontSize: 9.5 } }), series: [barSeries(importance.value?.importance_method || 'importance', rows.map(r => r.importance))] }
 })
-const resultColumns = [{ key: 'model_id', label: 'model_id', ellipsis: true }, { key: 'ts_code', label: '股票' }, { key: 'data_cutoff', label: '行情截止' }, { key: 'latest', label: '最新信号预测', format: value => value ? percent(value.predicted_return) : '暂无' }]
+const resultColumns = [{ key: 'publication_id', label: '发布 ID', type: 'number', format: String }, { key: 'model_id', label: 'model_id', ellipsis: true }, { key: 'ts_code', label: '股票' }, { key: 'data_cutoff', label: '行情截止' }, { key: 'latest', label: '最新信号预测', format: value => value ? percent(value.predicted_return) : '暂无' }]
 </script>
 <style scoped>
 .model-list { display:flex; flex-direction:column; gap:8px; }

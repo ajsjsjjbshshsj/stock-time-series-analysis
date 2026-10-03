@@ -58,6 +58,23 @@ def test_known_stock_without_model_is_empty(client, repo):
     assert client.get('/api/analysis/results/999999.SZ').status_code == 404
 
 
+def test_results_distinguish_publications_of_same_frozen_model(client, repo, forecast):
+    _, payload = forecast
+    insert(repo, payload)
+    insert(repo, payload)
+    with repo.connector.engine.connect() as db:
+        actual_ids = list(db.execute(text('SELECT id FROM analysis_result ORDER BY id DESC')).scalars())
+    results = client.get('/api/analysis/results/000001.SZ').json()
+    assert [row.get('publication_id') for row in results] == actual_ids
+    assert len(set(row['publication_id'] for row in results)) == 2
+    assert all(type(row['publication_id']) is int and row['publication_id'] > 0 for row in results)
+    assert [row['model_id'] for row in results] == [payload['model_id']] * 2
+    models = client.get('/api/analysis/models?ts_code=000001.SZ').json()
+    assert len(models) == 1
+    assert 'publication_id' not in models[0]
+    assert 'publication_id' not in repo.get('000001.SZ', payload['model_id'])
+
+
 def test_publication_snapshot_and_read_only(client, repo, forecast, monkeypatch):
     _, payload = forecast
     insert(repo, payload)

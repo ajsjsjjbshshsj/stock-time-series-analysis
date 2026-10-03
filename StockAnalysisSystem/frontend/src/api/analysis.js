@@ -6,7 +6,7 @@ import { request, dataSource } from './client.js'
 import * as mock from '../mock/analysis.js'
 import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator.js'
 import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
-import { normalizeModels, normalizePrediction, finiteJson } from '../utils/prediction.js'
+import { normalizeModels, normalizePrediction, normalizeResults, finiteJson } from '../utils/prediction.js'
 
 /** GET /api/analysis/stocks — 股票池（stock_basic 子集） */
 export async function getStockPool(options = {}) {
@@ -75,7 +75,7 @@ export async function getPrediction(tsCode, modelName, options = {}) {
 export async function getAnalysisResults(tsCode, options = {}) {
   const live = dataSource.value === 'hybrid'
   const rows = await request(() => mock.getAnalysisResults(tsCode), `/api/analysis/results/${tsCode}`, options)
-  return live ? normalizeModels(rows, tsCode, false) : rows
+  return live ? normalizeResults(rows, tsCode) : rows
 }
 
 /** POST /api/analysis/backtest — 策略回测 */
