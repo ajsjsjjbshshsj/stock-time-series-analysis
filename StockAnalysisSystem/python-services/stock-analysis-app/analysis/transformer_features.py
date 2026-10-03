@@ -72,6 +72,9 @@ def build_feature_panel(panel_df, config, stockid2idx=None, use_parallel=False, 
         raise ValueError('Invalid stock mapping')
     # A supplied model mapping is frozen: unknown stocks are not invented.
     frame = frame[frame['股票代码'].isin(mapping)].copy()
+    if 'stock_history_starts' in config:
+        starts = frame['股票代码'].map(config['stock_history_starts']).map(pd.Timestamp)
+        frame = frame[frame['日期'] >= starts].copy()
     if frame.empty:
         raise ValueError('No stocks known to the supplied mapping')
     columns = feature_columns(config['feature_num'])
@@ -137,7 +140,8 @@ def _digest(path):
     return digest.hexdigest()
 
 
-def save_model_preprocessing(model_path, scaler, full_features, selected_features, mapping, config, history_start):
+def save_model_preprocessing(model_path, scaler, full_features, selected_features, mapping, config, history_start,
+                             stock_history_starts):
     """Bind each checkpoint to its own scaler, ordered columns and stock IDs."""
     path = Path(model_path)
     scaler_path = _sidecar(path, '_scaler.pkl')
@@ -145,6 +149,7 @@ def save_model_preprocessing(model_path, scaler, full_features, selected_feature
     manifest = dict(pipeline_version=CACHE_VERSION, full_features=list(full_features),
                     selected_features=list(selected_features), stockid2idx=mapping,
                     feature_history_start=pd.Timestamp(history_start).isoformat(),
+                    stock_history_starts={code: pd.Timestamp(date).isoformat() for code, date in stock_history_starts.items()},
                     config={key: config[key] for key in MODEL_CONFIG_KEYS},
                     model_sha256=_digest(path), scaler_sha256=_digest(scaler_path))
     _sidecar(path, '_preprocessing.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -169,9 +174,12 @@ def load_model_preprocessing(model_path, config, scaler_path=None):
         full = manifest['full_features']
         selected = manifest['selected_features']
         mapping = manifest['stockid2idx']
+        starts = manifest['stock_history_starts']
         if (full != feature_columns(config['feature_num']) or list(scaler.feature_names_in_) != full
                 or not selected or len(set(selected)) != len(selected) or not set(selected).issubset(full)
-                or not mapping or sorted(mapping.values()) != list(range(len(mapping)))):
+                or not mapping or sorted(mapping.values()) != list(range(len(mapping)))
+                or set(starts) != set(mapping)
+                or any(pd.isna(pd.Timestamp(date)) for date in starts.values())):
             raise ValueError('Invalid model feature/scaler/stock metadata; retrain')
         pd.Timestamp(manifest['feature_history_start'])
         return scaler, manifest

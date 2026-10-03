@@ -493,6 +493,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         raise ValueError("Provide panel_df or feature_path")
     full_features = list(features)
     history_start = all_data['日期'].min()
+    stock_history_starts = all_data.groupby('股票代码')['日期'].min().to_dict()
     num_stocks = len(stockid2idx)
     train_data, val_data, val_source, scaler = prepare_training_data(all_data, features, val_start_date)
 
@@ -517,8 +518,9 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         val_data = val_data.dropna(subset=features)
 
     # 创建数据集
+    train_source = val_source[val_source['日期'] < pd.Timestamp(val_start_date)].copy()
     train_result = create_ranking_dataset_vectorized(
-        train_data, features, config['sequence_length']
+        train_source, features, config['sequence_length']
     )
     val_result = create_ranking_dataset_vectorized(
         val_source, features, config['sequence_length'],
@@ -659,7 +661,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
     if best_epoch < 0:
         raise ValueError('No valid checkpoint produced')
     scaler_path = save_model_preprocessing(model_path, scaler, full_features, features,
-                                           stockid2idx, config, history_start)
+                                           stockid2idx, config, history_start, stock_history_starts)
     return {
         'model_path': os.path.join(output_dir, f'{save_name or "best_model"}.pth'),
         'scaler_path': scaler_path,
@@ -709,7 +711,8 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
     features = manifest['selected_features']
     stockid2idx = manifest['stockid2idx']
     num_stocks = len(stockid2idx)
-    inference_config = dict(config, feature_start_date=manifest['feature_history_start'])
+    inference_config = dict(config, feature_start_date=manifest['feature_history_start'],
+                            stock_history_starts=manifest['stock_history_starts'])
     if feature_path:
         # Validate disposable cache format, then rebuild with the model's origin.
         load_precomputed_features(feature_path, config)
@@ -720,12 +723,13 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
     if panel_df is None:
         raise ValueError("Provide panel_df or feature_path")
     normalized = normalize_panel(panel_df)
+    latest_date = normalized['日期'].max()
     known = normalized[normalized['股票代码'].isin(stockid2idx)]
     if known.empty:
         raise ValueError("No stocks known to model")
-    anchor = pd.Timestamp(manifest['feature_history_start'])
-    if known['日期'].min() > anchor:
-        raise ValueError("Incomplete model feature history; reload raw data or retrain")
+    for code, first_date in known.groupby('股票代码')['日期'].min().items():
+        if first_date > pd.Timestamp(manifest['stock_history_starts'][code]):
+            raise ValueError(f"Incomplete model feature history for {code}; reload raw data or retrain")
     processed, computed, _, _ = build_feature_panel(
         normalized, inference_config, stockid2idx, include_labels=False)
     if computed != full_features:
@@ -742,7 +746,6 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
 
 
     # 构建预测序列
-    latest_date = pd.to_datetime(processed['日期']).max()
     sequences = []
     stock_codes = []
 

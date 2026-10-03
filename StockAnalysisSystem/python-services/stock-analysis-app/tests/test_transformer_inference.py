@@ -36,15 +36,16 @@ def test_preprocess_inference_keeps_latest_unlabeled_date(tmp_path):
     assert len(actual) == len(panel)
 
 
-def tiny_bundle(tmp_path, panel):
-    config = dict(configuration(tmp_path), sequence_length=10, d_model=8, nhead=2,
+def tiny_bundle(tmp_path, panel, feature_num='39'):
+    config = dict(configuration(tmp_path), feature_num=feature_num, sequence_length=10, d_model=8, nhead=2,
                   num_layers=1, dim_feedforward=16, dropout=0.0, use_multi_head=False)
     raw, features, mapping, split = pipeline.build_feature_panel(panel, config)
     _, _, _, scaler = pipeline.prepare_training_data(raw, features, split)
     model = StockTransformer(len(features), config, len(mapping))
     path = tmp_path / 'tiny.pth'
     torch.save(model.state_dict(), path)
-    pipeline.save_model_preprocessing(path, scaler, features, features, mapping, config, raw['日期'].min())
+    pipeline.save_model_preprocessing(path, scaler, features, features, mapping, config, raw['日期'].min(),
+                                     raw.groupby('股票代码')['日期'].min().to_dict())
     return config, raw, features, scaler, path
 
 
@@ -137,7 +138,7 @@ def test_training_entrances_share_purged_split_and_validation_context(tmp_path, 
         args = dict(feature_path=str(cache))
     with pytest.raises(StopBeforeTraining):
         trainer.run_transformer_training(config=config, **args)
-    pd.testing.assert_frame_equal(captured[0], train)
+    pd.testing.assert_frame_equal(captured[0], context[context['日期'] < pd.Timestamp(split)])
     pd.testing.assert_frame_equal(captured[1], context)
 
 
@@ -172,3 +173,77 @@ def test_synthetic_one_epoch_training_emits_a_usable_bound_model(tmp_path, monke
         assert len(forecast) == 5 and np.isfinite(forecast['预测分数']).all()
     finally:
         torch.set_num_threads(previous_threads)
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_each_stock_requires_its_own_complete_model_history(tmp_path, monkeypatch, cached):
+    panel = market_panel(count=320)
+    config, _, _, _, model_path = tiny_bundle(tmp_path, panel, feature_num='158+39')
+    truncated = panel[~((panel.ts_code == '000002.SZ') & (panel.trade_date < panel.trade_date.unique()[200]))]
+    monkeypatch.setattr('visualization.plotter.StockPlotter', lambda: object())
+    args = dict(panel_df=truncated)
+    if cached:
+        cache = tmp_path / 'features.parquet'
+        pipeline.save_feature_cache(truncated, cache, config, use_parallel=False)
+        args = dict(feature_path=str(cache))
+    with pytest.raises(ValueError, match='history|历史'):
+        trainer.predict_top_stocks_transformer(model_path=str(model_path), config=config, **args)
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_unknown_stock_latest_date_does_not_make_old_known_windows_current(tmp_path, monkeypatch, cached):
+    panel = market_panel(count=320)
+    config, _, _, _, model_path = tiny_bundle(tmp_path, panel)
+    new = market_panel(count=321, stocks=3).query("ts_code == '000003.SZ'").tail(1)
+    monkeypatch.setattr('visualization.plotter.StockPlotter', lambda: object())
+    args = dict(panel_df=pd.concat([panel, new]))
+    if cached:
+        cache = tmp_path / 'features.parquet'
+        pipeline.save_feature_cache(args['panel_df'], cache, config, use_parallel=False)
+        args = dict(feature_path=str(cache))
+    result = trainer.predict_top_stocks_transformer(model_path=str(model_path), config=config, **args)
+    assert result is None
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_training_keeps_feature_sessions_with_invalid_labels(tmp_path, monkeypatch, cached):
+    panel = market_panel(count=320, stocks=10)
+    bad_date = panel.trade_date.unique()[100]
+    panel.loc[panel.trade_date == bad_date, 'open'] = 0.0
+    config = dict(configuration(tmp_path), use_probe_selection=False)
+    raw, features, _, split = pipeline.build_feature_panel(panel, config)
+    _, _, context, _ = pipeline.prepare_training_data(raw, features, split)
+    expected = context[context['日期'] < pd.Timestamp(split)]
+    captured = []
+    class StopBeforeTraining(Exception):
+        pass
+    def capture(frame, columns, length, **kwargs):
+        captured.append(frame)
+        raise StopBeforeTraining
+    monkeypatch.setattr(trainer, 'create_ranking_dataset_vectorized', capture)
+    args = dict(panel_df=panel)
+    if cached:
+        cache = tmp_path / 'features.parquet'
+        pipeline.save_feature_cache(panel, cache, config, use_parallel=False)
+        args = dict(feature_path=str(cache))
+    with pytest.raises(StopBeforeTraining):
+        trainer.run_transformer_training(config=config, **args)
+    pd.testing.assert_frame_equal(captured[0], expected)
+    assert captured[0].label.isna().any()
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_legitimate_later_listing_uses_its_own_history_start(tmp_path, monkeypatch, cached):
+    panel = market_panel(count=320)
+    panel = panel[~((panel.ts_code == '000002.SZ') & (panel.trade_date < panel.trade_date.unique()[60]))]
+    config, _, _, _, model_path = tiny_bundle(tmp_path, panel)
+    _, manifest = pipeline.load_model_preprocessing(model_path, config)
+    assert manifest['stock_history_starts']['000001.SZ'] != manifest['stock_history_starts']['000002.SZ']
+    monkeypatch.setattr('visualization.plotter.StockPlotter', lambda: object())
+    args = dict(panel_df=panel)
+    if cached:
+        cache = tmp_path / 'features.parquet'
+        pipeline.save_feature_cache(panel, cache, config, use_parallel=False)
+        args = dict(feature_path=str(cache))
+    result = trainer.predict_top_stocks_transformer(model_path=str(model_path), config=config, **args)
+    assert set(result['股票代码']) == {'000001.SZ', '000002.SZ'}
