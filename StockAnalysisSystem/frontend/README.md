@@ -42,7 +42,7 @@ V0.7 预测使用 Python 只读 API（8084），GET 不训练。页面分别显�
 VITE_DATA_SOURCE=hybrid
 CONSUMER_API_TARGET=http://127.0.0.1:8080
 MARKET_API_TARGET=http://127.0.0.1:8083
-FORECAST_API_TARGET=http://127.0.0.1:8084
+PREDICTION_API_TARGET=http://127.0.0.1:8084
 ```
 
 Vite 开发服务器代理监控请求到 Java 服务，避免开发时的跨域问题；修改环境文件后重启 Vite。`http` 配置值兼容为 `hybrid`。生产部署需要同源反向代理转发 `/api/consumer/*` 和 `/actuator/health`；`vite preview` 本身不提供该代理。也可设置 `VITE_API_BASE` 指向允许该页面来源的 API 地址。
