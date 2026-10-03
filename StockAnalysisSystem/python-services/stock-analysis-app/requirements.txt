@@ -10,6 +10,7 @@ pymysql>=1.0.0
 # 数据分析
 scipy>=1.9.0
 scikit-learn>=1.1.0
+threadpoolctl==3.6.0
 
 # 机器学习
 xgboost>=1.7.0

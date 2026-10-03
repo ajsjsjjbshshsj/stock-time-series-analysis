@@ -6,7 +6,7 @@ from .contracts import validate_stock, FEATURE_NAMES, FEATURE_VERSION
 from .continuity import verify_dates
 
 
-def build_samples(frame, ts_code, calendar=None):
+def prepare_causal_rows(frame, ts_code, calendar=None):
     validate_stock(ts_code)
     data = frame.copy(deep=True)
     if not 300 <= len(data) <= 2500:
@@ -44,6 +44,13 @@ def build_samples(frame, ts_code, calendar=None):
     rows['target_date'] = data.trade_date.shift(-1)
     rows['actual_return'] = data.close.shift(-1) / data.close - 1
     rows[FEATURE_NAMES] = rows[FEATURE_NAMES].replace([np.inf, -np.inf], np.nan)
+    return dict(frame=rows, source_continuity=evidence, feature_names=list(FEATURE_NAMES))
+
+
+def build_samples(frame, ts_code, calendar=None):
+    prepared = prepare_causal_rows(frame, ts_code, calendar)
+    rows = prepared['frame']
+    evidence = prepared['source_continuity']
     # Boundaries are fixed BEFORE warmup/label filtering.
     n = len(rows)
     val_start, test_start = rows.signal_date.iloc[int(n*.6)], rows.signal_date.iloc[int(n*.8)]
