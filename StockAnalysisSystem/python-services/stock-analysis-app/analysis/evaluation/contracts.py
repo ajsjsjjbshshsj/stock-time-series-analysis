@@ -125,8 +125,9 @@ def _evaluation(report):
 
 def _computed(actual, predicted):
     residual = [a-p for a,p in zip(actual, predicted)]
-    mean = sum(actual)/len(actual)
-    denominator = sum((a-mean)**2 for a in actual)
+    constant = len(actual) < 2 or all(a == actual[0] for a in actual)
+    mean = sum(actual)/len(actual) if not constant else actual[0]
+    denominator = 0. if constant else sum((a-mean)**2 for a in actual)
     return dict(rmse=math.sqrt(sum(r*r for r in residual)/len(actual)),
         mae=sum(abs(r) for r in residual)/len(actual),
         r2=1-sum(r*r for r in residual)/denominator if denominator else None)

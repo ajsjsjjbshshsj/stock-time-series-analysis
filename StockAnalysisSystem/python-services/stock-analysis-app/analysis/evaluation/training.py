@@ -23,7 +23,8 @@ def metrics(actual, predicted):
             or not np.isfinite(actual).all() or not np.isfinite(predicted).all()):
         raise ValueError('Metrics require nonempty finite paired observations')
     residual = actual-predicted
-    denominator = float(np.sum((actual-np.mean(actual))**2))
+    constant = actual.size < 2 or np.all(actual == actual[0])
+    denominator = 0. if constant else float(np.sum((actual-np.mean(actual))**2))
     result = dict(rmse=float(np.sqrt(np.mean(residual**2))), mae=float(np.mean(abs(residual))),
         r2=float(1-np.sum(residual**2)/denominator) if denominator else None)
     if any(v is not None and not np.isfinite(v) for v in result.values()):

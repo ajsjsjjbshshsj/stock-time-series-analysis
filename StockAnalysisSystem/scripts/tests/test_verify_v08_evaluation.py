@@ -128,6 +128,22 @@ def test_cli_binds_requested_report_and_source_bounds(oracle, sample, monkeypatc
     assert calls[0][1] == '/api/analysis/evaluations/000001.SZ/'+args.report
 
 
+@pytest.mark.parametrize('bound', ['start', 'end'])
+def test_cli_matching_id_rejects_requested_source_bounds(oracle, sample, monkeypatch, tmp_path, bound):
+    import json
+    source, report, calendar = sample
+    path = tmp_path/'calendar.json'
+    path.write_text(json.dumps(calendar))
+    args = SimpleNamespace(stock=report['ts_code'], report=report['report_id'],
+        start=calendar['start'], end=calendar['end'], calendar=str(path),
+        api_base='http://localhost:8084', timeout=15)
+    setattr(args, bound, calendar['open_dates'][1 if bound == 'start' else -2])
+    monkeypatch.setattr(oracle, 'load_source', lambda *a: source)
+    monkeypatch.setattr(oracle, 'fetch', lambda *a: report)
+    with pytest.raises(VerificationError, match='Requested source bounds mismatch'):
+        oracle.run(args)
+
+
 @pytest.mark.parametrize('change', [
     lambda s,r,c: s[1].update(close=0),
     lambda s,r,c: s[1].update(close=float('inf')),

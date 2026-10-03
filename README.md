@@ -155,7 +155,7 @@ mvn test
 
 ## 文档导航
 
-- [V0.8 固定协议历史滚动评估指南](StockAnalysisSystem/docs/V0.8_EVALUATION_GUIDE.md)：2026-10-03 单次真实发布 `eval_e854bcb0ae3348a9b1f244ca57f81be7`，000001.SZ 源1150日（2022-01-04 至2026-09-30）、三窗共300点；独立核对 PASS，旧数据/模型 hash 不变。指南含完整日期、真实浏览器验证范围与单行复现命令。历史已观察、未复权且非前瞻验证；最终全量回归、广泛审阅和个人 PR 仍待完成。
+- [V0.8 固定协议历史滚动评估指南](StockAnalysisSystem/docs/V0.8_EVALUATION_GUIDE.md)：2026-10-03 单次真实发布 `eval_e854bcb0ae3348a9b1f244ca57f81be7`，000001.SZ 源1150日（2022-01-04 至2026-09-30）、三窗共300点；独立核对 PASS，旧数据/模型 hash 不变。指南含完整日期、真实浏览器验证范围与单行复现命令。历史已观察、未复权且非前瞻验证；验证范围与限制见指南。
 
 - [V0.3 消息协议](StockAnalysisSystem/docs/V0.3_MESSAGE_SCHEMA.md)
 - [V0.3 测试用例](StockAnalysisSystem/docs/V0.3_TEST_CASES.md)

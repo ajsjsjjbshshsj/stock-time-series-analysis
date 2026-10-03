@@ -21,6 +21,59 @@ def test_roundtrip_and_summary(report):
     assert summary['evaluation']['count'] == 300
 
 
+def test_summary_nested_structures_are_detached(report):
+    from analysis.evaluation.contracts import make_summary
+    original = copy.deepcopy(report)
+    detached = copy.deepcopy(report)
+    summary = make_summary(detached, 'a'*64, 1234)
+    summary['source']['data_hash'] = 'b'*64
+    summary['folds'][0]['metrics']['ridge']['mae'] = 42.
+    assert detached == original
+    detached['source']['row_count'] = 42
+    detached['folds'][1]['metrics']['xgboost']['mae'] = 42.
+    assert summary['source']['row_count'] == original['source']['row_count']
+    assert summary['folds'][1] == original['folds'][1]
+
+
+@pytest.mark.parametrize('value,count', [(.01, 100), (.1, 300), (.01, 1)])
+@pytest.mark.parametrize('perfect', [True, False])
+def test_contract_computed_exact_constant_null_r2(value, count, perfect):
+    from analysis.evaluation.contracts import _computed
+    result = _computed([value]*count, [value if perfect else 0.]*count)
+    assert result['r2'] is None
+
+
+def test_contract_small_genuinely_varying_r2():
+    import math
+    from analysis.evaluation.contracts import _computed
+    actual = [.01, math.nextafter(.01, math.inf)]
+    assert _computed(actual, actual)['r2'] == 1.
+
+
+@pytest.mark.parametrize('value', [.01, .1])
+def test_constant_report_null_r2_roundtrip_and_forgery(report, value):
+    from analysis.evaluation.contracts import parse_report, validate_report
+    from analysis.evaluation.training import metrics
+    constant = copy.deepcopy(report)
+    for row in constant['series']:
+        row['actual_return'] = value
+        row['predicted_returns'] = dict(zero_return=0., ridge=value, xgboost=0.)
+    def computed(rows):
+        return {method: metrics([r['actual_return'] for r in rows],
+            [r['predicted_returns'][method] for r in rows]) for method in constant['methods']}
+    for i, fold in enumerate(constant['folds']):
+        fold['metrics'] = computed(constant['series'][i*100:(i+1)*100])
+    constant['overall_metrics'] = computed(constant['series'])
+    assert all(m['r2'] is None for f in constant['folds'] for m in f['metrics'].values())
+    assert all(m['r2'] is None for m in constant['overall_metrics'].values())
+    assert parse_report(json.dumps(constant, allow_nan=False).encode()) == constant
+    for container in (constant['folds'][0]['metrics'], constant['overall_metrics']):
+        container['ridge']['r2'] = 1.
+        with pytest.raises(ValueError, match='Metric does not match series'):
+            validate_report(constant)
+        container['ridge']['r2'] = None
+
+
 @pytest.mark.parametrize('field,value', [('protocol_id','bad'), ('history_previously_observed',1),
     ('prospective_validation',True), ('units','percent'), ('horizon',True), ('feature_names',[]),
     ('methods',{}), ('schema_version',True)])
