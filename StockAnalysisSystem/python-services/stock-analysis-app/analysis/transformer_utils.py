@@ -489,6 +489,8 @@ def create_ranking_dataset_vectorized(data, features, sequence_length,
     策略：先按日期分组，对每个日期只保留最近 sequence_length 天的数据，
     避免将所有窗口缓存在内存中。
     """
+    if type(sequence_length) is not int or sequence_length <= 0:
+        raise ValueError('sequence_length must be a positive integer')
     data = data.copy()
     data.rename(columns={'trade_date': 'datetime', '日期': 'datetime'}, inplace=True)
     if 'datetime' not in data.columns:
@@ -496,14 +498,14 @@ def create_ranking_dataset_vectorized(data, features, sequence_length,
 
     data['datetime'] = pd.to_datetime(data['datetime'])
     data = data.sort_values(['instrument', 'datetime']).reset_index(drop=True)
-    data = data.dropna(subset=['label'])
+    if data.duplicated(['instrument', 'datetime']).any():
+        raise ValueError('Duplicate instrument/date session')
 
     if min_window_end_date is not None:
         min_window_end_date = pd.to_datetime(min_window_end_date)
 
     # 获取所有唯一日期
     all_dates = sorted(data['datetime'].unique())
-    date_idx = {d: i for i, d in enumerate(all_dates)}
     n_dates = len(all_dates)
 
     # 按股票分组的数据
@@ -530,14 +532,8 @@ def create_ranking_dataset_vectorized(data, features, sequence_length,
         if min_window_end_date is not None and date < min_window_end_date:
             continue
 
-        # 需要至少 sequence_length 个历史日期 + 5 个未来日期
-        if di < sequence_length - 1 or di + 5 >= n_dates:
-            continue
-
-        # 验证未来5个交易日连续
-        future_dates = np.array(all_dates[di+1:di+6])
-        future_diffs = np.diff(future_dates.astype('datetime64[D]')).astype(np.int64)
-        if not np.all(future_diffs == 1):
+        # Labels already encode their future horizon; context is historical only.
+        if di < sequence_length - 1:
             continue
 
         # 收集当天有数据的所有股票
@@ -552,19 +548,13 @@ def create_ranking_dataset_vectorized(data, features, sequence_length,
                 continue
             end_idx = np.argmax(date_mask)
 
-            if end_idx < sequence_length - 1 or end_idx + 5 >= len(sdata['dates']):
-                continue
-
-            # 验证该股票的未来5天连续
-            sfuture = sdata['dates'][end_idx+1:end_idx+6]
-            if len(sfuture) < 5:
-                continue
-            sdiffs = np.diff(sfuture.astype('datetime64[D]')).astype(np.int64)
-            if not np.all(sdiffs == 1):
+            if end_idx < sequence_length - 1 or not np.isfinite(sdata['labels'][end_idx]):
                 continue
 
             start_idx = end_idx - sequence_length + 1
             seq = sdata['features'][start_idx:end_idx+1]
+            if not np.isfinite(seq).all():
+                continue
             day_seqs.append(seq)
             day_targets.append(sdata['labels'][end_idx])
             day_codes.append(stock_code)

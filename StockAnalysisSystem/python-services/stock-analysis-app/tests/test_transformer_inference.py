@@ -146,3 +146,29 @@ def test_inference_rejects_wrong_scaler_column_order(tmp_path):
     wrong = StandardScaler().fit(raw[list(reversed(features))])
     with pytest.raises(ValueError, match='order'):
         pipeline.prepare_inference_data(raw, features, wrong)
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_synthetic_one_epoch_training_emits_a_usable_bound_model(tmp_path, monkeypatch, cached):
+    panel = market_panel(count=100, stocks=10)
+    config = dict(configuration(tmp_path), sequence_length=10, d_model=8, nhead=2,
+                  num_layers=1, dim_feedforward=16, dropout=0.0, use_multi_head=False,
+                  use_probe_selection=False, num_epochs=1, batch_size=128)
+    monkeypatch.setattr('visualization.plotter.StockPlotter', lambda: object())
+    args = dict(panel_df=panel)
+    if cached:
+        cache = tmp_path / 'features.parquet'
+        pipeline.save_feature_cache(panel, cache, config, use_parallel=False)
+        args = dict(feature_path=str(cache))
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        result = trainer.run_transformer_training(config=config, use_multi_head=False, **args)
+        scaler, manifest = pipeline.load_model_preprocessing(result['model_path'], result['config'])
+        assert result['best_epoch'] == 1
+        assert manifest['selected_features'] == result['feature_names']
+        forecast = trainer.predict_top_stocks_transformer(model_path=result['model_path'],
+                                                         config=result['config'], panel_df=panel)
+        assert len(forecast) == 5 and np.isfinite(forecast['预测分数']).all()
+    finally:
+        torch.set_num_threads(previous_threads)
