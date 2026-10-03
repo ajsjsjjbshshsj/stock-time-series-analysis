@@ -274,7 +274,13 @@ one Kafka cluster. Its default `stock-flink` preserves the existing
 `stock-flink-indicator-v1-{main|late|dlt}-` prefixes; assign a unique, stable value per deployment
 to avoid producer fencing.
 
-回滚 V0.5 时只取消 Flink 作业，并将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，也不要执行 `docker compose down -v`。
+回滚 V0.5 时先按上述步骤取消 Flink 作业，再只停止 Flink 服务：
+
+```powershell
+docker compose -f infrastructure\docker-compose.yml stop flink-taskmanager flink-jobmanager
+```
+
+将 Collector 设为 `COLLECTOR_OUTPUT_MODE=mysql`（或保留原有 `dual` 策略）；不要停止 Kafka、V0.4 Java Consumer、MySQL 或 Analysis App，不要删除 checkpoint volume、savepoint 或 Topic，也不要执行 `docker compose down -v`。Session Cluster 没有配置 HA：JobManager 冷启动不会自动找回作业，必须用保留的 checkpoint/savepoint 和原配置显式 `flink run -s` 恢复。
 
 ## Stock Analysis App
 

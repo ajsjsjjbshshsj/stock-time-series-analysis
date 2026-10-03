@@ -1,10 +1,10 @@
 # StockAnalysisSystem
 
-基于 Python、Kafka、Java、MySQL 的股票数据采集与分析系统。目前项目已演进到 V0.4：Python 统一负责外部市场数据采集，Kafka 与 Java 提供可回滚的消息消费和监控链路，分析应用只从 MySQL 与兼容缓存读取数据。
+基于 Python、Kafka、Java、Flink、MySQL 的股票数据采集与分析系统。V0.5 在 V0.4 数据链路旁新增 Flink 实时日线指标：20 个交易日托管状态、事务 Kafka 输出、迟到和非法事件隔离。Python 仍统一负责外部市场数据采集，离线分析应用仍只从 MySQL 与兼容缓存读取数据。
 
 > 本项目用于学习、工程实践和量化研究，不构成投资建议。
 
-## V0.4 当前架构
+## V0.5 当前架构
 
 ```text
 Tushare / AkShare
@@ -14,6 +14,8 @@ Python Collector ----> MySQL ----> Stock Analysis App / Streamlit
        |
        v
      Kafka ----> Java Consumer ----> DLT / Monitoring API
+       |
+       +------> Flink ----> daily-indicator / late / Flink DLT
 ```
 
 - `python-collector` 是唯一允许调用 Tushare/AkShare SDK 的服务。
@@ -21,6 +23,7 @@ Python Collector ----> MySQL ----> Stock Analysis App / Streamlit
 - Kafka 消息链路继承 V0.3 的标准事件、协议校验和失败隔离能力。
 - `stock-analysis-app` 负责特征工程、模型训练、预测和可视化，不再直接访问外部行情 API。
 - Kafka 不可用时可以切回 `COLLECTOR_OUTPUT_MODE=mysql`，继续使用原有数据库路径。
+- Flink 使用 Java 21 / Flink 2.2.0，`read_committed` 下游只读取 checkpoint 提交后的事务结果；不写 MySQL 特征表。
 
 ## 核心能力
 
@@ -40,7 +43,8 @@ StockAnalysisSystem/
 │   └── stock-analysis-app/     # 数据分析、特征、训练、预测和可视化
 ├── java-services/
 │   ├── common-model/           # Python/Java 公共消息契约
-│   └── kafka-consumer-service/ # Kafka 消费、校验、DLT、API 和监控页
+│   ├── kafka-consumer-service/ # Kafka 消费、校验、DLT、API 和监控页
+│   └── flink-realtime-job/     # 实时日线指标、托管状态、exactly-once Kafka 输出
 ├── infrastructure/             # Kafka、Topic 初始化、Kafka UI、MySQL 迁移
 ├── scripts/                    # 冒烟测试和对账脚本
 └── docs/                       # 消息协议、测试、迁移验收和发布说明
@@ -96,6 +100,19 @@ mvn -pl kafka-consumer-service -am spring-boot:run
 ```
 
 更多历史补采、成分股、分析应用和数据库迁移步骤见 [完整运行指南](StockAnalysisSystem/README.md)。
+
+### V0.5 实时指标启动
+
+从 `StockAnalysisSystem` 目录启动 Flink 集群，设置 `FLINK_JAVA_HOME` 指向 JDK 21，再运行提交脚本（构建 shaded JAR、等待集群就绪、避免重复提交）：
+
+```powershell
+docker compose -f infrastructure\docker-compose.yml up -d flink-jobmanager flink-taskmanager
+.\scripts\submit_v05_flink_job.ps1
+```
+
+Flink UI：<http://localhost:8082>。从 Collector 目录用 `replay-daily-events --start 20260429 --end 20260529 --ts-code 000001.SZ` 重放 MySQL 中已有数据；先确认该范围实际包含至少 20 个交易日。新部署使用唯一且稳定的 `FLINK_DEPLOYMENT_NAMESPACE`，避免 Kafka 事务 producer fencing。
+
+完整配置、savepoint/retained checkpoint 恢复和停止步骤见 [V0.5 运行指南](StockAnalysisSystem/README.md#flink-实时指标)，验收范围及真实结果见 [对账报告](StockAnalysisSystem/docs/V0.5_RECONCILIATION_REPORT.md)。回滚只取消 Flink 作业并停止 `flink-jobmanager` / `flink-taskmanager`，保留 checkpoint volume、Topic 和 V0.4 服务；不要执行 `down -v`。
 
 ## 页面与接口
 
