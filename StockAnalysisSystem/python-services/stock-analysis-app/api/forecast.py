@@ -43,7 +43,7 @@ def _metadata(payload):
             if k not in ('test_series', 'latest', 'feature_importance')}
 
 
-def create_app(repository=None):
+def create_app(repository=None, evaluation_repository=None):
     @asynccontextmanager
     async def lifespan(app):
         if repository is None:
@@ -51,6 +51,12 @@ def create_app(repository=None):
                 app.state.repository = _production_repository()
             except Exception:
                 app.state.repository = None
+        if evaluation_repository is None and app.state.repository is not None:
+            try:
+                from analysis.evaluation.repository import EvaluationRepository
+                app.state.evaluation_repository = EvaluationRepository(app.state.repository.connector)
+            except Exception:
+                app.state.evaluation_repository = None
         try:
             yield
         finally:
@@ -59,6 +65,7 @@ def create_app(repository=None):
 
     app = FastAPI(lifespan=lifespan)
     app.state.repository = repository
+    app.state.evaluation_repository = evaluation_repository
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
@@ -132,6 +139,8 @@ def create_app(repository=None):
             return JSONResponse(status_code=503, content={'status': 'DOWN', 'database': 'DOWN'})
         return {'status': 'UP', 'database': 'UP'}
 
+    from api.evaluations import register_evaluation_routes
+    register_evaluation_routes(app)
     return app
 
 
