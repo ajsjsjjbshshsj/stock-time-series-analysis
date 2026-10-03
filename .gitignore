@@ -14,3 +14,5 @@ StockAnalysisSystem/.env
 StockAnalysisSystem/frontend.zip
 docs/superpowers/
 StockAnalysisSystem/docs/superpowers/
+/logs/
+StockAnalysisSystem/python-services/stock-analysis-app/models/v07/

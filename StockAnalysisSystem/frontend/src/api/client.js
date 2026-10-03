@@ -20,7 +20,7 @@ export function createRequestClient({ mode = 'mock', base = '', fetchImpl = glob
   return async (mockProducer, path, options = {}) => {
     const selected = typeof mode === 'function' ? mode() : mode
     const pathname = path.split('?')[0]
-    const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || /^\/api\/analysis\/(kline|indicators)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname)
+    const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || pathname === '/api/analysis/models' || /^\/api\/analysis\/(kline|indicators|prediction|results)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname) || /^\/api\/analysis\/models\/[A-Za-z0-9_-]+\/importance$/.test(pathname)
     if (normalizeMode(selected) === 'mock' || !live) {
       if (mockDelayMs) await new Promise((resolve) => setTimeout(resolve, mockDelayMs))
       return mockProducer()

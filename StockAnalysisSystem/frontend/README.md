@@ -29,7 +29,11 @@ npm test           # 接口行为回归
 
 ## 切换到真实后端
 
-顶栏“数据模式”可以随时切换，选择保存在浏览器。默认是演示模式。选择“接入现有 API”后，监控页与分析综合概览读取真实接口；分析其他八个标签禁用，切换演示模式后可查看原有演示。采集和系统总览仍显示演示数据。分析顶栏标识“真实行情 · 概览已接入”，不表示模型或预测已接入。
+顶栏“数据模式”可以随时切换，选择保存在浏览器。默认是演示模式。选择“接入现有 API”后，监控页、分析综合概览及 V0.7 预测读取真实接口；其他未接入分析标签禁用，切换演示模式后可查看原有演示。采集和系统总览仍显示演示数据。
+
+V0.7 预测使用 Python 只读 API（8084），GET 不训练。页面分别显示冻结测试曲线和 latest 未知实际值，收益率仅从 API 小数转百分比一次；RMSE/MAE 页面单位为百分点，R² 无单位，不展示概率或虚构未来价格。没有模型、结果或依赖失败时明确提示，不回退演示。数据截止日不是今天；未复权价、源记录缺口及估值历史修订限制见 [V0.7 指南](../docs/V0.7_SINGLE_STOCK_PREDICTION.md)。
+
+预测新增真实 GET：`/api/analysis/models?ts_code=...`、`/api/analysis/models/{model_id}/importance`、`/api/analysis/prediction/{ts_code}?model=...`、`/api/analysis/results/{ts_code}`。模型列表为元信息数组，预测 DTO 为 `{metadata,test_series,latest}`；同一模型可有多个 `publication_id` 发布。Vite 仅代理这四类具体路径到 8084，行情仍走 8083、监控仍走 8080。生产须保持这些精确同源代理，不覆盖整个分析命名空间，不给浏览器数据库凭据。
 
 也可以使用 `.env.local` 配置首次打开页面的默认值（已有浏览器选择优先）：
 
@@ -38,6 +42,7 @@ npm test           # 接口行为回归
 VITE_DATA_SOURCE=hybrid
 CONSUMER_API_TARGET=http://127.0.0.1:8080
 MARKET_API_TARGET=http://127.0.0.1:8083
+PREDICTION_API_TARGET=http://127.0.0.1:8084
 ```
 
 Vite 开发服务器代理监控请求到 Java 服务，避免开发时的跨域问题；修改环境文件后重启 Vite。`http` 配置值兼容为 `hybrid`。生产部署需要同源反向代理转发 `/api/consumer/*` 和 `/actuator/health`；`vite preview` 本身不提供该代理。也可设置 `VITE_API_BASE` 指向允许该页面来源的 API 地址。

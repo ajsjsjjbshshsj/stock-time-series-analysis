@@ -6,6 +6,7 @@ import { request, dataSource } from './client.js'
 import * as mock from '../mock/analysis.js'
 import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator.js'
 import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
+import { normalizeModels, normalizePrediction, normalizeResults, finiteJson } from '../utils/prediction.js'
 
 /** GET /api/analysis/stocks — 股票池（stock_basic 子集） */
 export async function getStockPool(options = {}) {
@@ -48,23 +49,33 @@ export function getStatisticalAnalysis(tsCode) {
 }
 
 /** GET /api/analysis/models — 模型注册表（model_registry） */
-export function getModels() {
-  return request(() => mock.getModels(), '/api/analysis/models')
+export async function getModels(tsCode, options = {}) {
+  const live = dataSource.value === 'hybrid'
+  if (live && !STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
+  const rows = await request(() => mock.getModels(), `/api/analysis/models${live ? `?ts_code=${tsCode}` : ''}`, options)
+  return live ? normalizeModels(rows, tsCode) : rows
 }
 
 /** GET /api/analysis/models/:name/importance — 特征重要性 TopN */
-export function getFeatureImportance(modelName, topN = 15) {
-  return request(() => mock.getFeatureImportance(modelName, topN), `/api/analysis/models/${modelName}/importance?top=${topN}`)
+export async function getFeatureImportance(modelName, topN = 15, options = {}) {
+  const live = dataSource.value === 'hybrid'
+  const data = await request(() => mock.getFeatureImportance(modelName, topN), `/api/analysis/models/${encodeURIComponent(modelName)}/importance?top=${topN}`, options)
+  if (live && (data?.model_id !== modelName || !Array.isArray(data.feature_importance))) throw new Error('特征重要性格式无效')
+  return live ? finiteJson(data) : data
 }
 
 /** GET /api/analysis/prediction/:tsCode — 预测 vs 实际序列 */
-export function getPrediction(tsCode, modelName) {
-  return request(() => mock.getPrediction(tsCode, modelName), `/api/analysis/prediction/${tsCode}?model=${modelName}`)
+export async function getPrediction(tsCode, modelName, options = {}) {
+  const live = dataSource.value === 'hybrid'
+  const dto = await request(() => mock.getPrediction(tsCode, modelName), `/api/analysis/prediction/${tsCode}?model=${encodeURIComponent(modelName)}${live ? '&limit=500' : ''}`, options)
+  return live ? normalizePrediction(dto, tsCode, modelName) : dto
 }
 
 /** GET /api/analysis/results/:tsCode — analysis_result 表预览 */
-export function getAnalysisResults(tsCode) {
-  return request(() => mock.getAnalysisResults(tsCode), `/api/analysis/results/${tsCode}`)
+export async function getAnalysisResults(tsCode, options = {}) {
+  const live = dataSource.value === 'hybrid'
+  const rows = await request(() => mock.getAnalysisResults(tsCode), `/api/analysis/results/${tsCode}`, options)
+  return live ? normalizeResults(rows, tsCode) : rows
 }
 
 /** POST /api/analysis/backtest — 策略回测 */
