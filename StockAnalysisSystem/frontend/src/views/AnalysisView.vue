@@ -3,8 +3,8 @@
     <!-- 股票选择 + Tab -->
     <div class="analysis-head">
       <div class="field stock-select">
-        <label>股票（mock 股票池 · seeded 随机游走 260 交易日）</label>
-        <select v-model="tsCode">
+        <label for="stock-code">{{ live ? '股票（真实 stock_basic 股票池）' : '股票（mock 股票池 · seeded 随机游走 260 交易日）' }}</label>
+        <select id="stock-code" v-model="tsCode" :disabled="loading || !pool.length">
           <option v-for="s in pool" :key="s.ts_code" :value="s.ts_code">
             {{ s.ts_code }} · {{ s.name }} · {{ s.industry }}
           </option>
@@ -14,21 +14,27 @@
         {{ current.area }} · 上市 {{ current.list_date }}
       </div>
     </div>
+    <p v-if="loading" role="status">股票池加载中…</p>
+    <p v-else-if="error" role="alert">{{ error }} <button @click="loadPool">重试股票池</button></p>
+    <p v-else-if="!pool.length" role="status">股票池为空，暂无可查询股票。</p>
+    <p v-if="live" class="muted">仅综合概览已接入真实行情；其他分析尚未接入，切换演示模式查看。</p>
 
     <div class="tabs">
       <button
         v-for="t in TABS" :key="t.key"
         class="tab-btn" :class="{ active: activeTab === t.key }"
+        :disabled="live && t.key !== 'overview'" :title="live && t.key !== 'overview' ? '尚未接入，切换演示模式查看' : ''"
         @click="activeTab = t.key"
       >{{ t.label }}</button>
     </div>
 
-    <component :is="activeComponent" :ts-code="tsCode" />
+    <component v-if="tsCode && !loading && !error" :is="activeComponent" :ts-code="tsCode" />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { dataSource } from '../api/client.js'
 import { getStockPool } from '../api/analysis.js'
 import AnalysisOverview from './analysis/AnalysisOverview.vue'
 import AnalysisBasic from './analysis/AnalysisBasic.vue'
@@ -53,7 +59,12 @@ const TABS = [
 ]
 
 const pool = ref([])
-const tsCode = ref('000001.SZ')
+const tsCode = ref('')
+const live = computed(() => dataSource.value === 'hybrid')
+const loading = ref(false)
+const error = ref('')
+let controller
+let generation = 0
 const activeTab = ref('overview')
 const activeComponent = shallowRef(AnalysisOverview)
 
@@ -65,9 +76,21 @@ function syncComponent() {
 
 watch(activeTab, syncComponent, { immediate: true })
 
-onMounted(async () => {
-  pool.value = await getStockPool()
-})
+async function loadPool() {
+  controller?.abort()
+  controller = new AbortController()
+  const run = ++generation
+  loading.value = true; error.value = ''; pool.value = []; tsCode.value = ''
+  try {
+    const result = await getStockPool({ signal: controller.signal })
+    if (run !== generation) return
+    pool.value = result
+    tsCode.value = result.find(s => s.ts_code === '000001.SZ')?.ts_code || result[0]?.ts_code || ''
+  } catch (e) { if (run === generation && e.name !== 'AbortError') error.value = e.message }
+  finally { if (run === generation) loading.value = false }
+}
+onMounted(loadPool)
+onBeforeUnmount(() => { generation++; controller?.abort() })
 </script>
 
 <style scoped>

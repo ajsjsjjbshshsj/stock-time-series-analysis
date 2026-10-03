@@ -41,3 +41,12 @@ test('演示模式不访问网络，http 配置兼容现有接口接入模式', 
   } })
   assert.deepEqual(await http(() => {}, '/api/consumer/errors'), [])
 })
+test('real market allowlist accepts safe codes and query strings only', async () => {
+  const paths = []
+  const client = createRequestClient({ mode: 'hybrid', mockDelayMs: 0, fetchImpl: async (path) => { paths.push(path); return { ok: true, json: async () => 'live' } } })
+  for (const path of ['/api/analysis/stocks', '/api/analysis/kline/000001.SZ?limit=30', '/api/analysis/indicators/000001.SZ']) assert.equal(await client(() => 'mock', path), 'live')
+  for (const path of ['/api/analysis/kline/../bad', '/api/analysis/features/000001.SZ', '/api/analysis/kline/INVALID']) assert.equal(await client(() => 'mock', path), 'mock')
+  assert.equal(paths.length, 3)
+  const failing = createRequestClient({ mode: 'hybrid', fetchImpl: async () => { throw new TypeError('offline') } })
+  await assert.rejects(failing(() => 'mock', '/api/analysis/stocks'), /无法连接/)
+})

@@ -2,18 +2,21 @@
  * 分析建模接口层（对齐 stock-analysis-app）。
  * 后端目前只有 Python API/Streamlit，无 REST；以下路径为设计约定。
  */
-import { request } from './client'
-import * as mock from '../mock/analysis'
-import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator'
+import { request, dataSource } from './client.js'
+import * as mock from '../mock/analysis.js'
+import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator.js'
+import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
 
 /** GET /api/analysis/stocks — 股票池（stock_basic 子集） */
-export function getStockPool() {
-  return request(() => STOCK_POOL.map(({ ts_code, symbol, name, area, industry, list_date }) => ({ ts_code, symbol, name, area, industry, list_date })), '/api/analysis/stocks')
+export async function getStockPool(options = {}) {
+  return normalizeStockPool(await request(() => STOCK_POOL.map(({ ts_code, symbol, name, area, industry, list_date }) => ({ ts_code, symbol, name, area, industry, list_date })), '/api/analysis/stocks', options))
 }
 
 /** GET /api/analysis/kline/:tsCode — 日线 OHLCV（stock_daily） */
-export function getKline(tsCode) {
-  return request(() => ({ ts_code: tsCode, bars: getBars(tsCode) }), `/api/analysis/kline/${tsCode}`)
+export async function getKline(tsCode, options = {}) {
+  if (!STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
+  const data = await request(() => ({ ts_code: tsCode, bars: getBars(tsCode) }), `/api/analysis/kline/${tsCode}`, options)
+  return { ts_code: tsCode, bars: normalizeKline(data, tsCode) }
 }
 
 /** GET /api/analysis/daily-basic/:tsCode/:tradeDate — 估值与换手（stock_daily_basic） */
@@ -32,8 +35,11 @@ export function getFeatureRows(tsCode, limit = 30) {
 }
 
 /** GET /api/analysis/indicators/:tsCode — 全量指标序列（内部列名，供图表） */
-export function getIndicatorSeries(tsCode) {
-  return request(() => getIndicators(tsCode), `/api/analysis/indicators/${tsCode}`)
+export async function getIndicatorSeries(tsCode, options = {}) {
+  if (!STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
+  const live = dataSource.value === 'hybrid'
+  const data = await request(() => getIndicators(tsCode), `/api/analysis/indicators/${tsCode}`, options)
+  return live ? { ts_code: tsCode, indicators: normalizeIndicators(data, tsCode) } : data
 }
 
 /** GET /api/analysis/statistics/:tsCode — 描述统计/直方图/回撤/波动率/相关性/趋势 */

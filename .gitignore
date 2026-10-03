@@ -8,6 +8,7 @@
 StockAnalysisSystem/.env
 **/node_modules/
 **/dist/
+**/.vite/
 **/.env.local
 **/.env.*.local
 StockAnalysisSystem/frontend.zip
