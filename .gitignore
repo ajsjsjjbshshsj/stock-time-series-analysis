@@ -6,3 +6,10 @@
 **/.pytest_cache/
 **/__pycache__/
 StockAnalysisSystem/.env
+**/node_modules/
+**/dist/
+**/.env.local
+**/.env.*.local
+StockAnalysisSystem/frontend.zip
+docs/superpowers/
+StockAnalysisSystem/docs/superpowers/
