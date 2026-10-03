@@ -155,6 +155,7 @@ mvn test
 
 ## 文档导航
 
+- [V0.8 固定协议历史滚动评估指南](StockAnalysisSystem/docs/V0.8_EVALUATION_GUIDE.md)：000001.SZ、2022-01-04 至2026-09-30、三窗各100点；固定 Ridge/XGBoost 与真零收益基线，未复权、历史已观察且非前瞻验证。真实报告 ID/指标与浏览器验收尚待记录；不保证优于基线。指南提供单行复现与独立只读核对命令。
 - [V0.3 消息协议](StockAnalysisSystem/docs/V0.3_MESSAGE_SCHEMA.md)
 - [V0.3 测试用例](StockAnalysisSystem/docs/V0.3_TEST_CASES.md)
 - [V0.3 对账报告](StockAnalysisSystem/docs/V0.3_RECONCILIATION_REPORT.md)
