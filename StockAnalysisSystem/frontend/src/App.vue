@@ -61,6 +61,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
 import { dataSource, setDataSource } from './api/client.js'
 import { useThemeStore } from './stores/theme.js'
+import { fmtTime } from './utils/format.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -74,9 +75,7 @@ const sourceLabel = computed(() => dataSource.value === 'hybrid' && route.name =
 const clock = ref('')
 let timer = null
 function tick() {
-  const d = new Date()
-  const p = (n) => String(n).padStart(2, '0')
-  clock.value = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  clock.value = fmtTime(new Date().toISOString())
 }
 onMounted(() => { tick(); timer = setInterval(tick, 1000) })
 onBeforeUnmount(() => clearInterval(timer))
