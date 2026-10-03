@@ -1,7 +1,7 @@
 """Strict public JSON contract for V0.7 regression publications."""
 import json
 import re
-from datetime import date
+from datetime import date, datetime
 
 ANALYSIS_TYPE = 'v07_xgboost_regression'
 TARGET = 'next_trading_day_close_return'
@@ -44,6 +44,15 @@ def validate_payload(payload):
             raise ValueError('Invalid schema')
         if payload['target'] != TARGET or type(payload['horizon']) is not int or payload['horizon'] != 1:
             raise ValueError('Invalid target')
+        for key, expected in (('model_name', 'xgboost_regressor'), ('model_type', 'xgboost'),
+                              ('model_version', '0.7.0')):
+            if type(payload[key]) is not str or payload[key] != expected:
+                raise ValueError('Invalid model metadata')
+        created_at = payload['created_at']
+        if (type(created_at) is not str or not re.fullmatch(
+                r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})', created_at)
+                or datetime.fromisoformat(created_at).utcoffset() is None):
+            raise ValueError('Invalid creation timestamp')
         validate_date(payload['data_cutoff'])
         validate_date(payload['seen_through'])
         validate_date(payload['source_cutoff'])
@@ -116,6 +125,13 @@ def validate_payload(payload):
         for key in ('params', 'dependency_versions'):
             if not isinstance(payload[key], dict) or not payload[key]:
                 raise ValueError('Missing metadata')
+        versions = payload['dependency_versions']
+        if set(versions) != {'xgboost', 'pandas', 'numpy'}:
+            raise ValueError('Invalid dependency metadata')
+        for version in versions.values():
+            if type(version) is not str or not re.fullmatch(
+                    r'[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.+-]*)', version):
+                raise ValueError('Invalid dependency version')
         if not re.fullmatch(r'[0-9a-f]{64}', payload['data_hash']):
             raise ValueError('Invalid data hash')
         params = payload['params']

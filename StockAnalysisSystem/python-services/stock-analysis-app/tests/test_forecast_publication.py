@@ -173,3 +173,54 @@ def test_duplicate_json_keys_rejected(forecast):
     raw = json.dumps(payload)
     with pytest.raises(ValueError, match='Duplicate'):
         parse_payload('{"schema_version": 1, '+raw[1:])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('model_name', None), ('model_name', 'classifier'),
+    ('model_type', None), ('model_type', 'pickle'),
+    ('model_version', None), ('model_version', 7), ('model_version', '1.0.0'),
+    ('created_at', None), ('created_at', 'yesterday'), ('created_at', '2026-10-03T12:00:00'),
+    ('dependency_versions', {'unknown': '1'}), ('dependency_versions', {'xgboost': True, 'pandas': '2', 'numpy': '2'}),
+])
+def test_complete_model_metadata_required(forecast, field, value):
+    from analysis.forecast.contracts import validate_payload
+    _, payload = forecast
+    broken = copy.deepcopy(payload)
+    if value is None:
+        broken.pop(field)
+    else:
+        broken[field] = value
+    with pytest.raises(ValueError): validate_payload(broken)
+
+
+def test_malformed_metadata_list_exclusion_and_direct_dependency_failure(connector, forecast):
+    from analysis.forecast.repository import ForecastRepository, DependencyError
+    _, payload = forecast
+    broken = copy.deepcopy(payload)
+    broken.pop('model_type')
+    with connector.engine.begin() as db:
+        db.execute(text('INSERT INTO analysis_result (ts_code, analysis_type, result) VALUES (:stock, :type, :result)'),
+                   dict(stock=payload['ts_code'], type='v07_xgboost_regression', result=json.dumps(broken)))
+    repo = ForecastRepository(connector)
+    assert repo.models(payload['ts_code']) == []
+    assert repo.results(payload['ts_code']) == []
+    with pytest.raises(DependencyError, match='Forecast publication unavailable'):
+        repo.get(payload['ts_code'], payload['model_id'])
+    with pytest.raises(DependencyError, match='Forecast publication unavailable'):
+        repo.get_model(payload['model_id'])
+    assert repo.get('600000.SH', payload['model_id']) is None
+
+
+def test_direct_corrupt_matching_publication_is_not_unknown(connector, forecast):
+    from analysis.forecast.repository import ForecastRepository, DependencyError
+    _, payload = forecast
+    broken = copy.deepcopy(payload)
+    broken['schema_version'] = 99
+    with connector.engine.begin() as db:
+        db.execute(text('INSERT INTO analysis_result (ts_code, analysis_type, result) VALUES (:stock, :type, :result)'),
+                   dict(stock=payload['ts_code'], type='v07_xgboost_regression', result=json.dumps(broken)))
+    repo = ForecastRepository(connector)
+    with pytest.raises(DependencyError, match='Forecast publication unavailable'):
+        repo.get(payload['ts_code'], payload['model_id'])
+    with pytest.raises(DependencyError, match='Forecast publication unavailable'):
+        repo.get_model(payload['model_id'])

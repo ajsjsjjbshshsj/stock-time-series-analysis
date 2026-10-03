@@ -83,7 +83,11 @@ class ForecastRepository:
                 payload = parse_payload(row['result'])
                 if payload['ts_code'] == row['ts_code']:
                     valid.append(payload)
+                elif model_id is not None:
+                    raise DependencyError('Forecast publication unavailable')
             except (ValueError, TypeError):
+                if model_id is not None:
+                    raise DependencyError('Forecast publication unavailable') from None
                 continue
         return valid
 
