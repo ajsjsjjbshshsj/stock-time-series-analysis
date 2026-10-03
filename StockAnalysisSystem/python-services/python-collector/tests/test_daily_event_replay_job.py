@@ -260,7 +260,7 @@ def test_cli_flushes_exactly_once_per_nonempty_database_batch(
     db.close.assert_called_once_with()
 
 
-@pytest.mark.parametrize('ts_code', ['', '   ', 'not-a-stock', '12345.SZ', '000001.XX'])
+@pytest.mark.parametrize('ts_code', ['', '   ', 'not-a-stock', '12345.SZ', '000001.XX', '０００００１.SZ', '٠٠٠٠٠١.SZ'])
 def test_cli_rejects_invalid_ts_code_before_opening_resources(ts_code):
     from app.main import cmd_replay_daily_events
 

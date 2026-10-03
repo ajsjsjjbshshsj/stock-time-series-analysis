@@ -132,13 +132,20 @@ def validate_dead_letter(record, source, error_type):
     assert datetime.fromisoformat(value["failedAt"]).utcoffset() is not None, "DLT failedAt lacks timezone"
 
 
-def consumer_config(bootstrap_servers):
+def validate_inflight_visibility(uncommitted, committed, expected):
+    """Fail closed unless the entire fault batch exists only in an open transaction."""
+    if committed:
+        raise AssertionError("fault batch already committed; in-flight fault proof invalid")
+    validate_results(uncommitted, expected)
+
+
+def consumer_config(bootstrap_servers, isolation="read_committed"):
     return {
         "bootstrap.servers": bootstrap_servers,
         "group.id": f"v05-verifier-{uuid4().hex}",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
-        "isolation.level": "read_committed",
+        "isolation.level": isolation,
     }
 
 
@@ -270,10 +277,10 @@ def wait_for_checkpoint(base_url, job_id, after_id, barrier_ms, timeout):
     raise TimeoutError(f"no completed checkpoint after ID {after_id} and observation {barrier_ms}ms within {timeout}s")
 
 
-def open_consumer(bootstrap, topic, timeout, from_end=True):
+def open_consumer(bootstrap, topic, timeout, from_end=True, isolation="read_committed"):
     from confluent_kafka import Consumer, TopicPartition
 
-    consumer = Consumer(consumer_config(bootstrap))
+    consumer = Consumer(consumer_config(bootstrap, isolation))
     consumer.subscribe([topic])
     deadline = time.monotonic() + min(timeout, 15)
     while not consumer.assignment() and time.monotonic() < deadline:
@@ -552,6 +559,8 @@ def main(argv=None):
     args.flink_url = args.flink_url.rstrip("/")
     started = time.monotonic()
     try:
+        if not __debug__:
+            raise RuntimeError("optimized Python execution is unsupported: validation assertions must remain enabled")
         manifest = json.loads(args.recovery_file.read_text(encoding="utf-8")) if args.scenario == "recovery-after" else None
         args.job_id = choose_job_id(args.job_id, args.scenario, manifest, args.flink_url, args.timeout)
         if args.scenario == "recovery-after":

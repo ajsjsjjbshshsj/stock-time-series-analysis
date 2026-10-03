@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import subprocess
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +15,51 @@ SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "verify_v05_flink.py"
 SPEC = importlib.util.spec_from_file_location("verify_v05_flink", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+def test_optimized_verifier_refuses_to_run_before_external_resources():
+    result = subprocess.run(
+        [sys.executable, '-O', str(SCRIPT), '--scenario', 'valid'],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload['status'] == 'FAIL'
+    assert 'optimized' in payload['error']
+
+
+def test_inflight_proof_requires_uncommitted_output_and_no_committed_output():
+    expected = MODULE.expected_indicators(fixture_rows(2))
+    actual = [result_record(item) for item in expected]
+    MODULE.validate_inflight_visibility(actual, [], expected)
+    with pytest.raises(AssertionError, match='already committed'):
+        MODULE.validate_inflight_visibility(actual, actual[:1], expected)
+    with pytest.raises(AssertionError, match='result count'):
+        MODULE.validate_inflight_visibility(actual[:1], [], expected)
+
+
+def test_isolated_fault_guard_refuses_any_existing_job():
+    spec = importlib.util.spec_from_file_location('isolated', SCRIPT.with_name('verify_v05_isolated.py'))
+    isolated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated)
+    isolated.require_empty_cluster([])
+    with pytest.raises(RuntimeError, match='existing jobs'):
+        isolated.require_empty_cluster([{'jid': 'main', 'state': 'RUNNING'}])
+    with pytest.raises(RuntimeError, match='existing jobs'):
+        isolated.require_empty_cluster([{'jid': 'main', 'state': 'RESTARTING'}])
+
+
+def test_lag_validation_requires_every_partition_caught_up():
+    spec = importlib.util.spec_from_file_location('isolated', SCRIPT.with_name('verify_v05_isolated.py'))
+    isolated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated)
+    isolated.validate_partition_lag([
+        {'partition': 0, 'high': 20, 'committed': 20},
+        {'partition': 1, 'high': 0, 'committed': -1001},
+        {'partition': 2, 'high': 0, 'committed': -1001},
+    ])
+    with pytest.raises(AssertionError, match='lag'):
+        isolated.validate_partition_lag([{'partition': 0, 'high': 20, 'committed': 19}])
 
 
 def fixture_rows(count=20, ts_code="V05TEST.SZ"):

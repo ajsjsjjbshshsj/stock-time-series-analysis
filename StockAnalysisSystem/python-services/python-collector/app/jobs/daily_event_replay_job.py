@@ -9,7 +9,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_TS_CODE_PATTERN = re.compile(r'^\d{6}\.(?:SZ|SH|BJ)$')
+_TS_CODE_PATTERN = re.compile(r'^[0-9]{6}\.(?:SZ|SH|BJ)$')
 
 
 def normalize_replay_ts_code(ts_code):
