@@ -59,7 +59,8 @@ StockAnalysisSystem/
 │   ├── transformer_config.py      # TRANSFORMER_CONFIG 配置字典
 │   ├── transformer_model.py       # StockTransformer / MultiHeadStockTransformer
 │   ├── transformer_utils.py       # Alpha158+39 特征、截面特征、数据集构建
-│   └── transformer_trainer.py     # Transformer 训练、预测、特征缓存
+│   ├── transformer_features.py    # raw缓存、成熟标签、scaler与模型绑定
+│   └── transformer_trainer.py     # Transformer 训练与预测入口
 │
 ├── visualization/
 │   ├── plotter.py                 # StockPlotter（matplotlib / plotly 图表）
@@ -234,11 +235,9 @@ main.py transform_features
       -> 按股票分组 + 并行计算
           -> engineer_features_158plus39()  # Alpha158 + 39 技术特征
       -> add_cross_sectional_features()     # 8 个截面排名特征
-      -> _build_label_and_clean()           # label = (open_t5 - open_t1) / open_t1
-      -> StandardScaler.fit_transform()     # 标准化（结果直接存入 parquet）
+      -> build_feature_panel()              # 完整历史计算，保留无标签最新行
       -> 保存到 models/transformer/60_158+39/[scope/]
-          ├── features_158+39.parquet           # 已标准化的特征
-          ├── features_158+39_scaler.pkl        # StandardScaler 对象
+          ├── features_158+39.parquet           # 原始量纲特征，不做标准化
           ├── features_158+39_meta.json         # val_start_date + feature_cols
           ├── features_158+39_stockid2idx.json  # 股票代码 → 整数索引
           └── raw_panel.parquet                 # 原始面板缓存（供增量使用）
@@ -262,22 +261,23 @@ python main.py --mode transform_train --feature_path "...\features_158+39.parque
 main.py transform_train
   -> build_transformer_config()
   -> run_transformer_training(feature_path=...)
-      -> load_precomputed_features()    # 加载已标准化的 parquet + 元信息
-      -> is_val 标记处理               # 从 parquet 列或 val_start_date 重建
+      -> load_precomputed_features()    # 加载version2 raw parquet + 元信息
+      -> prepare_training_data()        # 成熟标签/边界purge，只在训练行fit scaler
       -> probe_feature_selection() 或加载 probe_selection.json
       -> create_ranking_dataset_vectorized()   # 60天滑动窗口 → 序列样本
       -> MultiHeadStockTransformer 训练
           └── MultiTaskRankingLoss（排名 + 回归 + 分类 + 方向 4 个损失头）
-      -> 保存 best_model.pth / training_history.json / plots/
+      -> 保存 best_model.pth / best_model_scaler.pkl / best_model_preprocessing.json
+      -> 保存 training_history.json / plots/
 ```
 
 当前重要实现细节：
 
 - `feature_path` 训练也会运行或复用探针法筛选。
-- `probe_selection.json` 同时用于训练和预测，保证特征维度一致。
-- Parquet 数据已经过 StandardScaler 标准化，训练时直接使用，不会重复标准化。
-- `is_val` 列在 parquet 中可能存储为字符串/整数，加载时会安全转换为 bool。
-- 验证集样本构造使用 train+val 提供历史窗口，但只评估验证起始日期之后的样本。
+- 模型manifest固定探针筛选后的列；预测不读取可能被后来覆盖的目录级probe结果。
+- Parquet 是原始量纲；训练只在成熟且未跨验证边界的行fit，推理仅用模型配套scaler transform。
+- `is_val` 按当前验证起点重建为 bool；旧标准化缓存必须重建，不猜测其量纲。
+- 验证保留完整已知特征上下文，包括purge行的特征，但这些行不能作为目标。
 - 输出目录按股票池隔离，例如 `index_000300`、`index_000300_000905`。
 
 ### 第三步：预测
@@ -291,8 +291,9 @@ python main.py --mode transform_predict --feature_path "...\features_158+39.parq
 ```text
 main.py transform_predict
   -> predict_top_stocks_transformer(feature_path=...)
-      -> load_precomputed_features()       # 加载全量数据（不在此处过滤日期）
-      -> 加载 probe_selection.json         # 特征筛选
+      -> load_model_preprocessing()        # 模型专属scaler、特征子集、股票映射
+      -> build_feature_panel(raw_panel)    # 固定历史起点，不要求未来标签
+      -> prepare_inference_data()          # 原始特征只transform一次
       -> 加载 best_model.pth              # 模型
       -> 构建 60 天滑动窗口序列
       -> MultiHeadStockTransformer 推理
@@ -352,10 +353,11 @@ panel_builder.py
 
 管线3 独立缓存:
   models/transformer/60_158+39/[scope]/
-    features_158+39.parquet     # ~205 列 Alpha 特征（已标准化）
-    features_158+39_scaler.pkl
+    features_158+39.parquet     # Alpha特征（原始量纲，version2）
     raw_panel.parquet           # 原始面板（中文列名）
     best_model.pth
+    best_model_scaler.pkl
+    best_model_preprocessing.json
     probe_selection.json
 ```
 
@@ -398,7 +400,7 @@ panel_builder.py
 - Transformer 全市场 `158+39` 训练内存压力大，建议先用指数股票池。
 - 如果某个指数目录曾被全市场缓存污染，删除对应目录后重算。
 - 训练图为横线通常表示验证集样本为 0 或历史指标全为 0；当前验证构造逻辑已修复，需重新训练生成新图。
-- Transformer Parquet 中的数据已经过 StandardScaler 标准化，训练和预测时不会重复标准化。
-- `is_val` 列在 Parquet 中可能存储为字符串，加载时已做安全类型转换。
+- Transformer缓存不再保存标准化数据；旧缓存和模型需重建/重训，详见 `../../docs/TRANSFORMER_FEATURE_PIPELINE.md`。
+- 推理保留无标签最新日期，不能把停牌或缺失行情股票的旧日期序列当作当前预测。
 - Windows 上 `multiprocessing` 无法序列化嵌套的局部函数，相关 worker 函数已提取到模块顶层。
 - 股票代码支持 6 位数字输入，`to_tushare_code()` 会自动添加市场后缀（`.SZ` / `.SH`）。
