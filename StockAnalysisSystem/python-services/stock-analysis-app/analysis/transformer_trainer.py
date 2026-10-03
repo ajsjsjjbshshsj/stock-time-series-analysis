@@ -8,25 +8,22 @@ Transformer 训练和预测入口
 import os
 import json
 import random
-import multiprocessing as mp
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from config.logging_config import get_logger
 logger = get_logger(__name__)
 from analysis.transformer_config import TRANSFORMER_CONFIG
 from analysis.transformer_model import StockTransformer, MultiHeadStockTransformer
+from analysis.transformer_features import (
+    build_feature_panel, normalize_panel, prepare_training_data, prepare_inference_data,
+    save_model_preprocessing, load_model_preprocessing,
+)
 from analysis.transformer_utils import (
-    FEATURE_COLUMNS_MAP,
-    FEATURE_ENGINEER_FUNC_MAP,
-    engineer_features_39,
-    engineer_features_158plus39,
-    add_cross_sectional_features,
     create_ranking_dataset_vectorized,
 )
 
@@ -45,141 +42,21 @@ def set_seed(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 
-def _build_label_and_clean(processed, drop_small_open=True):
-    """统一构建标签并清洗无效样本。"""
-    processed['open_t1'] = processed.groupby('股票代码')['开盘'].shift(-1)
-    processed['open_t5'] = processed.groupby('股票代码')['开盘'].shift(-5)
-
-    if drop_small_open:
-        processed = processed[processed['open_t1'] > 1e-4]
-
-    processed['label'] = (processed['open_t5'] - processed['open_t1']) / (processed['open_t1'] + 1e-12)
-    processed = processed.dropna(subset=['label'])
-    processed.drop(columns=['open_t1', 'open_t5'], inplace=True)
-    return processed
-
-
-def _compute_new_features_for_stock_worker(args):
-    """
-    模块级 worker 函数，用于 multiprocessing。
-    args: (stock_df, date_col, feature_engineer_func)
-    """
-    stock_df, date_col, feature_engineer_func = args
-    stock_df = stock_df.copy()
-    stock_df[date_col] = pd.to_datetime(stock_df[date_col])
-    stock_df = stock_df.sort_values(date_col).reset_index(drop=True)
-    n = len(stock_df)
-    if n < 10:
-        return pd.DataFrame()
-    # 使用全部数据（含预热）计算特征
-    result = feature_engineer_func(stock_df)
-    # 只保留新增日期（去除预热窗口）
-    new_first = stock_df[date_col].iloc[0] if date_col in stock_df.columns else stock_df['日期'].iloc[0]
-    result = result[result['日期'] >= new_first]
-    return result
-
-
-def _preprocess_common(df, stockid2idx, desc, drop_small_open=True, config=None):
-    """通用特征工程流程。"""
-    if config is None:
-        config = TRANSFORMER_CONFIG
-
-    feature_num = config['feature_num']
-    assert feature_num in FEATURE_ENGINEER_FUNC_MAP, f"Unsupported feature_num: {feature_num}"
-    feature_engineer = FEATURE_ENGINEER_FUNC_MAP[feature_num]
-    feature_columns = FEATURE_COLUMNS_MAP[feature_num]
-
-    df = df.copy()
-    df = df.sort_values(['股票代码', '日期']).reset_index(drop=True)
-
-    logger.info(f"正在逐股进行{desc}...")
-    groups = [group for _, group in df.groupby('股票代码', sort=False)]
-    if len(groups) == 0:
-        raise ValueError(f"{desc}输入为空，无法继续")
-
-    processed_list = []
-    for g in tqdm(groups, desc=f"{desc}"):
-        try:
-            processed_list.append(feature_engineer(g))
-        except Exception as e:
-            logger.warning(f"跳过股票特征计算: {e}")
-
-    processed_list = [p for p in processed_list if p is not None and not p.empty]
-    if not processed_list:
-        raise ValueError(f"{desc}所有股票均未成功计算特征")
-
-    # 分块 concat 避免一次性合并大量 DataFrame 导致内存爆炸
-    chunk_size = 500
-    chunks = []
-    for i in range(0, len(processed_list), chunk_size):
-        chunks.append(pd.concat(processed_list[i:i+chunk_size], ignore_index=True))
-    processed = pd.concat(chunks, ignore_index=True) if len(chunks) > 1 else chunks[0]
-    del chunks
-    del processed_list
-
-    processed = add_cross_sectional_features(processed)
-
-    processed['instrument'] = processed['股票代码'].map(stockid2idx)
-    processed = processed.dropna(subset=['instrument']).copy()
-    processed['instrument'] = processed['instrument'].astype(np.int64)
-
-    processed = _build_label_and_clean(processed, drop_small_open=drop_small_open)
-    return processed, feature_columns
-
-
 def preprocess_data(df, is_train=True, stockid2idx=None, config=None):
-    if not is_train:
-        return _preprocess_common(df, stockid2idx, desc="特征工程", drop_small_open=False, config=config)
-    return _preprocess_common(df, stockid2idx, desc="特征工程", drop_small_open=True, config=config)
+    """Raw features; inference never requires future prices or labels."""
+    frame, features, _, _ = build_feature_panel(
+        df, config or TRANSFORMER_CONFIG, stockid2idx, include_labels=is_train)
+    if is_train:
+        frame = frame[np.isfinite(frame['label'])].copy()
+    return frame, features
 
 
 def preprocess_val_data(df, stockid2idx=None, config=None):
-    return _preprocess_common(df, stockid2idx, desc="验证集特征工程", drop_small_open=True, config=config)
+    return preprocess_data(df, True, stockid2idx, config)
 
 
 def _normalize_input_df(df):
-    """统一处理输入 DataFrame 的列名和衍生列。"""
-    df = df.copy()
-
-    # 防御：去除重复列名
-    if df.columns.duplicated().any():
-        dup = df.columns[df.columns.duplicated()].tolist()
-        logger.warning(f"_normalize_input_df: 输入有重复列名 {dup}，已去重")
-        df = df.loc[:, ~df.columns.duplicated()]
-
-    if 'ts_code' in df.columns and '股票代码' not in df.columns:
-        df.rename(columns={'ts_code': '股票代码'}, inplace=True)
-    if 'trade_date' in df.columns and '日期' not in df.columns:
-        df.rename(columns={'trade_date': '日期'}, inplace=True)
-    col_map = {}
-    if 'open' in df.columns and '开盘' not in df.columns:
-        col_map['open'] = '开盘'
-    if 'high' in df.columns and '最高' not in df.columns:
-        col_map['high'] = '最高'
-    if 'low' in df.columns and '最低' not in df.columns:
-        col_map['low'] = '最低'
-    if 'close' in df.columns and '收盘' not in df.columns:
-        col_map['close'] = '收盘'
-    if 'vol' in df.columns and '成交量' not in df.columns:
-        col_map['vol'] = '成交量'
-    if 'amount' in df.columns and '成交额' not in df.columns:
-        col_map['amount'] = '成交额'
-    if col_map:
-        df.rename(columns=col_map, inplace=True)
-
-    # 再次检查重命名后是否有重复
-    if df.columns.duplicated().any():
-        dup = df.columns[df.columns.duplicated()].tolist()
-        logger.warning(f"_normalize_input_df: 重命名后产生重复列名 {dup}，已去重")
-        df = df.loc[:, ~df.columns.duplicated()]
-
-    # 衍生列
-    df['prev_close'] = df.groupby('股票代码')['收盘'].shift(1)
-    df['涨跌额'] = df['收盘'] - df['prev_close']
-    df['涨跌幅'] = (df['涨跌额'] / (df['prev_close'] + 1e-12)) * 100
-    df['振幅'] = ((df['最高'] - df['最低']) / (df['prev_close'] + 1e-12)) * 100
-    df.drop(columns=['prev_close'], inplace=True)
-    return df
+    return normalize_panel(df)
 
 
 def _prepare_for_parquet(df):
@@ -607,80 +484,17 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         device = torch.device('cpu')
         logger.info("使用 CPU 训练")
 
-    # --- 数据准备：从原始数据或预计算特征加载 ---
-    if feature_path and os.path.exists(feature_path):
-        logger.info(f"从预计算特征文件加载: {feature_path}")
+    # Both entrances supply raw units to one purged split and fitted scaler.
+    if feature_path:
         all_data, features, stockid2idx, val_start_date = load_precomputed_features(feature_path, config)
-        num_stocks = len(stockid2idx)
-
-        # 数据已经在 compute_and_save_features 中标准化，直接使用
-        # 如果 is_val 列不存在，根据 val_start_date 重建
-        if 'is_val' not in all_data.columns:
-            if val_start_date is not None:
-                date_col = '日期' if '日期' in all_data.columns else 'trade_date'
-                all_data['is_val'] = pd.to_datetime(all_data[date_col]) >= pd.Timestamp(val_start_date)
-                logger.info(f"根据 val_start_date={val_start_date} 重建 is_val 标记")
-            else:
-                logger.warning("无 is_val 列且无 val_start_date，将全部数据作为训练集")
-                all_data['is_val'] = False
-        else:
-            # parquet 中 is_val 可能存为字符串、整数等类型，统一安全转换
-            if all_data['is_val'].dtype == object or str(all_data['is_val'].dtype) == 'string':
-                all_data['is_val'] = all_data['is_val'].map(
-                    lambda x: str(x).strip().lower() in ('true', '1', 'yes')
-                )
-            else:
-                all_data['is_val'] = all_data['is_val'].astype(bool)
-
-        train_data = all_data[~all_data['is_val']].copy().drop(columns=['is_val'])
-        val_data = all_data[all_data['is_val']].copy().drop(columns=['is_val'])
-        logger.info(f"训练集: {len(train_data)} 行, 验证集: {len(val_data)} 行")
     elif panel_df is not None:
-        logger.info("从原始面板数据计算特征...")
-        df = _normalize_input_df(panel_df)
-
-        df['日期'] = pd.to_datetime(df['日期'])
-
-        # 只保留最近3年数据，避免内存溢出
-        last_date = df['日期'].max()
-        cutoff_date = last_date - pd.DateOffset(years=3)
-        before_cut = len(df)
-        df = df[df['日期'] >= cutoff_date].copy()
-        after_cut = len(df)
-        logger.info(f"数据截取（最近3年）: {before_cut} 行 -> {after_cut} 行 "
-                     f"(范围: {df['日期'].min()} 到 {df['日期'].max()})")
-
-        df = df.sort_values(['日期', '股票代码']).reset_index(drop=True)
-        val_start = (last_date - pd.DateOffset(months=2)).normalize()
-        train_raw = df[df['日期'] < val_start].copy()
-        val_raw = df[df['日期'] >= val_start].copy()
-        train_raw['日期'] = train_raw['日期'].dt.strftime('%Y-%m-%d')
-        val_raw['日期'] = val_raw['日期'].dt.strftime('%Y-%m-%d')
-        val_start_date = val_start.strftime('%Y-%m-%d')
-
-        logger.info(f"训练集范围: {train_raw['日期'].min()} 到 {train_raw['日期'].max()}")
-        logger.info(f"验证集范围: {val_raw['日期'].min()} 到 {val_raw['日期'].max()}")
-
-        all_stock_ids = sorted(df['股票代码'].unique())
-        stockid2idx = {sid: idx for idx, sid in enumerate(all_stock_ids)}
-        num_stocks = len(stockid2idx)
-
-        train_data, features = preprocess_data(train_raw, is_train=True, stockid2idx=stockid2idx, config=config)
-        val_data, _ = preprocess_val_data(val_raw, stockid2idx=stockid2idx, config=config)
-
-        # 标准化
-        import joblib
-        scaler = StandardScaler()
-        train_data[features] = train_data[features].replace([np.inf, -np.inf], np.nan)
-        val_data[features] = val_data[features].replace([np.inf, -np.inf], np.nan)
-        train_data = train_data.dropna(subset=features)
-        val_data = val_data.dropna(subset=features)
-        train_data[features] = scaler.fit_transform(train_data[features])
-        val_data[features] = scaler.transform(val_data[features])
-        joblib.dump(scaler, os.path.join(output_dir, 'scaler.pkl'))
+        all_data, features, stockid2idx, val_start_date = build_feature_panel(panel_df, config)
     else:
-        logger.error("请提供 panel_df 或有效的 feature_path")
-        return None
+        raise ValueError("Provide panel_df or feature_path")
+    full_features = list(features)
+    history_start = all_data['日期'].min()
+    num_stocks = len(stockid2idx)
+    train_data, val_data, val_source, scaler = prepare_training_data(all_data, features, val_start_date)
 
     # 探针法特征筛选：支持在线计算和预计算特征两种训练路径。
     if config.get('use_probe_selection', False):
@@ -706,7 +520,6 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
     train_result = create_ranking_dataset_vectorized(
         train_data, features, config['sequence_length']
     )
-    val_source = pd.concat([train_data, val_data], ignore_index=True)
     val_result = create_ranking_dataset_vectorized(
         val_source, features, config['sequence_length'],
         min_window_end_date=val_start_date,
@@ -842,9 +655,14 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
     except Exception as e:
         logger.warning(f"训练历史图表绘制失败: {e}")
 
+    model_path = os.path.join(output_dir, f'{save_name or "best_model"}.pth')
+    if best_epoch < 0:
+        raise ValueError('No valid checkpoint produced')
+    scaler_path = save_model_preprocessing(model_path, scaler, full_features, features,
+                                           stockid2idx, config, history_start)
     return {
         'model_path': os.path.join(output_dir, f'{save_name or "best_model"}.pth'),
-        'scaler_path': os.path.join(output_dir, 'scaler.pkl'),
+        'scaler_path': scaler_path,
         'feature_names': features,
         'stockid2idx': stockid2idx,
         'best_score': best_score,
@@ -885,65 +703,34 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
             return None
         model_path = os.path.join(output_dir, files[0])
 
-    feature_num = config['feature_num']
-    import joblib
-
-    # --- 特征准备 ---
-    already_standardized = False
-    if feature_path and os.path.exists(feature_path):
-        logger.info(f"从预计算特征加载: {feature_path}")
-        processed, full_features, stockid2idx, _ = load_precomputed_features(feature_path, config)
-        # parquet 中的数据已经标准化过，后续不再需要 scaler
-        already_standardized = True
-        num_stocks = len(stockid2idx)
-
-        # 使用探针法筛选特征（如果有）
-        features = full_features
-        probe_path = os.path.join(os.path.dirname(model_path), 'probe_selection.json')
-        if os.path.exists(probe_path):
-            with open(probe_path, 'r', encoding='utf-8') as f:
-                probe_data = json.load(f)
-            features = probe_data['selected_features']
-            logger.info(f"使用探针法筛选特征: {len(features)} 个")
-
-        # 不在此处过滤日期——预测需要最近 sequence_length 天的完整序列
-        scaler_path = scaler_path or feature_path.replace('.parquet', '_scaler.pkl')
-
-        # 清理 is_val 列（parquet 中可能残留）
-        if 'is_val' in processed.columns:
-            processed = processed.drop(columns=['is_val'])
-    elif panel_df is not None:
-        logger.info("从原始面板数据计算特征...")
-        df = _normalize_input_df(panel_df)
-
-        df['日期'] = pd.to_datetime(df['日期'])
-        # 只保留最近3年数据
-        last_date = df['日期'].max()
-        cutoff_date = last_date - pd.DateOffset(years=3)
-        before_cut = len(df)
-        df = df[df['日期'] >= cutoff_date].copy()
-        logger.info(f"数据截取（最近3年）: {before_cut} 行 -> {len(df)} 行")
-
-        # 加载特征列表
-        probe_path = os.path.join(os.path.dirname(model_path), 'probe_selection.json')
-        if os.path.exists(probe_path):
-            with open(probe_path, 'r') as f:
-                probe_data = json.load(f)
-            features = probe_data['selected_features']
-        else:
-            features = FEATURE_COLUMNS_MAP[feature_num]
-            features = [f for f in features if f not in ('instrument', '股票代码', '日期', 'label')]
-
-        all_stock_ids = sorted(df['股票代码'].unique())
-        stockid2idx = {sid: idx for idx, sid in enumerate(all_stock_ids)}
-        num_stocks = len(stockid2idx)
-
-        processed, _ = preprocess_data(df, is_train=False, stockid2idx=stockid2idx, config=config)
-        processed[features] = processed[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        scaler_path = scaler_path or os.path.join(os.path.dirname(model_path), 'scaler.pkl')
-    else:
-        logger.error("请提供 panel_df 或有效的 feature_path")
-        return None
+    config = {**TRANSFORMER_CONFIG, **config}
+    scaler, manifest = load_model_preprocessing(model_path, config, scaler_path)
+    full_features = manifest['full_features']
+    features = manifest['selected_features']
+    stockid2idx = manifest['stockid2idx']
+    num_stocks = len(stockid2idx)
+    inference_config = dict(config, feature_start_date=manifest['feature_history_start'])
+    if feature_path:
+        # Validate disposable cache format, then rebuild with the model's origin.
+        load_precomputed_features(feature_path, config)
+        raw_path = os.path.join(os.path.dirname(feature_path), 'raw_panel.parquet')
+        if not os.path.exists(raw_path):
+            raise ValueError("Raw history cache missing; rebuild before inference")
+        panel_df = pd.read_parquet(raw_path, engine='pyarrow')
+    if panel_df is None:
+        raise ValueError("Provide panel_df or feature_path")
+    normalized = normalize_panel(panel_df)
+    known = normalized[normalized['股票代码'].isin(stockid2idx)]
+    if known.empty:
+        raise ValueError("No stocks known to model")
+    anchor = pd.Timestamp(manifest['feature_history_start'])
+    if known['日期'].min() > anchor:
+        raise ValueError("Incomplete model feature history; reload raw data or retrain")
+    processed, computed, _, _ = build_feature_panel(
+        normalized, inference_config, stockid2idx, include_labels=False)
+    if computed != full_features:
+        raise ValueError("Model feature configuration mismatch")
+    processed = prepare_inference_data(processed, full_features, scaler)
 
     # 设置设备
     if torch.cuda.is_available():
@@ -953,15 +740,6 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
     else:
         device = torch.device('cpu')
 
-    # 加载 scaler 并标准化（如果数据已经标准化则跳过）
-    if not already_standardized:
-        scaler = joblib.load(scaler_path)
-        # scaler 是用 full_features 训练的，先用全量特征标准化，再取子集
-        scaler_feature_names = list(scaler.feature_names_in_) if hasattr(scaler, 'feature_names_in_') else None
-        if scaler_feature_names and scaler_feature_names != features:
-            processed[scaler_feature_names] = scaler.transform(processed[scaler_feature_names])
-        else:
-            processed[features] = scaler.transform(processed[features])
 
     # 构建预测序列
     latest_date = pd.to_datetime(processed['日期']).max()
@@ -974,7 +752,7 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
             (pd.to_datetime(processed['日期']) <= latest_date)
         ].sort_values('日期').tail(config['sequence_length'])
 
-        if len(stock_history) == config['sequence_length']:
+        if len(stock_history) == config['sequence_length'] and stock_history['日期'].max() == latest_date:
             sequences.append(stock_history[features].values.astype(np.float32))
             stock_codes.append(stock_code)
 
@@ -996,10 +774,10 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
     with torch.no_grad():
         if config.get('use_multi_head', False):
             outputs = model(x, return_all_heads=True)
-            ranking_scores = outputs['ranking'].squeeze().cpu().numpy()
-            reg_scores = outputs['regression'].squeeze().cpu().numpy()
-            cls_scores = outputs['classification'].squeeze().cpu().numpy()
-            dir_scores = outputs['direction'].squeeze().cpu().numpy()
+            ranking_scores = outputs['ranking'].reshape(-1).cpu().numpy()
+            reg_scores = outputs['regression'].reshape(-1).cpu().numpy()
+            cls_scores = outputs['classification'].reshape(-1).cpu().numpy()
+            dir_scores = outputs['direction'].reshape(-1).cpu().numpy()
 
             # 计算不确定性
             def minmax_norm(arr):
@@ -1015,7 +793,7 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
             adjusted_scores = ranking_scores * (1 - uncertainty)
             top_indices = np.argsort(adjusted_scores)[::-1][:top_k]
         else:
-            scores = model(x).squeeze().cpu().numpy()
+            scores = model(x).reshape(-1).cpu().numpy()
             top_indices = np.argsort(scores)[::-1][:top_k]
             ranking_scores = scores
             adjusted_scores = scores

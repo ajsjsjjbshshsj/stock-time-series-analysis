@@ -4,11 +4,14 @@ Incremental input merges raw stock/date observations, then rebuilds the retained
 history. EWM, OBV and EMA cannot be restarted at an arbitrary 80-row boundary.
 """
 import json
+import hashlib
 import multiprocessing as mp
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import joblib
+from sklearn.preprocessing import StandardScaler
 
 from analysis.transformer_utils import (
     FEATURE_COLUMNS_MAP, FEATURE_ENGINEER_FUNC_MAP, add_cross_sectional_features,
@@ -57,11 +60,12 @@ def feature_columns(feature_num):
             if name not in ('instrument', '股票代码', '日期', 'label')]
 
 
-def build_feature_panel(panel_df, config, stockid2idx=None, use_parallel=False, n_workers=None):
+def build_feature_panel(panel_df, config, stockid2idx=None, use_parallel=False, n_workers=None, include_labels=True):
     """Compute complete per-stock history, then cross section and optional labels."""
     frame = normalize_panel(panel_df)
     last = frame['日期'].max()
-    frame = frame[frame['日期'] >= last - pd.DateOffset(years=3)].copy()
+    start = pd.Timestamp(config.get('feature_start_date', last - pd.DateOffset(years=3)))
+    frame = frame[frame['日期'] >= start].copy()
     codes = sorted(frame['股票代码'].unique())
     mapping = dict(stockid2idx) if stockid2idx is not None else {code: i for i, code in enumerate(codes)}
     if any(type(i) is not int or i < 0 for i in mapping.values()) or len(set(mapping.values())) != len(mapping):
@@ -83,14 +87,96 @@ def build_feature_panel(panel_df, config, stockid2idx=None, use_parallel=False, 
     result['instrument'] = result['股票代码'].map(mapping).astype(np.int64)
     grouped = result.groupby('股票代码', sort=False)
     next_open, fifth_open = grouped['开盘'].shift(-1), grouped['开盘'].shift(-5)
-    result['label'] = ((fifth_open - next_open) / (next_open + 1e-12)).where(next_open > 1e-4)
-    result['label_target_date'] = grouped['日期'].shift(-5)
+    result['label'] = ((fifth_open - next_open) / (next_open + 1e-12)).where(next_open > 1e-4) if include_labels else np.nan
+    result['label_target_date'] = grouped['日期'].shift(-5) if include_labels else pd.NaT
     val_start = (last - pd.DateOffset(months=2)).normalize()
     result['is_val'] = result['日期'] >= val_start
     result.loc[:, columns] = result[columns].replace([np.inf, -np.inf], np.nan)
     if not np.isfinite(result[columns].to_numpy(dtype=float)).all():
         raise ValueError('Invalid raw feature values')
     return result, columns, mapping, val_start.strftime('%Y-%m-%d')
+
+
+def prepare_inference_data(raw_df, features, scaler):
+    """Transform raw units exactly once with a fitted, ordered model scaler."""
+    if list(getattr(scaler, 'feature_names_in_', [])) != list(features):
+        raise ValueError('Model scaler feature order mismatch; retrain')
+    if not features or not np.isfinite(raw_df[features].to_numpy(dtype=float)).all():
+        raise ValueError('Invalid inference features')
+    result = raw_df.copy()
+    result.loc[:, features] = scaler.transform(raw_df[features])
+    return result
+
+
+def prepare_training_data(raw_df, features, val_start):
+    """Purge targets touching validation, not their already-known features."""
+    boundary = pd.Timestamp(val_start)
+    frame = raw_df.copy()
+    frame['日期'] = pd.to_datetime(frame['日期'])
+    frame['label_target_date'] = pd.to_datetime(frame['label_target_date'])
+    mature = np.isfinite(frame['label']) & frame.label_target_date.notna()
+    train_mask = mature & (frame['日期'] < boundary) & (frame.label_target_date < boundary)
+    val_mask = mature & (frame['日期'] >= boundary)
+    if not train_mask.any() or not val_mask.any():
+        raise ValueError('Insufficient mature training/validation targets')
+    scaler = StandardScaler().fit(frame.loc[train_mask, features])
+    context = prepare_inference_data(frame, features, scaler)
+    context.loc[~(train_mask | val_mask), 'label'] = np.nan
+    return context.loc[train_mask].copy(), context.loc[val_mask].copy(), context, scaler
+
+
+MODEL_CONFIG_KEYS = ('feature_num', 'sequence_length', 'd_model', 'nhead', 'num_layers',
+                     'dim_feedforward', 'dropout', 'use_multi_head')
+
+
+def _digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_model_preprocessing(model_path, scaler, full_features, selected_features, mapping, config, history_start):
+    """Bind each checkpoint to its own scaler, ordered columns and stock IDs."""
+    path = Path(model_path)
+    scaler_path = _sidecar(path, '_scaler.pkl')
+    joblib.dump(scaler, scaler_path)
+    manifest = dict(pipeline_version=CACHE_VERSION, full_features=list(full_features),
+                    selected_features=list(selected_features), stockid2idx=mapping,
+                    feature_history_start=pd.Timestamp(history_start).isoformat(),
+                    config={key: config[key] for key in MODEL_CONFIG_KEYS},
+                    model_sha256=_digest(path), scaler_sha256=_digest(scaler_path))
+    _sidecar(path, '_preprocessing.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    return str(scaler_path)
+
+
+def load_model_preprocessing(model_path, config, scaler_path=None):
+    """No fallback to legacy caches, folder scalers or freshly fitted scalers."""
+    path = Path(model_path)
+    try:
+        manifest = json.loads(_sidecar(path, '_preprocessing.json').read_text(encoding='utf-8'))
+        if manifest.get('pipeline_version') != CACHE_VERSION:
+            raise ValueError('Unsupported model preprocessing; retrain')
+        if manifest['config'] != {key: config[key] for key in MODEL_CONFIG_KEYS}:
+            raise ValueError('Model configuration mismatch; use training configuration')
+        if manifest['model_sha256'] != _digest(path):
+            raise ValueError('Model checkpoint mismatch; retrain')
+        source = Path(scaler_path) if scaler_path else _sidecar(path, '_scaler.pkl')
+        if manifest['scaler_sha256'] != _digest(source):
+            raise ValueError('Model scaler mismatch; retrain')
+        scaler = joblib.load(source)
+        full = manifest['full_features']
+        selected = manifest['selected_features']
+        mapping = manifest['stockid2idx']
+        if (full != feature_columns(config['feature_num']) or list(scaler.feature_names_in_) != full
+                or not selected or len(set(selected)) != len(selected) or not set(selected).issubset(full)
+                or not mapping or sorted(mapping.values()) != list(range(len(mapping)))):
+            raise ValueError('Invalid model feature/scaler/stock metadata; retrain')
+        pd.Timestamp(manifest['feature_history_start'])
+        return scaler, manifest
+    except (OSError, KeyError, TypeError, AttributeError, json.JSONDecodeError) as exc:
+        raise ValueError('Model scaler/preprocessing unavailable; retrain') from exc
 
 
 def _sidecar(path, suffix):
