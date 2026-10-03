@@ -2,6 +2,7 @@
 import json
 import re
 from datetime import date, datetime
+from .continuity import validate_evidence, require_prefix
 
 ANALYSIS_TYPE = 'v07_xgboost_regression'
 TARGET = 'next_trading_day_close_return'
@@ -58,6 +59,12 @@ def validate_payload(payload):
         validate_date(payload['source_cutoff'])
         if payload['source_cutoff'] > payload['data_cutoff']:
             raise ValueError('Invalid source cutoff')
+        source_days = validate_evidence(payload['source_continuity'], payload['ts_code'])
+        inference_days = validate_evidence(payload['inference_continuity'], payload['ts_code'])
+        require_prefix(source_days, inference_days)
+        if source_days[-1] != payload['source_cutoff'] or inference_days[-1] != payload['data_cutoff']:
+            raise ValueError('Calendar evidence cutoff mismatch')
+        successors = dict(zip(source_days, source_days[1:]))
         features = payload['feature_names']
         if features != FEATURE_NAMES or payload['feature_version'] != FEATURE_VERSION:
             raise ValueError('Invalid feature contract')
@@ -69,6 +76,8 @@ def validate_payload(payload):
         for row in payload['test_series']:
             validate_date(row['signal_date'])
             validate_date(row['target_date'])
+            if successors.get(row['signal_date']) != row['target_date']:
+                raise ValueError('Test target is not the proven next open session')
             if row['signal_date'] <= payload['seen_through'] or row['target_date'] <= row['signal_date']:
                 raise ValueError('Invalid test dates')
             if previous is not None and row['signal_date'] <= previous:

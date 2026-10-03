@@ -120,6 +120,21 @@ def test_corrupt_matching_publication_is_503(client, repo, forecast):
         assert response.json() == {'detail': 'Forecast dependency unavailable'}
 
 
+def test_old_unverified_publication_hidden_and_direct_503_preserves_row(client, repo, forecast):
+    _, payload = forecast
+    old = copy.deepcopy(payload)
+    old.pop('source_continuity')
+    old.pop('inference_continuity')
+    insert(repo, old)
+    for path in ('models?ts_code=000001.SZ', 'results/000001.SZ'):
+        assert client.get('/api/analysis/'+path).json() == []
+    response = client.get(f"/api/analysis/prediction/000001.SZ?model={payload['model_id']}")
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Forecast dependency unavailable'}
+    with repo.connector.engine.connect() as db:
+        assert db.execute(text('SELECT COUNT(*) FROM analysis_result')).scalar() == 1
+
+
 def test_dependency_errors_are_sanitized(client, repo, monkeypatch):
     def fail(*args):
         raise RuntimeError('mysql://user:password-secret@private-host/db')

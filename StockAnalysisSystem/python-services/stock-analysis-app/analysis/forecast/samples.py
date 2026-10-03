@@ -1,11 +1,12 @@
-"""Causal feature rows, with explicit next-observation label availability."""
+"""Causal feature rows, with verified next-trading-session labels."""
 import numpy as np
 import pandas as pd
 from data_processor.feature_engineer import FeatureEngineer
 from .contracts import validate_stock, FEATURE_NAMES, FEATURE_VERSION
+from .continuity import verify_dates
 
 
-def build_samples(frame, ts_code):
+def build_samples(frame, ts_code, calendar=None):
     validate_stock(ts_code)
     data = frame.copy(deep=True)
     if not 300 <= len(data) <= 2500:
@@ -26,6 +27,7 @@ def build_samples(frame, ts_code):
     if data.trade_date.dt.tz is not None or not data.trade_date.eq(data.trade_date.dt.normalize()).all():
         raise ValueError('Invalid daily market dates')
     data = data.sort_values('trade_date').reset_index(drop=True)
+    evidence = verify_dates(data.trade_date.dt.strftime('%Y-%m-%d').tolist(), calendar, ts_code)
     for name in ['open', 'high', 'low', 'close', 'vol']:
         data[name] = pd.to_numeric(data[name], errors='coerce')
         if not np.isfinite(data[name]).all():
@@ -62,7 +64,7 @@ def build_samples(frame, ts_code):
         split[name] = dict(signal_start=part.signal_date.min().strftime('%Y-%m-%d'),
                            signal_end=part.signal_date.max().strftime('%Y-%m-%d'),
                            label_end=part.target_date.max().strftime('%Y-%m-%d'), count=len(part))
-    return dict(feature_names=list(FEATURE_NAMES), frame=rows, train=train, val=val,
+    return dict(source_continuity=evidence, feature_names=list(FEATURE_NAMES), frame=rows, train=train, val=val,
                 test=test, latest=latest, splits=split,
                 seen_through=seen.strftime('%Y-%m-%d'),
                 data_cutoff=rows.signal_date.iloc[-1].strftime('%Y-%m-%d'))

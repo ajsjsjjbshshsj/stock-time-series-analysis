@@ -41,10 +41,10 @@ class ForecastRepository:
         if self.artifact_store is None:
             from .artifacts import ArtifactStore
             self.artifact_store = ArtifactStore()
-        # Validate files FIRST; append-only predict revisions may only change latest/cutoff.
+        # Frozen source evidence stays immutable; current inference proof may extend.
         _, frozen = self.artifact_store.load(payload['model_id'])
         for key in frozen:
-            if key not in ('latest', 'data_cutoff') and frozen[key] != payload.get(key):
+            if key not in ('latest', 'data_cutoff', 'inference_continuity') and frozen[key] != payload.get(key):
                 raise ValueError('Publication differs from frozen model')
         if payload['data_cutoff'] < frozen['data_cutoff']:
             raise ValueError('Publication cutoff regressed')

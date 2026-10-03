@@ -1,9 +1,10 @@
 """Bounded, read-only historical reconciliation, independent of training/metrics code.
 
-PASS verifies scoped stored observations, not exchange-calendar completeness,
-training-label provenance, model performance, or point-in-time vendor revisions.
+PASS verifies scoped stored observations against an explicit trusted local exchange
+calendar, not historical fit selection, model performance or vendor revisions.
 """
 import argparse
+import hashlib
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import json
@@ -70,7 +71,44 @@ def metrics(actual, predicted):
                 r2=1-squared_error/variation if len(actual) >= 2 and variation else None)
 
 
-def verify(source, dto, frozen, stock, model):
+def calendar_sessions(calendar, stock):
+    """Independent calendar oracle; never imports production continuity helpers."""
+    require(type(calendar) is dict, 'Trusted local calendar required')
+    exchange = 'BSE' if stock.endswith('.BJ') else 'SSE'
+    require(calendar['source'] == 'tushare.trade_cal' and calendar['exchange'] == exchange,
+            'Incompatible calendar origin/exchange')
+    start, end = day(calendar['start']), day(calendar['end'])
+    require(0 <= (date.fromisoformat(end)-date.fromisoformat(start)).days <= 10000,
+            'Invalid calendar coverage bound')
+    sessions = calendar['open_dates']
+    require(type(sessions) is list and 0 < len(sessions) <= 7500, 'Invalid calendar session bound')
+    require(all(type(d) is str and day(d) == d for d in sessions) and sessions == sorted(set(sessions)),
+            'Invalid calendar sessions')
+    require(start <= sessions[0] <= sessions[-1] <= end, 'Invalid calendar coverage')
+    return sessions
+
+
+def evidence_days(proof, calendar, stock):
+    require(type(proof) is dict, 'Missing continuity evidence')
+    sessions = calendar_sessions(calendar, stock)
+    require(proof['source'] == calendar['source'] and proof['exchange'] == calendar['exchange'],
+            'Continuity origin/exchange mismatch')
+    start, end = day(proof['source_start']), day(proof['source_end'])
+    coverage_start, coverage_end = day(proof['calendar_start']), day(proof['calendar_end'])
+    require(coverage_start <= start <= end <= coverage_end and
+            0 <= (date.fromisoformat(coverage_end)-date.fromisoformat(coverage_start)).days <= 10000 and
+            calendar['start'] <= start <= end <= calendar['end'], 'Incomplete calendar coverage')
+    days = proof['open_dates']
+    require(type(days) is list and type(proof['session_count']) is int and
+            0 < proof['session_count'] == len(days) <= 2500, 'Invalid continuity session count')
+    require(days == [d for d in sessions if start <= d <= end] and days and days[0] == start and days[-1] == end,
+            'Source calendar continuity mismatch')
+    digest = hashlib.sha256('\n'.join(days).encode('ascii')).hexdigest()
+    require(proof['source_dates_hash'] == digest, 'Source date hash mismatch')
+    return days
+
+
+def verify(source, dto, frozen, stock, model, calendar=None):
     """Require full frozen test series; never accept a truncated API tail."""
     try:
         require(isinstance(dto, dict) and set(dto) == {'metadata', 'test_series', 'latest'}, 'Invalid prediction DTO')
@@ -82,19 +120,25 @@ def verify(source, dto, frozen, stock, model):
                               ('target', 'next_trading_day_close_return')):
             require(type(metadata[key]) is type(expected) and metadata[key] == expected, 'Unsupported forecast contract')
         immutable = {k: v for k, v in frozen.items() if k not in
-                     ('test_series', 'latest', 'data_cutoff', 'feature_importance')}
-        require(set(metadata) == set(immutable) | {'data_cutoff'}, 'Incomplete model metadata')
+                     ('test_series', 'latest', 'data_cutoff', 'feature_importance', 'inference_continuity')}
+        require(set(metadata) == set(immutable) | {'data_cutoff', 'inference_continuity'}, 'Incomplete model metadata')
         for key, expected in immutable.items():
             require(metadata[key] == expected, 'Frozen metadata mismatch: '+key)
         require(series == frozen['test_series'], 'Frozen test series mismatch')
         require(0 < len(source) <= 2500, 'Source must contain 1..2500 rows')
         days = [day(row['trade_date']) for row in source]
         require(days == sorted(set(days)), 'Source dates must be ordered and unique')
+        original_days = evidence_days(frozen['source_continuity'], calendar, stock)
+        require(frozen['inference_continuity'] == frozen['source_continuity'], 'Invalid frozen inference evidence')
+        current_days = evidence_days(metadata['inference_continuity'], calendar, stock)
+        require(days == current_days and days[:len(original_days)] == original_days,
+                'Current source must retain frozen start and historical date prefix')
         closes = [number(row['close']) for row in source]
         require(all(c > 0 for c in closes), 'Invalid source close')
         cutoff, original, seen = (day(metadata[k]) for k in ('data_cutoff', 'source_cutoff', 'seen_through'))
         require(seen < original <= cutoff == days[-1] and original == day(frozen['data_cutoff']),
                 'Cutoff/seen boundary mismatch')
+        require(original_days[-1] == original, 'Frozen source evidence cutoff mismatch')
         splits = metadata['splits']
         for name in ('train', 'val', 'test'):
             split = splits[name]
@@ -116,7 +160,7 @@ def verify(source, dto, frozen, stock, model):
             signal, target = row['signal_date'], day(row['target_date'])
             require(signal in index and signal > seen, 'Missing/seen test signal')
             i = index[signal]
-            require(i+1 < len(days) and target == days[i+1], 'Label is not next observed source session')
+            require(i+1 < len(days) and target == days[i+1], 'Label is not next proven open exchange session')
             expected = closes[i+1]/closes[i]-1
             equal_number(row['actual_return'], expected, 'Actual decimal-return mismatch')
             actual.append(expected)
@@ -133,11 +177,12 @@ def verify(source, dto, frozen, stock, model):
             require(latest == frozen['latest'], 'Frozen latest prediction mismatch')
         gaps = [dict(from_date=a, to_date=b, calendar_days=(date.fromisoformat(b)-date.fromisoformat(a)).days)
                 for a, b in zip(days, days[1:]) if (date.fromisoformat(b)-date.fromisoformat(a)).days > 7]
-        return dict(status='PASS', scope='stored historical observations only', ts_code=stock, model_id=model,
+        return dict(status='PASS', scope='frozen source and current inference exchange-calendar continuity', ts_code=stock, model_id=model,
                     source_rows=len(source), source_start=days[0], source_end=days[-1],
+                    frozen_source_rows=len(original_days), frozen_source_start=original_days[0], frozen_source_end=original_days[-1],
                     checked_test_rows=len(actual), test_count=test['count'], latest_cutoff=cutoff,
                     original_model_seen_through=seen, training_label_provenance_verified=False,
-                    exchange_calendar_completeness_verified=False, observed_gaps_over_7_days=gaps,
+                    exchange_calendar_completeness_verified=True, observed_gaps_over_7_days=gaps,
                     metrics={k: float(v) if v is not None else None for k, v in metrics(actual, predicted).items()},
                     baseline_metrics={k: float(v) if v is not None else None for k, v in metrics(actual, [Decimal(0)]*len(actual)).items()},
                     numeric_tolerance='absolute 1e-10 + relative 1e-8; decimal-return units')
@@ -201,6 +246,14 @@ def run(args):
     parts = urlsplit(args.api_base)
     require(parts.scheme in ('http', 'https') and parts.hostname and not parts.username and not parts.password
             and not parts.query and not parts.fragment and parts.path in ('', '/'), 'Invalid API base')
+    try:
+        with Path(args.calendar).open('rb') as file:
+            raw = file.read(256 * 1024 + 1)
+        require(len(raw) <= 256 * 1024, 'Calendar exceeds size bound')
+        calendar = read_json(raw)
+        calendar_sessions(calendar, args.stock)
+    except OSError:
+        raise VerificationError('Trusted local calendar unavailable') from None
     root = APP / 'models' / 'v07'
     directory = root / args.model
     metadata_path = directory / 'metadata.json'
@@ -214,7 +267,7 @@ def run(args):
     source = load_source(args.stock, first, last, args.timeout)
     dto = fetch(args.api_base.rstrip('/'), '/api/analysis/prediction/'+args.stock+'?'+
                 urlencode(dict(model=args.model, limit=500)), args.timeout)
-    return verify(source, dto, frozen, args.stock, args.model)
+    return verify(source, dto, frozen, args.stock, args.model, calendar)
 
 
 def main(argv=None):
@@ -223,6 +276,7 @@ def main(argv=None):
     parser.add_argument('--model', required=True)
     parser.add_argument('--start', required=True)
     parser.add_argument('--end', required=True)
+    parser.add_argument('--calendar', required=True, help='Trusted local tushare.trade_cal JSON')
     parser.add_argument('--api-base', default='http://127.0.0.1:8084')
     parser.add_argument('--timeout', type=float, default=15)
     args = parser.parse_args(argv)

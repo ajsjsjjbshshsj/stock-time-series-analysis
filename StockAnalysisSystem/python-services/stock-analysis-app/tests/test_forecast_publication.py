@@ -4,13 +4,13 @@ from contextlib import contextmanager
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from tests.test_forecast_samples import history
+from tests.test_forecast_samples import history, calendar
 
 
 @pytest.fixture
 def forecast():
     from analysis.forecast.training import train_forecast
-    return train_forecast(history(), '000001.SZ')
+    return train_forecast(history(), '000001.SZ', calendar())
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_cli_invalid_inputs_fail_without_connection(monkeypatch, capsys):
     from scripts.forecast import main
     from database import db_connector
     monkeypatch.setattr(db_connector, 'DatabaseConnector', lambda *a: pytest.fail('unexpected connection'))
-    assert main(['train', '--stock', 'unsafe', '--start', '2023-01-01', '--end', '2024-01-01']) == 1
+    assert main(['train', '--stock', 'unsafe', '--start', '2023-01-01', '--end', '2024-01-01', '--calendar', 'missing.json']) == 1
     assert 'Forecast failed' in capsys.readouterr().err
 
 
@@ -224,3 +224,21 @@ def test_direct_corrupt_matching_publication_is_not_unknown(connector, forecast)
         repo.get(payload['ts_code'], payload['model_id'])
     with pytest.raises(DependencyError, match='Forecast publication unavailable'):
         repo.get_model(payload['model_id'])
+
+
+def test_publish_extension_keeps_original_calendar_proof(connector, tmp_path, forecast):
+    import pandas as pd
+    from analysis.forecast.training import predict_latest
+    from analysis.forecast.artifacts import ArtifactStore
+    from analysis.forecast.repository import ForecastRepository
+    model, payload = forecast
+    store = ArtifactStore(tmp_path)
+    store.save(model, payload)
+    frame = history()
+    extra = frame.tail(1).copy()
+    extra['trade_date'] += pd.Timedelta(days=3)
+    extended = pd.concat([frame, extra])
+    revised = predict_latest(model, payload, extended, '000001.SZ', calendar(extended))
+    repo = ForecastRepository(connector, store)
+    repo.publish(revised)
+    assert repo.get('000001.SZ', payload['model_id'])['source_continuity'] == payload['source_continuity']

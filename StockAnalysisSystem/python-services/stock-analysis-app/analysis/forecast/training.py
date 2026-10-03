@@ -8,6 +8,7 @@ import pandas as pd
 import xgboost as xgb
 from .samples import build_samples, FEATURE_VERSION
 from .contracts import TARGET, validate_payload
+from .continuity import require_prefix
 
 PARAMS = dict(objective='reg:squarederror', n_estimators=80, max_depth=3,
               learning_rate=.05, subsample=1., colsample_bytree=1.,
@@ -28,8 +29,8 @@ def _latest(model, samples):
                 predicted_return=float(model.predict(row[samples['feature_names']])[0]))
 
 
-def train_forecast(frame, ts_code):
-    samples = build_samples(frame, ts_code)
+def train_forecast(frame, ts_code, calendar=None):
+    samples = build_samples(frame, ts_code, calendar)
     features = samples['feature_names']
     model = xgb.XGBRegressor(**PARAMS)
     # Fixed parameters: validation is recorded as seen, but no model selection/test feedback.
@@ -51,6 +52,8 @@ def train_forecast(frame, ts_code):
                    seed=42, params=dict(PARAMS), splits=samples['splits'],
                    seen_through=samples['seen_through'], data_cutoff=samples['data_cutoff'],
                    source_cutoff=samples['data_cutoff'],
+                   source_continuity=samples['source_continuity'],
+                   inference_continuity=copy.deepcopy(samples['source_continuity']),
                    data_hash=hashlib.sha256(pd.util.hash_pandas_object(samples['frame'], index=False).values.tobytes()).hexdigest(),
                    dependency_versions=dict(xgboost=xgb.__version__, pandas=pd.__version__, numpy=np.__version__),
                    metrics=metrics(test.actual_return.values, predictions),
@@ -60,11 +63,12 @@ def train_forecast(frame, ts_code):
     return model, validate_payload(payload)
 
 
-def predict_latest(model, payload, frame, ts_code):
+def predict_latest(model, payload, frame, ts_code, calendar=None):
     validate_payload(payload)
     if payload['ts_code'] != ts_code:
         raise ValueError('Model stock mismatch')
-    samples = build_samples(frame, ts_code)
+    samples = build_samples(frame, ts_code, calendar)
+    require_prefix(payload['source_continuity']['open_dates'], samples['source_continuity']['open_dates'])
     if samples['data_cutoff'] <= payload['seen_through']:
         raise ValueError('Latest signal must be unseen')
     if samples['data_cutoff'] < payload['data_cutoff']:
@@ -72,4 +76,5 @@ def predict_latest(model, payload, frame, ts_code):
     revision = copy.deepcopy(payload)
     revision['data_cutoff'] = samples['data_cutoff']
     revision['latest'] = _latest(model, samples)
+    revision['inference_continuity'] = samples['source_continuity']
     return validate_payload(revision)

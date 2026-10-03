@@ -5,6 +5,7 @@ from analysis.forecast.artifacts import ArtifactStore
 from analysis.forecast.contracts import validate_date, validate_model_id, validate_stock
 from analysis.forecast.repository import ForecastRepository
 from analysis.forecast.training import predict_latest, train_forecast
+from analysis.forecast.continuity import load_calendar, validate_calendar
 
 
 def main(argv=None):
@@ -15,6 +16,7 @@ def main(argv=None):
         command.add_argument('--stock', required=True)
         command.add_argument('--start', required=True)
         command.add_argument('--end', required=True)
+        command.add_argument('--calendar', required=True, help='Trusted local tushare.trade_cal JSON; no automatic fetch')
         if name == 'predict':
             command.add_argument('--model', required=True)
     args = parser.parse_args(argv)
@@ -26,6 +28,8 @@ def main(argv=None):
             raise ValueError('Invalid date range')
         if args.command == 'predict':
             validate_model_id(args.model)
+        calendar = load_calendar(args.calendar)
+        validate_calendar(calendar, args.stock)
         from database.db_connector import DatabaseConnector
         from config.settings import DATABASE_CONFIG
         config = dict(DATABASE_CONFIG, connect_timeout=5, pool_timeout=5, read_timeout=15, write_timeout=15)
@@ -34,14 +38,14 @@ def main(argv=None):
             repository = ForecastRepository(connector, store)
             frame = repository.load_market(args.stock, args.start, args.end)
             if args.command == 'train':
-                model, payload = train_forecast(frame, args.stock)
+                model, payload = train_forecast(frame, args.stock, calendar)
                 store.save(model, payload)
             else:
                 published = repository.get(args.stock, args.model)
                 if published is None:
                     raise ValueError('Published model not found for stock')
                 model, metadata = store.load(args.model)
-                payload = predict_latest(model, metadata, frame, args.stock)
+                payload = predict_latest(model, metadata, frame, args.stock, calendar)
                 if payload['data_cutoff'] < published['data_cutoff']:
                     raise ValueError('Publication cutoff regressed')
             repository.publish(payload)
