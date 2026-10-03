@@ -155,7 +155,8 @@ mvn test
 
 ## 文档导航
 
-- [V0.8 固定协议历史滚动评估指南](StockAnalysisSystem/docs/V0.8_EVALUATION_GUIDE.md)：000001.SZ、2022-01-04 至2026-09-30、三窗各100点；固定 Ridge/XGBoost 与真零收益基线，未复权、历史已观察且非前瞻验证。真实报告 ID/指标与浏览器验收尚待记录；不保证优于基线。指南提供单行复现与独立只读核对命令。
+- [V0.8 固定协议历史滚动评估指南](StockAnalysisSystem/docs/V0.8_EVALUATION_GUIDE.md)：2026-10-03 单次真实发布 `eval_e854bcb0ae3348a9b1f244ca57f81be7`，000001.SZ 源1150日（2022-01-04 至2026-09-30）、三窗共300点；独立核对 PASS，旧数据/模型 hash 不变。指南含完整日期、真实浏览器验证范围与单行复现命令。历史已观察、未复权且非前瞻验证；最终全量回归、广泛审阅和个人 PR 仍待完成。
+
 - [V0.3 消息协议](StockAnalysisSystem/docs/V0.3_MESSAGE_SCHEMA.md)
 - [V0.3 测试用例](StockAnalysisSystem/docs/V0.3_TEST_CASES.md)
 - [V0.3 对账报告](StockAnalysisSystem/docs/V0.3_RECONCILIATION_REPORT.md)
@@ -163,6 +164,18 @@ mvn test
 - [V0.4 发布说明](StockAnalysisSystem/docs/V0.4_RELEASE_NOTES.md)
 - [V0.4 市场数据迁移验收报告](StockAnalysisSystem/docs/V0.4_MARKET_DATA_MIGRATION_REPORT.md)
 - [分析端代码阅读指引](StockAnalysisSystem/python-services/stock-analysis-app/CODE_READING_GUIDE.md)
+
+## V0.8 真实评估指标
+
+本次300行总体指标（RMSE/MAE 为小数收益，R² 无量纲）：
+
+| 方法 | RMSE | MAE | R² |
+|---|---:|---:|---:|
+| zero_return | 0.010008709928323941 | 0.007574383071790578 | -0.0008824717445446848 |
+| ridge | 0.01006797405133397 | 0.007667655823582983 | -0.012770524486203041 |
+| xgboost | 0.009995158444063297 | 0.007645006465381049 | 0.001826021341592377 |
+
+XGBoost RMSE 略低于零基线、MAE 更高；Ridge 两者均更高，不证明盈利、前瞻有效性或普遍战胜基线。
 
 ## 贡献流程
 
