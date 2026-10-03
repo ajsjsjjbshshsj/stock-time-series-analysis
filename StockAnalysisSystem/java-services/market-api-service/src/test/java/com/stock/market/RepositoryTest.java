@@ -17,6 +17,20 @@ import java.util.*;
 
 class RepositoryTest {
     @Test
+    void preservesExactUnquotedClickHouseDecimalNumbers() {
+        var client = mock(ClickHouseClient.class);
+        when(client.execute(anyString(), anyMap(), eq("")))
+                .thenReturn("{\"close\":12345678901234567890.123456,\"pct_chg\":-0.123456}");
+        var row =
+                new IndicatorRepository(client)
+                        .query(QueryParameters.series("000001.SZ", 2, null, null))
+                        .getFirst();
+        assertThat((BigDecimal) row.get("close"))
+                .isEqualByComparingTo("12345678901234567890.123456");
+        assertThat((BigDecimal) row.get("pct_chg")).isEqualByComparingTo("-0.123456");
+    }
+
+    @Test
     void insertsEveryFieldAsNumericDecimalAndNullWithKafkaVersionAndUtcTime() {
         var client = mock(ClickHouseClient.class);
         when(client.execute(anyString(), anyMap(), anyString())).thenReturn("");

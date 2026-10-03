@@ -14,7 +14,8 @@ import java.util.*;
 @Repository
 public class IndicatorRepository {
     private final ClickHouseClient client;
-    private final ObjectMapper json = IndicatorListener.mapper();
+    private final ObjectMapper json =
+            IndicatorListener.mapper().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
 
     public IndicatorRepository(ClickHouseClient client) {
         this.client = client;

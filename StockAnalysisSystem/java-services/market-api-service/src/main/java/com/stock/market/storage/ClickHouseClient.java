@@ -2,9 +2,11 @@ package com.stock.market.storage;
 
 import java.net.*;
 import java.net.http.*;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.*;
 
 public class ClickHouseClient {
     private final URI endpoint;
@@ -57,7 +59,8 @@ public class ClickHouseClient {
                             .header("Authorization", authorization)
                             .POST(HttpRequest.BodyPublishers.ofString(data))
                             .build();
-            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            long deadline = System.nanoTime() + timeout.toNanos();
+            var response = client.send(request, info -> new DeadlineBodySubscriber(deadline));
             if (response.statusCode() != 200
                     || response.headers()
                             .firstValue("X-ClickHouse-Exception-Code")
@@ -77,5 +80,49 @@ public class ClickHouseClient {
 
     private static String encode(String s) {
         return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /** Request timeout covers headers; this subscriber also bounds the complete body. */
+    private static final class DeadlineBodySubscriber
+            implements HttpResponse.BodySubscriber<String> {
+        private final HttpResponse.BodySubscriber<String> delegate =
+                HttpResponse.BodySubscribers.ofString(StandardCharsets.UTF_8);
+        private final long deadline;
+
+        private DeadlineBodySubscriber(long deadline) {
+            this.deadline = deadline;
+        }
+
+        @Override
+        public CompletionStage<String> getBody() {
+            return delegate.getBody();
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            delegate.getBody()
+                    .toCompletableFuture()
+                    .orTimeout(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)
+                    .whenComplete(
+                            (body, failure) -> {
+                                if (failure != null) subscription.cancel();
+                            });
+            delegate.onSubscribe(subscription);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> item) {
+            delegate.onNext(item);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            delegate.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            delegate.onComplete();
+        }
     }
 }
