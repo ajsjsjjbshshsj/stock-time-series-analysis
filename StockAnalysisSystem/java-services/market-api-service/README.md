@@ -6,7 +6,7 @@ Java 21 / Spring Boot 4.1; HTTP port **8083**. No MySQL schema or Flink state ch
 
 Export environment variables using `StockAnalysisSystem/.env.example` as a template. Spring does not load dotenv automatically. Both `DB_PASSWORD` and `CLICKHOUSE_PASSWORD` must be nonblank; startup fails otherwise. Use a read-only MySQL account when possible (the JDBC pool is read-only). MySQL connection/socket/query/pool timeouts and ClickHouse connection/request timeouts are bounded to five seconds.
 
-From the infrastructure directory, explicitly supply the environment file if needed and start **only ClickHouse**: `docker compose --env-file ../.env up -d clickhouse`. Do not recreate Flink or remove existing volumes. ClickHouse 25.8 LTS listens on host loopback 8123; its dedicated volume persists data. Initialization scripts run during container initialization. If adopting a pre-existing ClickHouse volume, apply the SQL deliberately rather than expecting old initialization scripts to rerun. Do not remove a volume to reinitialize it.
+From the infrastructure directory, explicitly supply the environment file if needed and start **only ClickHouse**: `docker compose --env-file ../.env up -d --no-deps clickhouse`. Do not recreate Flink or remove existing volumes. ClickHouse 25.8 LTS listens on host loopback 8123; its dedicated volume persists data. Initialization scripts run during container initialization. If adopting a pre-existing ClickHouse volume, apply the SQL deliberately rather than expecting old initialization scripts to rerun. Do not remove a volume to reinitialize it.
 
 Build from java-services: `mvn -pl market-api-service -am package`. Run the resulting executable JAR with the configured environment. No Docker auto-start integration is included.
 

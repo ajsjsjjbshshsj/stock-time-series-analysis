@@ -82,7 +82,7 @@ const option = computed(() => {
   const dates = bars.value.map((b) => b.trade_date)
   const ohlc = bars.value.map((b) => [b.open, b.close, b.low, b.high])
 
-  // 简单均线（前端由收盘价直接计算，与后端 ma5/ma10/ma20/ma60 口径一致）
+  // 真实模式使用按交易日对齐的服务端 MA5/10/20；仅演示模式在前端计算均线。
   const ma = (n) => live.value ? aligned.value[`ma${n}`] : bars.value.map((_, i) => {
     if (i < n - 1) return null
     let s = 0

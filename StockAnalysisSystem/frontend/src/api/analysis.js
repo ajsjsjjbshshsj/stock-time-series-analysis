@@ -1,6 +1,6 @@
 /**
- * 分析建模接口层（对齐 stock-analysis-app）。
- * 后端目前只有 Python API/Streamlit，无 REST；以下路径为设计约定。
+ * 分析接口层：股票池、K 线、Flink 指标已接入 market-api-service。
+ * 其他端点仅提供演示数据，真实模式不开放对应标签页。
  */
 import { request, dataSource } from './client.js'
 import * as mock from '../mock/analysis.js'
