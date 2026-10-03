@@ -7,6 +7,28 @@ import * as mock from '../mock/analysis.js'
 import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator.js'
 import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
 import { normalizeModels, normalizePrediction, normalizeResults, finiteJson } from '../utils/prediction.js'
+import { normalizeEvaluations, normalizeEvaluation } from '../utils/evaluation.js'
+
+const evaluationDemoUnavailable = () => { throw new Error('滚动评估仅提供真实离线发布报告，演示模式不可用') }
+const evaluationCode = code => { if (!/^[0-9]{6}\.(?:SZ|SH|BJ)$/.test(code)) throw new Error('股票代码无效') }
+export async function getEvaluations(tsCode, options = {}) {
+  evaluationCode(tsCode)
+  const dto = await request(evaluationDemoUnavailable, `/api/analysis/evaluations?ts_code=${tsCode}`, { ...options, method: 'GET' })
+  return normalizeEvaluations(dto, tsCode)
+}
+export async function getEvaluation(tsCode, reportId, options = {}) {
+  evaluationCode(tsCode)
+  if (!/^eval_[0-9a-f]{32}$/.test(reportId)) throw new Error('报告标识无效')
+  try {
+    const dto = await request(evaluationDemoUnavailable, `/api/analysis/evaluations/${tsCode}/${reportId}`, { ...options, method: 'GET' })
+    return dto === null ? null : normalizeEvaluation(dto, tsCode, reportId)
+  } catch (error) {
+    // The shared client exposes HTTP errors as this exact message; only a missing
+    // detail is an empty state. Connectivity, contract and 503 errors stay errors.
+    if (error.message === '接口返回 HTTP 404') return null
+    throw error
+  }
+}
 
 /** GET /api/analysis/stocks — 股票池（stock_basic 子集） */
 export async function getStockPool(options = {}) {
