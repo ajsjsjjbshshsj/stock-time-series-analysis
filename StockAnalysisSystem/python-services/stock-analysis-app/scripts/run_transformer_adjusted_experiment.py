@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import time
 
 APP=Path(__file__).resolve().parents[1]
@@ -51,27 +52,10 @@ def collect(source,output):
         build_model_panel(panel,pd.read_parquet(output/'factors.parquet'))
         print('FACTOR_SNAPSHOT_REUSED',flush=True)
         return
-    # Network acquisition stays in python-collector; analysis owns no provider API.
-    collector=APP.parent/'python-collector'
-    sys.path.insert(0,str(collector))
-    import tushare as ts
-    from app.config import TUSHARE_TOKEN,COLLECTION_CONFIG
-    from app.market_data.factor_snapshot import collect_factor_snapshot
-    api=ts.pro_api(TUSHARE_TOKEN,timeout=20)
-    started=time.perf_counter()
-    try:
-        factors=collect_factor_snapshot(api,panel,output/'factor_shards',
-            interval=COLLECTION_CONFIG['request_interval'])
-    except Exception as error:
-        raise RuntimeError(str(error).replace(TUSHARE_TOKEN,'[REDACTED]')) from None
-    # Validate full coverage before publishing a completed snapshot.
-    build_model_panel(panel,factors)
-    factors.to_parquet(output/'factors.parquet',index=False)
-    write_json(output/'factor_manifest.json',dict(source='tushare.adj_factor',
-        factor_sha256=sha256(output/'factors.parquet'),rows=len(factors),stocks=factors.ts_code.nunique(),
-        first_date=str(factors.trade_date.min().date()),last_date=str(factors.trade_date.max().date()),
-        volume_unit='lots',amount_unit='thousand_CNY',collection_seconds=time.perf_counter()-started))
-    print(f'FACTOR_COLLECTION_COMPLETE rows={len(factors)} stocks={factors.ts_code.nunique()}',flush=True)
+    # Provider imports/configuration remain wholly in the collector process.
+    script=APP.parent/'python-collector/scripts/collect_factor_snapshot.py'
+    subprocess.run([sys.executable,str(script),'--source',str(source),'--output',str(output)],check=True)
+    build_model_panel(panel,pd.read_parquet(output/'factors.parquet'))
 
 
 def run(source,output):
