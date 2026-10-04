@@ -691,7 +691,8 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
 # ============================================================
 
 def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=None,
-                                     scaler_path=None, config=None, top_k=5, score_policy_override=None):
+                                     scaler_path=None, config=None, top_k=5, score_policy_override=None,
+                                     create_plots=True):
     """
     使用训练好的 Transformer 模型进行预测。
 
@@ -834,6 +835,9 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
     exp_scores = np.exp(scores_for_weight / temp)
     weights = exp_scores / (exp_scores.sum() + 1e-12)
     result_df['权重'] = weights
+
+    if not create_plots:
+        return result_df
 
     # 绘制可视化图表
     try:

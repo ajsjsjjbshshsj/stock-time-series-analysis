@@ -154,13 +154,13 @@ def ablate(source, output):
                 for policy in POLICIES:
                     forecast = predict_top_stocks_transformer(panel_df=panels[mode],
                         model_path=original['model_path'], config=original['config'],
-                        score_policy_override=policy)
+                        score_policy_override=policy, create_plots=False)
                     if forecast is None or len(forecast) != 5:
                         raise ValueError('Latest diagnostic forecast unavailable')
                     forecast.to_csv(folder/f'latest_{policy}.csv', index=False, encoding='utf-8-sig')
                 # Raw ordering is read from all20 frozen model scores, not legacy Top5.
                 raw = predict_top_stocks_transformer(panel_df=panels[mode], model_path=original['model_path'],
-                    config=original['config'], top_k=20)
+                    config=original['config'], top_k=20, create_plots=False)
                 raw = raw.sort_values('预测分数', ascending=False, kind='stable').head(5).copy()
                 raw['排名'] = range(1, 6)
                 raw['调整后分数'] = raw['预测分数']
