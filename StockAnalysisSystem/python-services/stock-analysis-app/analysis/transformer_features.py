@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
+from analysis.transformer_scoring import score_policy
 from data_processor.adjusted_market_panel import LEGACY_CONTRACT, validate_market_contract, validate_contract
 
 from analysis.transformer_utils import (
@@ -149,7 +150,7 @@ def save_model_preprocessing(model_path, scaler, full_features, selected_feature
     validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT))
     scaler_path = _sidecar(path, '_scaler.pkl')
     joblib.dump(scaler, scaler_path)
-    manifest = dict(pipeline_version=CACHE_VERSION, full_features=list(full_features),
+    manifest = dict(pipeline_version=CACHE_VERSION, score_adjustment_policy=score_policy(config), full_features=list(full_features),
                     selected_features=list(selected_features), stockid2idx=mapping,
                     feature_history_start=pd.Timestamp(history_start).isoformat(),
                     stock_history_starts={code: pd.Timestamp(date).isoformat() for code, date in stock_history_starts.items()},
@@ -167,6 +168,8 @@ def load_model_preprocessing(model_path, config, scaler_path=None):
         manifest = json.loads(_sidecar(path, '_preprocessing.json').read_text(encoding='utf-8'))
         if manifest.get('pipeline_version') != CACHE_VERSION:
             raise ValueError('Unsupported model preprocessing; retrain')
+        if score_policy(manifest) != score_policy(config):
+            raise ValueError('Model score adjustment policy mismatch')
         if manifest['config'] != {key: config[key] for key in MODEL_CONFIG_KEYS}:
             raise ValueError('Model configuration mismatch; use training configuration')
         if validate_contract(manifest.get('market_preprocessing', LEGACY_CONTRACT)) != validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT)):

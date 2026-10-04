@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 from analysis.transformer_config import TRANSFORMER_CONFIG
 from analysis.transformer_model import StockTransformer, MultiHeadStockTransformer
 from analysis.training_control import EarlyStopping
+from analysis.transformer_scoring import adjust_scores, score_policy
 from analysis.transformer_features import (
     build_feature_panel, normalize_panel, prepare_training_data, prepare_inference_data,
     save_model_preprocessing, load_model_preprocessing,
@@ -690,7 +691,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
 # ============================================================
 
 def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=None,
-                                     scaler_path=None, config=None, top_k=5):
+                                     scaler_path=None, config=None, top_k=5, score_policy_override=None):
     """
     使用训练好的 Transformer 模型进行预测。
 
@@ -793,19 +794,13 @@ def predict_top_stocks_transformer(panel_df=None, feature_path=None, model_path=
             cls_scores = outputs['classification'].reshape(-1).cpu().numpy()
             dir_scores = outputs['direction'].reshape(-1).cpu().numpy()
 
-            # 计算不确定性
-            def minmax_norm(arr):
-                xmin, xmax = arr.min(), arr.max()
-                if xmax - xmin < 1e-9:
-                    return np.zeros_like(arr)
-                return (arr - xmin) / (xmax - xmin)
-
-            reg_n = minmax_norm(reg_scores)
-            cls_n = minmax_norm(cls_scores)
-            dir_n = minmax_norm(dir_scores)
-            uncertainty = np.var(np.stack([reg_n, cls_n, dir_n]), axis=0)
-            adjusted_scores = ranking_scores * (1 - uncertainty)
-            top_indices = np.argsort(adjusted_scores)[::-1][:top_k]
+            # An explicit offline override never rewrites the checkpoint contract.
+            policy = score_policy(config) if score_policy_override is None else score_policy(
+                {'score_adjustment_policy': score_policy_override})
+            adjusted_scores, uncertainty = adjust_scores(
+                ranking_scores, reg_scores, cls_scores, dir_scores, policy)
+            top_indices = (np.argsort(adjusted_scores)[::-1] if policy == 'legacy_variance'
+                           else np.argsort(-adjusted_scores, kind='stable'))[:top_k]
         else:
             scores = model(x).reshape(-1).cpu().numpy()
             top_indices = np.argsort(scores)[::-1][:top_k]

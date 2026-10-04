@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from analysis.transformer_scoring import adjust_scores, score_policy, POLICIES
 
 
 def sha256(path):
@@ -53,24 +54,22 @@ def daily_metrics(scores,adjusted_scores,returns,momentum,k=5):
         adjusted_excess=adjusted_return-equal,rank_ic=float(ic) if np.isfinite(ic) else None)
 
 
-def adjusted_head_scores(outputs):
+def adjusted_head_scores(outputs, policy='legacy_variance'):
     """Mirror existing production uncertainty adjustment, not a new algorithm."""
     arrays={name:value.detach().reshape(-1).cpu().numpy() for name,value in outputs.items()}
-    normalized=[]
-    for name in ('regression','classification','direction'):
-        values=arrays[name]
-        width=values.max()-values.min()
-        normalized.append(np.zeros_like(values) if width<1e-9 else (values-values.min())/width)
-    uncertainty=np.stack(normalized).var(axis=0)
-    return arrays['ranking'],arrays['ranking']*(1-uncertainty)
+    adjusted,_=adjust_scores(*(arrays[name] for name in ('ranking','regression','classification','direction')),policy=policy)
+    return arrays['ranking'],adjusted
 
 
-def evaluate_month(panel,result,month,benchmark_panel=None):
+def evaluate_month(panel,result,month,benchmark_panel=None,scoring_policies=None):
     import torch
     from analysis.transformer_features import load_model_preprocessing,build_feature_panel,prepare_inference_data
     from analysis.transformer_utils import create_ranking_dataset_vectorized
     from analysis.transformer_model import MultiHeadStockTransformer
     config=result['config']
+    if scoring_policies is not None and (len(set(scoring_policies))!=len(scoring_policies)
+            or any(policy not in POLICIES for policy in scoring_policies)):
+        raise ValueError('Invalid evaluation scoring policies')
     scaler,metadata=load_model_preprocessing(result['model_path'],config)
     first=pd.Period(month,freq='M').start_time
     following=first+pd.offsets.MonthBegin(1)
@@ -99,7 +98,7 @@ def evaluate_month(panel,result,month,benchmark_panel=None):
             if len(ids)!=len(metadata['stockid2idx']):
                 raise ValueError('Incomplete fixed-universe holdout date')
             outputs=model(torch.from_numpy(sequence).unsqueeze(0).to(device),return_all_heads=True)
-            scores,adjusted=adjusted_head_scores(outputs)
+            scores,adjusted=adjusted_head_scores(outputs,score_policy(config))
             momentum=raw[raw['日期']==date].set_index('instrument').loc[ids,'return_5'].to_numpy()
             row=dict(date=str(pd.Timestamp(date).date()),stocks=len(ids),**daily_metrics(scores,adjusted,targets,momentum))
             if benchmark is not None:
@@ -107,6 +106,16 @@ def evaluate_month(panel,result,month,benchmark_panel=None):
                 truth=np.array([benchmark.loc[(inverse[index],date)] for index in ids])
                 common=daily_metrics(scores,adjusted,truth,momentum)
                 row.update({f'common_adjusted_label_{key}':value for key,value in common.items()})
+            if scoring_policies is not None:
+                truth=truth if benchmark is not None else targets
+                raw_top=set(np.argsort(-scores,kind='stable')[:5])
+                for policy in scoring_policies:
+                    _,policy_scores=adjusted_head_scores(outputs,policy)
+                    metric=daily_metrics(scores,policy_scores,truth,momentum)
+                    prefix=f'policy_{policy}_'
+                    row[prefix+'top5_return']=metric['adjusted_top5_return']
+                    row[prefix+'excess']=metric['adjusted_excess']
+                    row[prefix+'top5_changed']=int(raw_top!=set(np.argsort(-policy_scores,kind='stable')[:5]))
             rows.append(row)
     return rows
 
