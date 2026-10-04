@@ -120,7 +120,9 @@ def engineer_features(df):
     low = df['最低'].astype(float)
     close = df['收盘'].astype(float)
     volume = df['成交量'].astype(float)
-    vwap = df['成交额'] / (volume + 1e-12)
+    # Adapted experiments supply a unit-correct VWAP in the same price regime.
+    # Legacy caches/models retain their original feature definition.
+    vwap = df['_model_vwap'] if '_model_vwap' in df else df['成交额'] / (volume + 1e-12)
 
     features = []
     feature_names = []

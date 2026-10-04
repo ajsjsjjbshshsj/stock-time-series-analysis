@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
+from data_processor.adjusted_market_panel import LEGACY_CONTRACT, validate_market_contract
 
 from analysis.transformer_utils import (
     FEATURE_COLUMNS_MAP, FEATURE_ENGINEER_FUNC_MAP, add_cross_sectional_features,
@@ -63,6 +64,7 @@ def feature_columns(feature_num):
 def build_feature_panel(panel_df, config, stockid2idx=None, use_parallel=False, n_workers=None, include_labels=True):
     """Compute complete per-stock history, then cross section and optional labels."""
     frame = normalize_panel(panel_df)
+    validate_market_contract(frame, config)
     last = frame['日期'].max()
     start = pd.Timestamp(config.get('feature_start_date', last - pd.DateOffset(years=3)))
     frame = frame[frame['日期'] >= start].copy()
@@ -151,6 +153,7 @@ def save_model_preprocessing(model_path, scaler, full_features, selected_feature
                     feature_history_start=pd.Timestamp(history_start).isoformat(),
                     stock_history_starts={code: pd.Timestamp(date).isoformat() for code, date in stock_history_starts.items()},
                     config={key: config[key] for key in MODEL_CONFIG_KEYS},
+                    market_preprocessing=config.get('market_preprocessing', LEGACY_CONTRACT),
                     model_sha256=_digest(path), scaler_sha256=_digest(scaler_path))
     _sidecar(path, '_preprocessing.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     return str(scaler_path)
@@ -165,6 +168,8 @@ def load_model_preprocessing(model_path, config, scaler_path=None):
             raise ValueError('Unsupported model preprocessing; retrain')
         if manifest['config'] != {key: config[key] for key in MODEL_CONFIG_KEYS}:
             raise ValueError('Model configuration mismatch; use training configuration')
+        if manifest.get('market_preprocessing', LEGACY_CONTRACT) != config.get('market_preprocessing', LEGACY_CONTRACT):
+            raise ValueError('Model market price contract mismatch')
         if manifest['model_sha256'] != _digest(path):
             raise ValueError('Model checkpoint mismatch; retrain')
         source = Path(scaler_path) if scaler_path else _sidecar(path, '_scaler.pkl')
@@ -207,6 +212,7 @@ def save_feature_cache(panel_df, save_path, config, use_parallel=True, n_workers
     result.to_parquet(path, engine='pyarrow', index=False)
     _sidecar(path, '_stockid2idx.json').write_text(json.dumps(mapping, ensure_ascii=False), encoding='utf-8')
     meta = dict(cache_version=CACHE_VERSION, feature_scale='raw', feature_num=config['feature_num'],
+                market_preprocessing=config.get('market_preprocessing', LEGACY_CONTRACT),
                 feature_cols=columns, val_start_date=val_start, num_stocks=len(mapping))
     _sidecar(path, '_meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
     return str(path), columns, val_start
@@ -218,6 +224,8 @@ def load_feature_cache(save_path, config):
     try:
         meta = json.loads(_sidecar(path, '_meta.json').read_text(encoding='utf-8'))
         columns = feature_columns(config['feature_num'])
+        if meta.get('market_preprocessing', LEGACY_CONTRACT) != config.get('market_preprocessing', LEGACY_CONTRACT):
+            raise ValueError('Feature cache market price contract mismatch')
         if (meta.get('cache_version') != CACHE_VERSION or meta.get('feature_scale') != 'raw'
                 or meta.get('feature_num') != config['feature_num'] or meta.get('feature_cols') != columns):
             raise ValueError('Unsupported feature cache; rebuild from raw panel')
