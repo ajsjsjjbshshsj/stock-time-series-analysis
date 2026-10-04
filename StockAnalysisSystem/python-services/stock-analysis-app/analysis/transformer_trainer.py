@@ -19,6 +19,7 @@ from config.logging_config import get_logger
 logger = get_logger(__name__)
 from analysis.transformer_config import TRANSFORMER_CONFIG
 from analysis.transformer_model import StockTransformer, MultiHeadStockTransformer
+from analysis.training_control import EarlyStopping
 from analysis.transformer_features import (
     build_feature_panel, normalize_panel, prepare_training_data, prepare_inference_data,
     save_model_preprocessing, load_model_preprocessing,
@@ -585,6 +586,9 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
     # 训练循环
     best_score = -float('inf')
     best_epoch = -1
+    stopping = EarlyStopping(config.get('early_stopping_patience', 0),
+                             config.get('early_stopping_min_delta', 0.))
+    stopped_early = False
     history = []  # 记录每个epoch的指标
 
     for epoch in range(config['num_epochs']):
@@ -629,12 +633,17 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         history.append(epoch_history)
 
         current_final_score = eval_metrics.get('final_score', 0.0)
-        if current_final_score > best_score:
+        improved, should_stop = stopping.update(current_final_score)
+        if improved:
             best_score = current_final_score
             best_epoch = epoch + 1
             model_name = save_name or 'best_model'
             torch.save(model.state_dict(), os.path.join(output_dir, f'{model_name}.pth'))
             logger.info(f"保存最佳模型 - final score: {best_score:.4f}")
+        if should_stop:
+            stopped_early = True
+            logger.info(f"验证指标连续 {stopping.patience} 轮未改善，提前停止")
+            break
 
     logger.info(f"\n训练完成！最佳 epoch: {best_epoch}, 最佳 final score: {best_score:.4f}")
 
@@ -669,6 +678,8 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         'stockid2idx': stockid2idx,
         'best_score': best_score,
         'best_epoch': best_epoch,
+        'epochs_completed': len(history),
+        'stopped_early': stopped_early,
         'history': history,
         'config': config,
     }
