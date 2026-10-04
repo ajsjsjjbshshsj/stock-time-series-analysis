@@ -66,3 +66,54 @@ def test_runner_help_does_not_request_api_or_train():
     result=subprocess.run([sys.executable,str(script),'--help'],capture_output=True,text=True)
     assert result.returncode==0
     assert '--stage' in result.stdout and '--source' in result.stdout and '--output' in result.stdout
+
+
+def runner_module():
+    import importlib.util
+    from pathlib import Path
+    path=Path(__file__).resolve().parents[1]/'scripts/run_transformer_adjusted_experiment.py'
+    spec=importlib.util.spec_from_file_location('adjusted_runner_test',path)
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize('bad',['identity','config','model_path','train_end'])
+def test_resume_rejects_wrong_fold_or_training_configuration(tmp_path,bad):
+    runner=runner_module()
+    folder=tmp_path/'adjusted/2026-06'
+    config={'market_preprocessing':{'mode':'adjusted'},'num_epochs':30}
+    record=dict(mode='adjusted',month='2026-06',config=config.copy(),train_end='2026-05-29',
+        model_path=str(folder/'model/best_model.pth'),scaler_path=str(folder/'model/best_model_scaler.pkl'),
+        best_epoch=1,epochs_completed=2)
+    if bad=='identity':
+        record['month']='2026-07'
+    elif bad=='config':
+        record['config']=dict(config,num_epochs=3)
+    elif bad=='model_path':
+        record['model_path']=str(tmp_path/'another/best_model.pth')
+    else:
+        record['train_end']='2026-05-28'
+    with pytest.raises(ValueError,match='fold|Fold|config|path'):
+        runner.validate_fold_identity(record,'adjusted','2026-06',folder,config,'2026-05-29')
+
+
+def test_verifier_rejects_duplicated_months_not_just_fold_count(tmp_path,monkeypatch):
+    import json
+    runner=runner_module()
+    monkeypatch.setattr(runner,'load_source',lambda path:(pd.DataFrame(),{'snapshot_sha256':'hash'}))
+    monkeypatch.setattr(runner,'sha256',lambda path:'hash')
+    rows=[dict(mode=mode,month=month) for mode in runner.MODES for month in runner.MONTHS]
+    rows[0]=dict(rows[1])  # Eight records, but one missing month and one duplicate.
+    report=dict(source_sha256='hash',factor_sha256='hash',folds=rows)
+    (tmp_path/'report.json').write_text(json.dumps(report),encoding='utf-8')
+    with pytest.raises(ValueError,match='fold|Fold'):
+        runner.verify(tmp_path/'source.parquet',tmp_path)
+
+
+def test_expected_mature_dates_include_all_sessions_and_exclude_label_tail():
+    runner=runner_module()
+    dates=pd.bdate_range('2026-09-01',periods=12)
+    panel=pd.DataFrame({'ts_code':['000001.SZ']*12,'trade_date':dates})
+    assert runner.expected_evaluation_dates(panel,'2026-09',sequence_length=2)==[
+        '2026-09-02','2026-09-03','2026-09-04','2026-09-07','2026-09-08','2026-09-09']

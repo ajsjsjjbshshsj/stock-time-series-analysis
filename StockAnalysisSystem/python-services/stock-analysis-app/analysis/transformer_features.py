@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.preprocessing import StandardScaler
-from data_processor.adjusted_market_panel import LEGACY_CONTRACT, validate_market_contract
+from data_processor.adjusted_market_panel import LEGACY_CONTRACT, validate_market_contract, validate_contract
 
 from analysis.transformer_utils import (
     FEATURE_COLUMNS_MAP, FEATURE_ENGINEER_FUNC_MAP, add_cross_sectional_features,
@@ -146,6 +146,7 @@ def save_model_preprocessing(model_path, scaler, full_features, selected_feature
                              stock_history_starts):
     """Bind each checkpoint to its own scaler, ordered columns and stock IDs."""
     path = Path(model_path)
+    validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT))
     scaler_path = _sidecar(path, '_scaler.pkl')
     joblib.dump(scaler, scaler_path)
     manifest = dict(pipeline_version=CACHE_VERSION, full_features=list(full_features),
@@ -168,7 +169,7 @@ def load_model_preprocessing(model_path, config, scaler_path=None):
             raise ValueError('Unsupported model preprocessing; retrain')
         if manifest['config'] != {key: config[key] for key in MODEL_CONFIG_KEYS}:
             raise ValueError('Model configuration mismatch; use training configuration')
-        if manifest.get('market_preprocessing', LEGACY_CONTRACT) != config.get('market_preprocessing', LEGACY_CONTRACT):
+        if validate_contract(manifest.get('market_preprocessing', LEGACY_CONTRACT)) != validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT)):
             raise ValueError('Model market price contract mismatch')
         if manifest['model_sha256'] != _digest(path):
             raise ValueError('Model checkpoint mismatch; retrain')
@@ -224,7 +225,7 @@ def load_feature_cache(save_path, config):
     try:
         meta = json.loads(_sidecar(path, '_meta.json').read_text(encoding='utf-8'))
         columns = feature_columns(config['feature_num'])
-        if meta.get('market_preprocessing', LEGACY_CONTRACT) != config.get('market_preprocessing', LEGACY_CONTRACT):
+        if validate_contract(meta.get('market_preprocessing', LEGACY_CONTRACT)) != validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT)):
             raise ValueError('Feature cache market price contract mismatch')
         if (meta.get('cache_version') != CACHE_VERSION or meta.get('feature_scale') != 'raw'
                 or meta.get('feature_num') != config['feature_num'] or meta.get('feature_cols') != columns):

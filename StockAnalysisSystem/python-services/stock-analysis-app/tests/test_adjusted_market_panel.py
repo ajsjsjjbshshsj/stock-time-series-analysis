@@ -117,3 +117,23 @@ def test_model_contract_mismatch_rejected(tmp_path):
     load_model_preprocessing(path, config)
     with pytest.raises(ValueError, match='market|price|contract'):
         load_model_preprocessing(path, dict(config, market_preprocessing={'mode':'legacy_unadjusted'}))
+
+
+@pytest.mark.parametrize('bad',['missing_vwap','nan_vwap','legacy_marker','unsupported_version'])
+def test_price_contract_cannot_silently_fallback_to_other_feature_units(bad):
+    from analysis.transformer_features import build_feature_panel
+    from analysis.transformer_config import TRANSFORMER_CONFIG
+    from data_processor.adjusted_market_panel import contract_text
+    panel,contract=adapter()(*fixture_panel())
+    if bad=='missing_vwap':
+        panel=panel.drop(columns='_model_vwap')
+    elif bad=='nan_vwap':
+        panel.loc[0,'_model_vwap']=np.nan
+    elif bad=='legacy_marker':
+        contract={'mode':'legacy_unadjusted'}
+        panel['_market_contract']=contract_text(contract)
+    else:
+        contract=dict(contract,version=999)
+        panel['_market_contract']=contract_text(contract)
+    with pytest.raises(ValueError,match='market|price|contract|VWAP'):
+        build_feature_panel(panel,dict(TRANSFORMER_CONFIG,market_preprocessing=contract))

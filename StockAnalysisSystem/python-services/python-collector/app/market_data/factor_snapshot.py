@@ -49,7 +49,7 @@ def collect_factor_snapshot(client, market, directory, *, interval=.5, sleep=tim
                     except Exception as error:
                         message=str(error).lower()
                         ledger['failed']=kwargs
-                        quota='频率' in message or '每分钟' in message or 'rate limit' in message
+                        quota=any(word in message for word in ('频率','每分钟','每小时','小时','rate limit'))
                         if quota:
                             cooldown=3601 if '小时' in message else 61
                             ledger['retry_not_before']=clock()+cooldown

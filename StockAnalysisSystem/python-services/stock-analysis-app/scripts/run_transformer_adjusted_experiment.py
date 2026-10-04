@@ -27,6 +27,41 @@ MONTHS=('2026-06','2026-07','2026-08','2026-09')
 MODES=('adjusted','unadjusted_control')
 
 
+def experiment_config(folder,contract):
+    from analysis.transformer_config import TRANSFORMER_CONFIG
+    return dict(TRANSFORMER_CONFIG,output_dir=str(folder/'model'),num_epochs=30,batch_size=8,
+        early_stopping_patience=5,early_stopping_min_delta=1e-6,market_preprocessing=contract,
+        use_probe_selection=True,probe_selected_features_path=None,seed=42)
+
+
+def validate_fold_identity(record,mode,month,folder,config,train_end):
+    if (record.get('mode')!=mode or record.get('month')!=month or record.get('config')!=config
+            or record.get('train_end')!=str(pd.Timestamp(train_end).date())):
+        raise ValueError('Fold identity/config/training cutoff mismatch')
+    expected={'model_path':folder/'model/best_model.pth','scaler_path':folder/'model/best_model_scaler.pkl'}
+    if any(Path(record.get(key,'')).resolve()!=path.resolve() for key,path in expected.items()):
+        raise ValueError('Fold artifact path mismatch')
+    if not 1<=record.get('best_epoch',0)<=record.get('epochs_completed',0)<=30:
+        raise ValueError('Fold epoch metadata invalid')
+
+
+def expected_evaluation_dates(panel,month,sequence_length=60):
+    """Derive coverage from source observations, not potentially partial metrics."""
+    dates=sorted(pd.to_datetime(panel.trade_date).unique())
+    first=pd.Period(month,freq='M').start_time
+    following=first+pd.offsets.MonthBegin(1)
+    return [str(pd.Timestamp(date).date()) for index,date in enumerate(dates)
+            if index>=sequence_length-1 and index+5<len(dates) and first<=date<following]
+
+
+def validate_fold_metrics(record,rows,panel):
+    expected=expected_evaluation_dates(panel,record['month'],record['config']['sequence_length'])
+    if not expected or [row['date'] for row in rows]!=expected:
+        raise ValueError('Fold mature date coverage mismatch')
+    if record['summary']!=summarize(rows) or any(row['stocks']!=panel.ts_code.nunique() for row in rows):
+        raise ValueError('Fold metric summary/stock coverage mismatch')
+
+
 def validate_paths(source,output):
     source,output=Path(source).resolve(),Path(output).resolve()
     allowed=APP/'models/transformer'
@@ -60,7 +95,6 @@ def collect(source,output):
 
 def run(source,output):
     import torch
-    from analysis.transformer_config import TRANSFORMER_CONFIG
     from analysis.transformer_trainer import compute_and_save_features,run_transformer_training,predict_top_stocks_transformer
     if not torch.cuda.is_available():
         raise RuntimeError('This approved experiment requires CUDA')
@@ -86,23 +120,24 @@ def run(source,output):
         model_panel.to_parquet(output/f'{mode}_panel.parquet',index=False)
         for month in MONTHS:
             folder=output/mode/month
+            training,_=split_month(model_panel,month)
+            config=experiment_config(folder,contract)
             done=folder/'result.json'
             if done.exists():
                 record=json.loads(done.read_text(encoding='utf-8'))
-                if record['config']['market_preprocessing']!=contract:
-                    raise ValueError('Completed fold preprocessing mismatch')
+                validate_fold_identity(record,mode,month,folder,config,training.trade_date.max())
+                from analysis.transformer_features import load_model_preprocessing
+                load_model_preprocessing(record['model_path'],record['config'])
+                rows=json.loads((folder/'daily_metrics.json').read_text(encoding='utf-8'))
+                validate_fold_metrics(record,rows,panel)
                 results.append(record)
                 print(f'FOLD_RESUMED mode={mode} month={month}',flush=True)
                 continue
             if folder.exists():
                 raise RuntimeError(f'Partial fold preserved at {folder}; use a fresh output for retraining')
             folder.mkdir(parents=True)
-            training,_=split_month(model_panel,month)
             if training.empty:
                 raise ValueError('No pre-evaluation training history')
-            config=dict(TRANSFORMER_CONFIG,output_dir=str(folder/'model'),num_epochs=30,batch_size=8,
-                early_stopping_patience=5,early_stopping_min_delta=1e-6,market_preprocessing=contract,
-                use_probe_selection=True,probe_selected_features_path=None,seed=42)
             print(f'FOLD_START mode={mode} month={month} train_end={training.trade_date.max().date()}',flush=True)
             started=time.perf_counter()
             feature_path,_,_=compute_and_save_features(training,config=config,use_parallel=True,n_workers=4)
@@ -151,17 +186,32 @@ def verify(source,output):
     report=json.loads((output/'report.json').read_text(encoding='utf-8'))
     if report['source_sha256']!=source_manifest['snapshot_sha256'] or sha256(output/'factors.parquet')!=report['factor_sha256']:
         raise ValueError('Report source/factor hash mismatch')
+    identities=[(record.get('mode'),record.get('month')) for record in report['folds']]
+    if len(identities)!=8 or set(identities)!={(mode,month) for mode in MODES for month in MONTHS}:
+        raise ValueError('Fold identity set incomplete or duplicated')
+    factors=pd.read_parquet(output/'factors.parquet')
+    contracts={mode:build_model_panel(source_panel,factors,mode=mode,
+        factor_snapshot_sha256=report['factor_sha256'])[1] for mode in MODES}
     for record in report['folds']:
+        folder=output/record['mode']/record['month']
+        training,_=split_month(source_panel,record['month'])
+        expected_config=experiment_config(folder,contracts[record['mode']])
+        validate_fold_identity(record,record['mode'],record['month'],folder,expected_config,training.trade_date.max())
         load_model_preprocessing(record['model_path'],record['config'])
         if pd.Timestamp(record['train_end'])>=pd.Period(record['month'],freq='M').start_time:
             raise ValueError('Training leaked into evaluation month')
         if not 1<=record['epochs_completed']<=30 or not 1<=record['best_epoch']<=record['epochs_completed']:
             raise ValueError('Invalid best epoch')
         rows=json.loads((output/record['mode']/record['month']/'daily_metrics.json').read_text(encoding='utf-8'))
-        if record['summary']!=summarize(rows) or any(row['stocks']!=source_panel.ts_code.nunique() for row in rows):
-            raise ValueError('Report metrics/stock coverage mismatch')
+        validate_fold_metrics(record,rows,source_panel)
     if len(report['folds'])!=8:
         raise ValueError('Incomplete controlled experiment')
+    for mode in MODES:
+        rows=[]
+        for month in MONTHS[:3]:
+            rows.extend(json.loads((output/mode/month/'daily_metrics.json').read_text(encoding='utf-8')))
+        if report['rolling_aggregate'][mode]!=summarize(rows):
+            raise ValueError('Fold rolling aggregate mismatch')
     for mode in MODES:
         record=next(r for r in report['folds'] if r['mode']==mode and r['month']=='2026-09')
         forecast=pd.read_csv(output/mode/'2026-09/latest_prediction.csv')

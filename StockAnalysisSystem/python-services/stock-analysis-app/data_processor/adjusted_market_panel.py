@@ -12,9 +12,42 @@ def contract_text(contract):
     return json.dumps(contract, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def validate_contract(contract):
+    """Validate supported explicit modes before trusting a row marker or sidecar."""
+    if contract == LEGACY_CONTRACT:
+        return contract
+    if not isinstance(contract,dict):
+        raise ValueError('Invalid market price contract')
+    required={'version','mode','bases','factor_snapshot_sha256','volume_unit','amount_unit','vwap_unit','origin'}
+    if (set(contract)!=required or contract['version']!=1 or contract['mode'] not in ('adjusted','unadjusted_control')
+            or contract['volume_unit']!='lots' or contract['amount_unit']!='thousand_CNY'
+            or contract['vwap_unit']!='CNY_per_share' or contract['origin']!='fixed_first_observed_factor'):
+        raise ValueError('Unsupported market price contract')
+    bases=contract['bases']
+    digest=contract['factor_snapshot_sha256']
+    try:
+        valid=(isinstance(bases,dict) and all(isinstance(code,str) and np.isfinite(value) and value>0 for code,value in bases.items())
+            and isinstance(digest,str) and len(digest)==64 and all(char in '0123456789abcdef' for char in digest)
+            and (bool(bases) if contract['mode']=='adjusted' else not bases))
+    except (TypeError,ValueError):
+        valid=False
+    if not valid:
+        raise ValueError('Invalid market price contract bases/hash')
+    return contract
+
+
 def validate_market_contract(panel, config):
     """Fail closed on explicit price modes; absent metadata means legacy only."""
-    contract = config.get('market_preprocessing', LEGACY_CONTRACT)
+    contract = validate_contract(config.get('market_preprocessing', LEGACY_CONTRACT))
+    if contract == LEGACY_CONTRACT:
+        if '_market_contract' in panel or '_model_vwap' in panel:
+            raise ValueError('Legacy market price contract forbids adapted columns')
+        return contract
+    if '_model_vwap' not in panel:
+        raise ValueError('Market price contract requires adapted VWAP')
+    values=pd.to_numeric(panel['_model_vwap'],errors='coerce')
+    if not np.isfinite(values).all() or (values<0).any():
+        raise ValueError('Market price contract requires finite VWAP')
     if '_market_contract' in panel:
         markers = panel['_market_contract']
         if markers.isna().any() or set(markers) != {contract_text(contract)}:
@@ -77,5 +110,6 @@ def build_model_panel(raw, factors, *, mode='adjusted', bases=None, factor_snaps
     contract = dict(version=1, mode=mode, bases=bases if mode == 'adjusted' else {},
         factor_snapshot_sha256=factor_hash, volume_unit='lots', amount_unit='thousand_CNY',
         vwap_unit='CNY_per_share', origin='fixed_first_observed_factor')
+    validate_contract(contract)
     panel['_market_contract'] = contract_text(contract)
     return panel, contract

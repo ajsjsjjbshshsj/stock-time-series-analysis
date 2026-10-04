@@ -70,3 +70,17 @@ def test_pacing_applies_to_every_actual_request(tmp_path):
     panel=pd.concat([market(),market().assign(ts_code='000002.SZ')])
     collect_factor_snapshot(Multi(),panel,tmp_path,interval=.5,sleep=sleep,clock=lambda:now[0])
     assert len(events)==2 and events[1]-events[0]>=.5
+
+
+def test_hourly_only_message_blocks_subsequent_resume(tmp_path):
+    import json
+    from app.market_data.factor_snapshot import collect_factor_snapshot
+    api=Api('抱歉，您每小时最多访问该接口1次')
+    with pytest.raises(RuntimeError,match='小时'):
+        collect_factor_snapshot(api,market(),tmp_path,clock=lambda:100.)
+    ledger=json.loads((tmp_path/'acquisition.json').read_text(encoding='utf-8'))
+    assert ledger['retry_not_before']>=3701.
+    resumed=Api()
+    with pytest.raises(RuntimeError,match='cooldown'):
+        collect_factor_snapshot(resumed,market(),tmp_path,clock=lambda:101.)
+    assert resumed.calls==[]
