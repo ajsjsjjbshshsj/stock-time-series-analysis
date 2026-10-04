@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
+from numbers import Real
+import numpy as np
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
@@ -13,7 +15,7 @@ os.environ.setdefault('OMP_NUM_THREADS', '8')
 import pandas as pd
 from analysis.transformer_experiment import load_source, sha256, write_json, evaluate_month, summarize, split_month
 from analysis.transformer_features import feature_columns, load_model_preprocessing
-from analysis.transformer_scoring import POLICIES
+from analysis.transformer_scoring import POLICIES, score_policy
 from data_processor.adjusted_market_panel import build_model_panel
 from scripts.run_transformer_adjusted_experiment import (
     experiment_config, validate_fold_identity, validate_fold_metrics,
@@ -29,10 +31,12 @@ def fixed_config(folder, contract):
                 score_adjustment_policy='nonnegative_variance')
 
 
-def validate_fixed_features(record):
+def validate_fixed_features(record, metadata=None):
     if (record['config'].get('use_probe_selection', True)
             or record['feature_names'] != feature_columns('158+39')):
         raise ValueError('Fixed feature order/probe contract mismatch')
+    if metadata is not None and metadata['selected_features'] != record['feature_names']:
+        raise ValueError('Actual model selected feature order mismatch')
 
 
 def validate_identities(records, months):
@@ -75,7 +79,9 @@ def source_data(source):
         training, _ = split_month(panel, record['month'])
         validate_fold_identity(record, record['mode'], record['month'], folder,
                                experiment_config(folder, contracts[record['mode']]), training.trade_date.max())
-        load_model_preprocessing(record['model_path'], record['config'])
+        _, metadata = load_model_preprocessing(record['model_path'], record['config'])
+        if metadata['selected_features'] != record['feature_names']:
+            raise ValueError('Original actual feature order mismatch')
         validate_fold_metrics(record, read_json(folder/'daily_metrics.json'), panel)
     binding = dict(source=str(source), report_sha256=sha256(source/'report.json'),
                    source_sha256=manifest['snapshot_sha256'], factor_sha256=factor_hash)
@@ -118,6 +124,62 @@ def validate_scored_record(record, rows, panel):
                 raise ValueError('Incomplete score policy metrics')
             if row[prefix+'top5_changed'] not in (0, 1):
                 raise ValueError('Invalid Top5 change indicator')
+            keys = [prefix+'top5_return', prefix+'excess', 'common_adjusted_label_equal_weight_return']
+            if any(not isinstance(row.get(key), Real) or isinstance(row[key], bool)
+                   or not np.isfinite(row[key]) for key in keys):
+                raise ValueError('Score policy coverage requires finite numeric values')
+            if not np.isclose(row[prefix+'excess'], row[prefix+'top5_return']
+                              - row['common_adjusted_label_equal_weight_return'], rtol=1e-7, atol=1e-9):
+                raise ValueError('Score policy excess inconsistent with common labels')
+        bound_prefix = f'policy_{score_policy(record["config"])}_'
+        for policy_key, common_key in [('top5_return', 'adjusted_top5_return'), ('excess', 'adjusted_excess')]:
+            value = row.get('common_adjusted_label_'+common_key)
+            if not isinstance(value, Real) or not np.isfinite(value) or not np.isclose(
+                    row[bound_prefix+policy_key], value, rtol=1e-7, atol=1e-9):
+                raise ValueError('Checkpoint-bound policy metric mismatch')
+
+
+def validate_forecast(path, metadata, *, universe, inference_date, source_sha256, model_sha256, policy):
+    expected = dict(inference_date=inference_date, source_sha256=source_sha256,
+                    model_sha256=model_sha256, score_policy=policy, csv_sha256=sha256(path))
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise ValueError('Forecast provenance/hash mismatch')
+    forecast = pd.read_csv(path)
+    if (len(forecast) != 5 or forecast['股票代码'].nunique() != 5
+            or not set(forecast['股票代码']).issubset(universe)
+            or list(forecast['排名']) != list(range(1, 6))):
+        raise ValueError('Forecast universe/rank mismatch')
+    values = forecast[['预测分数', '调整后分数']].apply(pd.to_numeric, errors='coerce')
+    column = '预测分数' if policy == 'raw' else '调整后分数'
+    if not np.isfinite(values).all().all() or not values[column].is_monotonic_decreasing:
+        raise ValueError('Forecast score/order invalid')
+
+
+def write_latest_forecasts(folder, record, panel, binding):
+    """Recompute diagnostic artifacts and bind their exact bytes; no old writes."""
+    from analysis.transformer_trainer import predict_top_stocks_transformer
+    for policy in POLICIES:
+        forecast = predict_top_stocks_transformer(panel_df=panel, model_path=record['model_path'],
+            config=record['config'], score_policy_override=policy, create_plots=False)
+        if forecast is None or len(forecast) != 5:
+            raise ValueError('Latest diagnostic forecast unavailable')
+        forecast.to_csv(folder/f'latest_{policy}.csv', index=False, encoding='utf-8-sig')
+    raw = predict_top_stocks_transformer(panel_df=panel, model_path=record['model_path'],
+        config=record['config'], top_k=20, create_plots=False)
+    raw = raw.sort_values('预测分数', ascending=False, kind='stable').head(5).copy()
+    raw['排名'] = range(1, 6)
+    raw['调整后分数'] = raw['预测分数']
+    raw.drop(columns=['权重'], errors='ignore').to_csv(folder/'latest_raw.csv', index=False, encoding='utf-8-sig')
+    date = str(pd.to_datetime(panel.trade_date).max().date())
+    record['latest_inference_date'] = date
+    record['forecasts'] = {}
+    for policy in ('raw', *POLICIES):
+        path = folder/f'latest_{policy}.csv'
+        provenance = dict(csv_sha256=sha256(path), inference_date=date, source_sha256=binding['source_sha256'],
+                          model_sha256=sha256(record['model_path']), score_policy=policy)
+        validate_forecast(path, provenance, universe=set(panel.ts_code), inference_date=date,
+                          source_sha256=binding['source_sha256'], model_sha256=provenance['model_sha256'], policy=policy)
+        record['forecasts'][policy] = provenance
 
 
 def aggregate(records, output, section):
@@ -131,7 +193,6 @@ def aggregate(records, output, section):
 
 
 def ablate(source, output):
-    from analysis.transformer_trainer import predict_top_stocks_transformer
     panel, panels, _, report, binding = source_data(source)
     bind_output(output, binding, initialize=True)
     records = []
@@ -151,22 +212,7 @@ def ablate(source, output):
             record = dict(original, summary=summarize(rows), scoring_policies=list(POLICIES))
             write_json(folder/'daily_metrics.json', rows)
             if month == '2026-09':
-                for policy in POLICIES:
-                    forecast = predict_top_stocks_transformer(panel_df=panels[mode],
-                        model_path=original['model_path'], config=original['config'],
-                        score_policy_override=policy, create_plots=False)
-                    if forecast is None or len(forecast) != 5:
-                        raise ValueError('Latest diagnostic forecast unavailable')
-                    forecast.to_csv(folder/f'latest_{policy}.csv', index=False, encoding='utf-8-sig')
-                # Raw ordering is read from all20 frozen model scores, not legacy Top5.
-                raw = predict_top_stocks_transformer(panel_df=panels[mode], model_path=original['model_path'],
-                    config=original['config'], top_k=20, create_plots=False)
-                raw = raw.sort_values('预测分数', ascending=False, kind='stable').head(5).copy()
-                raw['排名'] = range(1, 6)
-                raw['调整后分数'] = raw['预测分数']
-                raw = raw.drop(columns=['权重'], errors='ignore')
-                raw.to_csv(folder/'latest_raw.csv', index=False, encoding='utf-8-sig')
-                record['latest_inference_date'] = str(panel.trade_date.max().date())
+                write_latest_forecasts(folder, record, panels[mode], binding)
             write_json(folder/'result.json', record)
         records.append(record)
         print(f'ABLATION_COMPLETE mode={mode} month={month}', flush=True)
@@ -194,7 +240,8 @@ def train(source, output):
             if (folder/'result.json').exists():
                 record = read_json(folder/'result.json')
                 validate_fold_identity(record, mode, month, folder, config, training.trade_date.max())
-                load_model_preprocessing(record['model_path'], config)
+                _, metadata = load_model_preprocessing(record['model_path'], config)
+                validate_fixed_features(record, metadata)
                 validate_scored_record(record, read_json(folder/'daily_metrics.json'), panel)
             else:
                 if folder.exists():
@@ -203,7 +250,8 @@ def train(source, output):
                 print(f'FIXED_START mode={mode} month={month}', flush=True)
                 feature_path, _, _ = compute_and_save_features(training, config=config, use_parallel=True, n_workers=4)
                 trained = run_transformer_training(feature_path=feature_path, config=config)
-                validate_fixed_features(trained)
+                _, metadata = load_model_preprocessing(trained['model_path'], config)
+                validate_fixed_features(trained, metadata)
                 rows = evaluate_month(panels[mode], trained, month, panels['adjusted'], POLICIES)
                 record = dict(trained, mode=mode, month=month, train_end=str(training.trade_date.max().date()),
                               summary=summarize(rows), scoring_policies=list(POLICIES))
@@ -245,16 +293,26 @@ def verify(source, output):
                     raise ValueError('Ablation original model identity mismatch')
             if record.get('scoring_policies') != list(POLICIES):
                 raise ValueError('Score policy report mismatch')
-            load_model_preprocessing(record['model_path'], record['config'])
+            _, metadata = load_model_preprocessing(record['model_path'], record['config'])
+            if metadata['selected_features'] != record['feature_names']:
+                raise ValueError('Actual checkpoint feature order mismatch')
+            if section == 'fixed':
+                validate_fixed_features(record, metadata)
             validate_scored_record(record, read_json(output/section/mode/month/'daily_metrics.json'), panel)
         if report['rolling_aggregate'] != aggregate(report['folds'], output, section):
             raise ValueError('Rolling aggregate mismatch')
     for mode in MODES:
+        record = next(r for r in read_json(output/'ablation_report.json')['folds']
+                      if r['mode'] == mode and r['month'] == '2026-09')
+        date = str(panel.trade_date.max().date())
+        if record.get('latest_inference_date') != date or set(record.get('forecasts', {})) != {'raw', *POLICIES}:
+            raise ValueError('Forecast date/policy provenance incomplete')
+        _, metadata = load_model_preprocessing(record['model_path'], record['config'])
+        universe = set(metadata['stockid2idx']) & set(panel.loc[panel.trade_date == panel.trade_date.max(), 'ts_code'])
         for policy in ('raw', *POLICIES):
-            forecast = pd.read_csv(output/'ablation'/mode/'2026-09'/f'latest_{policy}.csv')
-            if (len(forecast) != 5 or forecast['股票代码'].nunique() != 5
-                    or not np.isfinite(forecast[['预测分数', '调整后分数']]).all().all()):
-                raise ValueError('Latest score forecast invalid')
+            validate_forecast(output/'ablation'/mode/'2026-09'/f'latest_{policy}.csv', record['forecasts'][policy],
+                universe=universe, inference_date=date, source_sha256=binding['source_sha256'],
+                model_sha256=sha256(record['model_path']), policy=policy)
     count = check_old_artifacts(output)
     write_json(output/'verification.json', dict(status='PASS', old_files_checked=count,
                changed=[], ablation_folds=8, fixed_folds=6, features=203, binding=binding))
