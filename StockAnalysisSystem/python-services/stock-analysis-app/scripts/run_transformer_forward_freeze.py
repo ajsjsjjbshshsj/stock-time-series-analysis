@@ -192,7 +192,7 @@ def _folder(output, seed, mode):
     return output/f'seed_{seed}'/mode
 
 
-def _audit(source, output, require_frozen=True):
+def _audit(source, output, require_frozen=True, require_receipt=True):
     panels, configs, binding = source_inputs(source)
     if read_json(output/'source_identity.json') != binding:
         raise ValueError('Frozen source identity mismatch')
@@ -226,8 +226,14 @@ def _audit(source, output, require_frozen=True):
                 or manifest.get('report_sha256') != sha256(output/'report.json')
                 or manifest.get('files') != _hash_files(output, ('freeze_manifest.json', 'verification.json'))):
             raise ValueError('Immutable freeze manifest mismatch')
-    return dict(status='PASS', models=6, cutoff=CUTOFF, new_blind_observations=0,
-                old_files_checked=count, changed=[], report_sha256=sha256(output/'report.json'))
+    result = dict(status='PASS', models=6, cutoff=CUTOFF, new_blind_observations=0,
+                  old_files_checked=count, changed=[], report_sha256=sha256(output/'report.json'))
+    if require_frozen and require_receipt:
+        receipt = output/'verification.json'
+        expected = dict(result, freeze_manifest_sha256=sha256(output/'freeze_manifest.json'))
+        if not receipt.is_file() or read_json(receipt) != expected:
+            raise ValueError('Completed freeze receipt/hash mismatch; preserve existing output')
+    return result
 
 
 def verify(source, output):
@@ -309,9 +315,13 @@ def run(source, output):
                     report_sha256=sha256(output/'report.json'),
                     files=_hash_files(output, ('freeze_manifest.json', 'verification.json')))
     write_json(output/'freeze_manifest.json', manifest)
-    result = verify(source, output)
+    # First finalization validates the candidate before its receipt exists.
+    # Public verify and every completed resume require that saved receipt and
+    # never recreate it, so editing even the freeze timestamp is detected.
+    result = _audit(source, output, require_receipt=False)
     result['freeze_manifest_sha256'] = sha256(output/'freeze_manifest.json')
     write_json(output/'verification.json', result)
+    verify(source, output)
 
 
 def main():

@@ -230,3 +230,24 @@ def test_source_loader_rejects_actual_saved_config_drift(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'load_experiment', lambda *a: (panels['adjusted'], panels, records, {}, binding))
     with pytest.raises(ValueError, match='config'):
         module.source_inputs(tmp_path)
+
+
+@pytest.mark.parametrize('bad', ['timestamp', 'receipt_hash', 'missing_receipt'])
+def test_freeze_timestamp_and_completed_receipt_are_immutable(completed, bad):
+    module, source, output, _, _ = completed
+    if bad == 'timestamp':
+        path = output/'freeze_manifest.json'
+        manifest = module.read_json(path)
+        manifest['frozen_at'] = '2026-10-06T15:54:01+08:00'
+        write_json(path, manifest)
+    elif bad == 'receipt_hash':
+        path = output/'verification.json'
+        receipt = module.read_json(path)
+        receipt['freeze_manifest_sha256'] = '0'*64
+        write_json(path, receipt)
+    else:
+        (output/'verification.json').unlink()
+    with pytest.raises(ValueError, match='receipt|Receipt|freeze|Freeze'):
+        module.verify(source, output)
+    with pytest.raises(ValueError):
+        module.run(source, output)
