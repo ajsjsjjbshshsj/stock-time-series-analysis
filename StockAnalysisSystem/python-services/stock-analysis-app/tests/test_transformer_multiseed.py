@@ -92,6 +92,7 @@ def test_seed_configs_change_only_seed_and_output_path(tmp_path):
 
 
 def artifact_record(tmp_path, seed):
+    import json
     model = tmp_path/'best_model.pth'
     scaler = tmp_path/'best_model_scaler.pkl'
     metadata = tmp_path/'best_model_preprocessing.json'
@@ -99,6 +100,7 @@ def artifact_record(tmp_path, seed):
         path.write_bytes(data)
     original = dict(config={'seed': seed}, model_path=str(model), scaler_path=str(scaler),
                     feature_names=['example'])
+    (tmp_path/'config.json').write_text(json.dumps(original['config']), encoding='utf-8')
     record = dict(original, seed=seed, origin='reused' if seed == 42 else 'trained',
                   artifact_hashes=runner().artifact_hashes(original))
     return record, original
@@ -180,3 +182,12 @@ def test_momentum_rank_can_differ_by_price_mode_but_not_seed():
     result = api().aggregate_seeds(records, daily)
     assert result['monthly']['42']['adjusted']['2026-06']['common_adjusted_label_momentum_top5_return'] == 0.7
     assert result['monthly']['42']['unadjusted_control']['2026-06']['common_adjusted_label_momentum_top5_return'] == 0.5
+
+
+@pytest.mark.parametrize('seed', [42, 123])
+def test_actual_saved_training_config_must_match_record(tmp_path, seed):
+    import json
+    record, original = artifact_record(tmp_path, seed)
+    (tmp_path/'config.json').write_text(json.dumps({'seed': 2026}), encoding='utf-8')
+    with pytest.raises(ValueError, match='training config'):
+        runner().validate_provenance(record, seed, original if seed == 42 else None)

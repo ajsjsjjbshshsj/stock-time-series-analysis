@@ -50,6 +50,12 @@ def validate_provenance(record, seed, original=None):
         raise ValueError('Record/config seed mismatch')
     if record.get('origin') != ('reused' if seed == 42 else 'trained'):
         raise ValueError('Seed origin provenance mismatch')
+    try:
+        saved_config = read_json(Path(record['model_path']).parent/'config.json')
+    except (OSError, ValueError) as exc:
+        raise ValueError('Actual training config unavailable') from exc
+    if saved_config != record['config']:
+        raise ValueError('Actual training config differs from record')
     if record.get('artifact_hashes') != artifact_hashes(record):
         raise ValueError('Actual artifact hash mismatch')
     if seed == 42:
