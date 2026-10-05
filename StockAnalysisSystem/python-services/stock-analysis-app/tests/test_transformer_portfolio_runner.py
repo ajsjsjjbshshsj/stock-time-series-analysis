@@ -123,3 +123,15 @@ def test_help_does_not_run_training_or_collect_data():
     result = subprocess.run([sys.executable, str(script), '--help'], capture_output=True, text=True)
     assert result.returncode == 0
     assert '--stage' in result.stdout and '--initial-capital' in result.stdout
+
+
+def test_numpy_real_metrics_preserve_numeric_counts_through_report_json(tmp_path):
+    from analysis.transformer_experiment import write_json
+    values = records()
+    for row in values:
+        row['benchmark_excess'] = np.float64(row['benchmark_excess'])
+    aggregate = api().aggregate_results(values)
+    write_json(tmp_path/'report.json', aggregate)
+    restored = json.loads((tmp_path/'report.json').read_text(encoding='utf-8'))
+    assert restored['adjusted/raw/gross']['positive_excess_seeds'] == 1
+    assert restored == aggregate

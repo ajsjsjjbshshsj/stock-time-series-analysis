@@ -247,7 +247,7 @@ def aggregate_results(records):
                         raise ValueError('Portfolio statistics require finite numeric values')
                     summary[key] = dict(n_seeds=3, mean=mean(values), sample_std=stdev(values),
                                         min=min(values), max=max(values))
-                summary['positive_excess_seeds'] = sum(r['benchmark_excess'] > 0 for r in group)
+                summary['positive_excess_seeds'] = sum(bool(r['benchmark_excess'] > 0) for r in group)
                 result[f'{mode}/{policy}/{scenario["id"]}'] = summary
     return result
 
