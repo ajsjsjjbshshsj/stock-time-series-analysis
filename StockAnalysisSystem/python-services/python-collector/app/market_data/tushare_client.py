@@ -11,6 +11,9 @@ class TushareClient:
     def daily_basic(self, **kwargs):
         return self.pro.daily_basic(**kwargs)
 
+    def adj_factor(self, **kwargs):
+        return self.pro.adj_factor(**kwargs)
+
     def stock_basic(self, **kwargs):
         return self.pro.stock_basic(**kwargs)
 
