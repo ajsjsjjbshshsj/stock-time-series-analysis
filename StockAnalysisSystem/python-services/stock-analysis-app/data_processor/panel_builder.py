@@ -102,7 +102,7 @@ def restore_turnover_rate_from_cache(panel_df, raw_cache_path):
 
 def load_all_stock_data_from_db(start_date=None, end_date=None,
                                 sectors=None, index_codes=None, use_tushare=False,
-                                stock_codes=None):
+                                stock_codes=None, *, strict_validation=False):
     """
     从数据库加载所有股票的日线数据。
 
@@ -141,6 +141,7 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
                         basic_df = basic_df[basic_df['ts_code'].isin(filtered_codes)]
                         logger.info(f"板块/指数筛选后: {len(basic_df)} 只股票")
 
+                requested_codes = list(stock_codes) if stock_codes is not None else basic_df['ts_code'].tolist()
                 stock_codes = basic_df['ts_code'].tolist()
                 code_name_map = dict(zip(basic_df['ts_code'], basic_df['name']))
                 logger.info(f"从数据库获取 {len(stock_codes)} 只股票")
@@ -167,11 +168,16 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
                 # DB JOIN 是主来源；旧缓存只填补尚未历史补采的空值。
                 CACHE_DIR = os.path.join(os.path.dirname(__file__), '..', 'models', 'traditional_features')
                 raw_cache = os.path.join(CACHE_DIR, 'raw_panel.parquet')
-                panel_df = restore_turnover_rate_from_cache(panel_df, raw_cache)
+                if not strict_validation:
+                    panel_df = restore_turnover_rate_from_cache(panel_df, raw_cache)
+                panel_df.attrs['requested_codes'] = sorted(requested_codes)
+                panel_df.attrs['source_mode'] = 'strict_database' if strict_validation else 'legacy_compatibility'
 
                 return panel_df
 
     except Exception as e:
+        if strict_validation:
+            raise ValueError('Strict market database loading failed') from None
         logger.error(f"从数据库加载数据失败: {e}")
         return pd.DataFrame()
 
@@ -635,7 +641,9 @@ def add_label(panel_df, forward_days=5):
     panel_df['future_return_1d'] = panel_df.groupby('ts_code')['close'].transform(
         lambda x: x.shift(-1) / x - 1
     )
-    panel_df['future_return_5d'] = panel_df['label']
+    panel_df['future_return_5d'] = panel_df.groupby('ts_code')['close'].transform(
+        lambda x: x.shift(-5) / x - 1
+    )
     for horizon in (1, 5):
         returns = panel_df[f'future_return_{horizon}d']
         panel_df[f'future_direction_{horizon}d'] = (returns > 0).astype(float).where(returns.notna())

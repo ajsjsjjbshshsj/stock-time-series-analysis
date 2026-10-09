@@ -46,7 +46,7 @@ D:/Python/python.exe main.py train --pipeline ranking --skip_update --calendar P
 已训练模型离线验证可使用run_ranking_backtest，需明确model_path、完整prices和calendar。
 旧predict ranking命令仍会训练；下一阶段按钮会区分验证、训练与加载既有模型预测，不隐藏重训。
 
-单股验证函数run_backtest(df,calendar=...)分别返回技术信号与日期约束XGBoost回测、训练证据和data_selection。
+单股验证函数run_backtest(df,stock_code='000001.SZ',calendar=...)须显式指定原请求股票，分别返回技术信号与日期约束XGBoost回测、训练证据和data_selection。
 旧匿名数组训练入口保留兼容但没有自动增加因果证据，不应替代train_dated进行策略验收。
 单股概率回测仅二分类概率可用，回归收益不是概率。旧LSTM选项没有train_lstm实现，
 现在明确拒绝，不默默换模型；完整LSTM训练/日期序列适配需单独完成。
@@ -60,6 +60,17 @@ Transformer继续使用README_transformer_portfolio_backtest.md的已验收独�
 没有完整来源证明的增量缓存不混用，按完整提供的原始历史重建，可能增加计算时间。
 旧模型缺少标签到期/验证已见范围时，样本外回测拒绝；不能仅修改元数据就让旧模型合格，
 需要以后重新训练为新产物。本轮只修代码和跑固定小样本测试，没有训练真实市场模型。
+
+验证入口使用strict_validation数据库读取，不使用旧未证明的raw_panel补换手率。
+请求股票池从stock_basic/成分筛选单独确定；缺整只股票或特征计算丢行立即失败，
+不能用“当前返回的股票”重新定义原股票池。排名还要求真实daily_basic换手率齐备。
+--skip_update保持兼容，但验证分析始终只读数据库，采集仍由collector负责。
+独立特征面板必须与完整价格日期/股票/close逐项匹配，不能用少一行的shift改变标签期限。
+
+实际CLI结果会打印STRATEGY_REPORT路径与指标/截止摘要，每次保存到新的
+reports/strategy_validation/<时间_UUID>/result.json；可用--report_dir指定新报告父目录。
+报告含资金曲线、成交、假设、模型元数据和data_selection；旧报告不覆盖。
+单股--backtest只接受二分类xgboost，回归/多分类请求在读DB前明确拒绝，不偷换模型。
 
 单股使用95%资金与整数研究股数；排名使用可分割研究单位。当前只模拟给定费率/滑点，
 没有100股整手、最低佣金、税费分项、停牌、涨跌停排队、容量或实股分红账本。

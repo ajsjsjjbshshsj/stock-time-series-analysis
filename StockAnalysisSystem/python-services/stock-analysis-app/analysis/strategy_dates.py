@@ -52,10 +52,12 @@ def market_dates(frame, required):
 def _complete(day, codes, columns):
     if set(day.ts_code) != set(codes) or len(day) != len(codes):
         return False
+    normalized = day.copy()
     for column in columns:
         if day[column].map(lambda v: isinstance(v, (bool, np.bool_))).any():
             return False
         values = pd.to_numeric(day[column], errors='coerce').to_numpy(dtype=float)
+        normalized[column] = values
         if not np.isfinite(values).all():
             return False
         if column in ('open', 'high', 'low', 'close', 'adj_factor'):
@@ -63,8 +65,8 @@ def _complete(day, codes, columns):
         elif column in ('vol', 'amount') and (values < 0).any():
             return False
     if {'open', 'high', 'low', 'close'}.issubset(columns):
-        if ((day.high < day[['open', 'close', 'low']].max(axis=1))
-                | (day.low > day[['open', 'close', 'high']].min(axis=1))).any():
+        if ((normalized.high < normalized[['open', 'close', 'low']].max(axis=1))
+                | (normalized.low > normalized[['open', 'close', 'high']].min(axis=1))).any():
             return False
     return True
 

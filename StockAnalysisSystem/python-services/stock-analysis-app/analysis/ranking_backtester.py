@@ -15,6 +15,24 @@ def _features(frame, names):
     return values
 
 
+def require_panel_coverage(panel, prices):
+    """Labels may shift only on the same validated date/code price history."""
+    if panel.columns.duplicated().any() or not {'ts_code', 'trade_date', 'close'}.issubset(panel):
+        raise ValueError('Panel price identity coverage missing')
+    lhs, rhs = panel.copy(), prices.copy()
+    lhs['trade_date'] = pd.to_datetime(lhs.trade_date, errors='raise')
+    rhs['trade_date'] = pd.to_datetime(rhs.trade_date, errors='raise')
+    if lhs.duplicated(['ts_code', 'trade_date']).any():
+        raise ValueError('Duplicate panel price coverage')
+    keys = ['ts_code', 'trade_date']
+    left = lhs.sort_values(keys).reset_index(drop=True)
+    right = rhs.sort_values(keys).reset_index(drop=True)
+    if len(left) != len(right) or not left[keys].equals(right[keys]):
+        raise ValueError('Panel/date/code price coverage mismatch')
+    if not np.array_equal(left.close.to_numpy(dtype=float), right.close.to_numpy(dtype=float)):
+        raise ValueError('Panel/source close prices mismatch')
+
+
 def run_ranking_backtest(panel_df, model_path=None, top_n=None, rebalance_days=None,
                          initial_capital=1000000., *, calendar=None, prices=None):
     from analysis.ranking_predictor import load_ranking_bundle
@@ -24,6 +42,7 @@ def run_ranking_backtest(panel_df, model_path=None, top_n=None, rebalance_days=N
     if unseen.empty: raise ValueError('No unseen ranking signal history')
     raw = prices if prices is not None else panel_df
     _, dates, _ = validate_ranking_history(raw, calendar)
+    require_panel_coverage(panel_df, raw)
     unseen['trade_date'] = pd.to_datetime(unseen.trade_date)
     start = str(unseen.trade_date.min().date())
     raw = raw[pd.to_datetime(raw.trade_date) >= pd.Timestamp(start)].copy()
@@ -43,6 +62,7 @@ def run_walk_forward_backtest(panel_df, feature_names, top_n=10, train_window=36
         raise ValueError('Invalid walk-forward interval')
     raw = prices if prices is not None else panel_df
     _, dates, codes = validate_ranking_history(raw, calendar)
+    require_panel_coverage(panel_df, raw)
     frame = panel_df.copy()
     frame['trade_date'] = pd.to_datetime(frame.trade_date, errors='raise')
     samples = dated_samples(frame, feature_names, horizon=forward_days, classification=False)
@@ -50,7 +70,7 @@ def run_walk_forward_backtest(panel_df, feature_names, top_n=10, train_window=36
     params = dict(RANKING_CONFIG['lgb_params'])
     rounds = params.pop('n_estimators', 500)
     params.setdefault('seed', 42)
-    scores = []
+    scores, model_evidence = [], []
     for i in range(train_window, len(dates)-1, rebalance_days):
         day = pd.Timestamp(dates[i])
         recent = pd.to_datetime(dates[i-train_window:i])
@@ -70,6 +90,14 @@ def run_walk_forward_backtest(panel_df, feature_names, top_n=10, train_window=36
         scored = signal[['ts_code', 'trade_date']].copy()
         scored['pred_return'] = predicted
         scores.append(scored)
+        model_evidence.append(dict(signal_date=dates[i], model_type='ranking_lgb',
+            feature_names=list(feature_names), horizon=forward_days, params=params,
+            training_signal_start=str(train.trade_date.min().date()),
+            training_signal_end=str(train.trade_date.max().date()),
+            seen_through=str(train.label_target_date.max().date())))
     evaluation = raw[pd.to_datetime(raw.trade_date) >= pd.Timestamp(dates[train_window])].copy()
-    return run_weighted_ranking_account(evaluation, pd.concat(scores, ignore_index=True), calendar=calendar,
+    result = run_weighted_ranking_account(evaluation, pd.concat(scores, ignore_index=True), calendar=calendar,
         top_n=top_n, rebalance_days=rebalance_days, initial_capital=initial_capital)
+    result['model_metadata'] = model_evidence
+    result['signals'] = pd.concat(scores, ignore_index=True)
+    return result

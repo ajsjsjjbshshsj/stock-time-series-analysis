@@ -66,6 +66,16 @@ def train_ranking_model(panel_df, feature_names=None, use_probe=True,
 
 def load_ranking_bundle(model_path=None):
     from analysis.model_registry import load_model as reg_load
+    if model_path is None:
+        from analysis.model_registry import list_models, MODEL_DIR as registry_dir
+        # Registry type filtering is filename-based; resolve by saved metadata.
+        candidates = [m for m in list_models() if m.get('model_type') == 'ranking_lgb'
+                      and isinstance(m.get('model_file'), str)
+                      and os.path.basename(m['model_file']) == m['model_file']
+                      and m['model_file'].endswith('.pkl')
+                      and os.path.isfile(os.path.join(registry_dir, m['model_file']))]
+        if not candidates: return None, None, None
+        model_path = os.path.join(registry_dir, candidates[0]['model_file'])
     bundle, metadata = reg_load(model_path, model_type='ranking_lgb')
     if bundle is None: return None, None, None
     return bundle.get('model'), bundle.get('feature_names', []), metadata or {}

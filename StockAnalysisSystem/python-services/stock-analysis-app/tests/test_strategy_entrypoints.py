@@ -9,7 +9,8 @@ from analysis.strategy_dates import SHANGHAI
 
 def data():
     prices, _, cal = inputs(12)
-    prices = prices.assign(high=11., low=9., vol=100., amount=1000., feature=1.)
+    prices = prices.assign(high=11., low=9., vol=100., amount=1000., feature=1., turnover_rate=1.)
+    prices.attrs['requested_codes'] = ['000001.SZ', '600000.SH']
     now = datetime.fromisoformat(cal['end']).replace(hour=17, tzinfo=SHANGHAI)
     return prices, cal, now
 

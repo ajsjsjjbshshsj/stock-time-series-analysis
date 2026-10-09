@@ -251,14 +251,18 @@ def load_strategy_calendar(calendar):
     return calendar
 
 
-def select_strategy_snapshot(frame, calendar, request_time=None):
+def select_strategy_snapshot(frame, calendar, request_time=None, *, stock_codes=None,
+                             required_columns=('open', 'high', 'low', 'close', 'vol', 'amount')):
     from analysis.strategy_dates import select_data_cutoff, SHANGHAI
     from analysis.ranking_accounting import validate_ranking_history
     calendar = load_strategy_calendar(calendar)
     if frame.empty or 'ts_code' not in frame:
         raise ValueError('Dated stock pool required')
+    expected = stock_codes if stock_codes is not None else frame.attrs.get('requested_codes')
+    if not expected:
+        raise ValueError('Independent requested stock pool evidence required')
     selected = select_data_cutoff(calendar, request_time or datetime.now(SHANGHAI), frame,
-                                  sorted(frame.ts_code.unique()))
+                                  expected, required_columns=required_columns)
     result = frame[pd.to_datetime(frame.trade_date) <= pd.Timestamp(selected['data_cutoff'])].copy()
     result['trade_date'] = pd.to_datetime(result.trade_date)
     validate_ranking_history(result, calendar)
@@ -267,9 +271,14 @@ def select_strategy_snapshot(frame, calendar, request_time=None):
     return result, selected
 
 
-def run_backtest(df, stock_code="unknown", *, calendar=None, request_time=None):
+def run_backtest(df, stock_code="unknown", *, calendar=None, request_time=None, model_type='xgboost'):
     """Validated single-stock technical and dated XGBoost research accounts."""
-    raw, selected = select_strategy_snapshot(df, calendar, request_time)
+    if model_type != 'xgboost':
+        raise ValueError('Validated probability backtest requires binary xgboost')
+    code = str(stock_code)
+    if len(code) == 6 and code.isdigit():
+        code += '.SH' if code.startswith('6') else '.SZ'
+    raw, selected = select_strategy_snapshot(df, calendar, request_time, stock_codes=[code])
     if raw.ts_code.nunique() != 1:
         raise ValueError('Single-stock strategy needs one stock')
     signals = raw.copy()
@@ -427,15 +436,18 @@ def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=F
                          skip_update=False, delay=.5, use_gpu=False, n_workers=None,
                          sectors=None, index_codes=None, *, calendar=None, request_time=None):
     from data_processor.panel_builder import incremental_update, prepare_panel_for_training, load_all_stock_data_from_db
+    from analysis.ranking_predictor import get_feature_columns
     calendar = load_strategy_calendar(calendar)  # Reject missing calendar before DB.
-    if skip_update:
-        raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes, use_tushare=use_tushare)
-    else:
-        raw = incremental_update(use_tushare=use_tushare, delay=delay,
-                                 sectors=sectors, index_codes=index_codes, start_date=None)
-    raw, selection = select_strategy_snapshot(raw, calendar, request_time)
+    # Validated analysis reads strict DB sources only; collector owns updates.
+    raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes,
+                                      use_tushare=use_tushare, strict_validation=True)
+    required = tuple(dict.fromkeys(['open', 'high', 'low', 'close', 'vol', 'amount', 'turnover_rate']
+                                  + get_feature_columns(raw)))
+    raw, selection = select_strategy_snapshot(raw, calendar, request_time, required_columns=required)
     featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
                                           n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
+    from analysis.ranking_backtester import require_panel_coverage
+    require_panel_coverage(featured, raw)
     result = train_ranking_model(featured, use_probe=use_probe, forward_days=forward_days, use_gpu=use_gpu)
     stocks = predict_top_n(featured, model_path=result['model_path'], top_n=top_n)
     stocks.attrs['data_selection'] = selection
@@ -450,12 +462,11 @@ def run_ranking_backtest_pipeline(top_n=10, use_probe=True, forward_days=5,
     from data_processor.panel_builder import incremental_update, prepare_panel_for_training, load_all_stock_data_from_db
     from analysis.ranking_predictor import get_feature_columns
     calendar = load_strategy_calendar(calendar)
-    if skip_update:
-        raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes, use_tushare=use_tushare)
-    else:
-        raw = incremental_update(use_tushare=use_tushare, delay=delay,
-                                 sectors=sectors, index_codes=index_codes, start_date=None)
-    raw, selection = select_strategy_snapshot(raw, calendar, request_time)
+    raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes,
+                                      use_tushare=use_tushare, strict_validation=True)
+    required = tuple(dict.fromkeys(['open', 'high', 'low', 'close', 'vol', 'amount', 'turnover_rate']
+                                  + get_feature_columns(raw)))
+    raw, selection = select_strategy_snapshot(raw, calendar, request_time, required_columns=required)
     featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
                                           n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
     # No full-history fitted feature selector before evaluating earlier dates.
@@ -711,6 +722,8 @@ def cmd_train(args, sector_list, index_list):
     if args.pipeline == 'traditional' and args.model == 'lstm':
         raise ValueError('LSTM training is not implemented')
     if args.pipeline == 'traditional' and args.backtest:
+        if args.model != 'xgboost':
+            raise ValueError('Validated backtest requires binary xgboost; requested model is unsupported')
         load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
@@ -730,7 +743,7 @@ def cmd_train(args, sector_list, index_list):
         df_processed = run_data_processing(df, args.stock)
         run_analysis(df_processed, args.stock)
         if args.backtest:
-            return run_backtest(df_processed, args.stock, calendar=args.calendar)
+            return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
         prediction_result = run_prediction(df_processed, args.model)
         save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
@@ -740,7 +753,7 @@ def cmd_train(args, sector_list, index_list):
         # 原 rank / rank_backtest 模式
         if args.backtest:
             logger.info("运行排名策略回测...")
-            run_ranking_backtest_pipeline(
+            return run_ranking_backtest_pipeline(
                 top_n=args.top_n,
                 use_probe=not args.no_probe,
                 forward_days=args.forward_days,
@@ -757,7 +770,7 @@ def cmd_train(args, sector_list, index_list):
             )
         else:
             logger.info("运行排名管线训练...")
-            run_ranking_pipeline(
+            return run_ranking_pipeline(
                 top_n=args.top_n,
                 use_probe=not args.no_probe,
                 forward_days=args.forward_days,
@@ -824,6 +837,8 @@ def cmd_predict(args, sector_list, index_list):
     if args.pipeline == 'traditional' and args.model == 'lstm':
         raise ValueError('LSTM training is not implemented')
     if args.pipeline == 'traditional' and args.backtest:
+        if args.model != 'xgboost':
+            raise ValueError('Validated backtest requires binary xgboost; requested model is unsupported')
         load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
@@ -844,7 +859,7 @@ def cmd_predict(args, sector_list, index_list):
             df_processed = run_data_processing(df, args.stock)
             run_analysis(df_processed, args.stock)
             if args.backtest:
-                return run_backtest(df_processed, args.stock, calendar=args.calendar)
+                return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
             prediction_result = run_prediction(df_processed, args.model)
             save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
@@ -962,7 +977,7 @@ def cmd_predict(args, sector_list, index_list):
         # 原 rank / rank_backtest 的预测部分
         if args.backtest:
             logger.info("运行排名策略回测...")
-            run_ranking_backtest_pipeline(
+            return run_ranking_backtest_pipeline(
                 top_n=args.top_n,
                 use_probe=not args.no_probe,
                 forward_days=args.forward_days,
@@ -979,7 +994,7 @@ def cmd_predict(args, sector_list, index_list):
             )
         else:
             logger.info("运行排名管线预测...")
-            run_ranking_pipeline(
+            return run_ranking_pipeline(
                 top_n=args.top_n,
                 use_probe=not args.no_probe,
                 forward_days=args.forward_days,
@@ -1076,6 +1091,8 @@ def main():
                         help='指数成分股筛选，逗号分隔指数代码，如 "000300"')
     common.add_argument('--calendar', type=str, default=None,
                         help='策略验证必需：可信交易日历 JSON 本地路径（不猜工作日）')
+    common.add_argument('--report_dir', type=str, default='reports/strategy_validation',
+                        help='本地策略结果与日期证据目录（每次新建，不覆盖旧报告）')
 
     # ---- 主解析器 ----
     parser = argparse.ArgumentParser(
@@ -1230,7 +1247,11 @@ def main():
         'predict':   lambda: cmd_predict(args, sector_list, index_list),
         'dashboard': lambda: cmd_dashboard(args),
     }
-    dispatch[args.command]()
+    result = dispatch[args.command]()
+    if result is not None and args.command in ('train', 'predict'):
+        from analysis.strategy_reports import export_strategy_result
+        export_strategy_result(result, args.report_dir, args.pipeline)
+    return result
 
 
 if __name__ == '__main__':
