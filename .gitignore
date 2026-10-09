@@ -17,3 +17,4 @@ StockAnalysisSystem/docs/superpowers/
 /logs/
 StockAnalysisSystem/python-services/stock-analysis-app/models/v07/
 StockAnalysisSystem/python-services/stock-analysis-app/reports/v08/
+StockAnalysisSystem/.runtime/
