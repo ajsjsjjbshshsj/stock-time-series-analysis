@@ -29,7 +29,7 @@ def at(value): return datetime.fromisoformat(value+'+08:00')
 def environment(tmp_path,monkeypatch):
     module=api()
     app=tmp_path/'app'; (app/'models/transformer').mkdir(parents=True)
-    freeze=app/'models/transformer/forward_freeze_test'; freeze.mkdir()
+    freeze=app/'models/transformer/forward_freeze_20261005'; freeze.mkdir()
     codes=[f'{i:06}.SZ' for i in range(20)]
     dates=['2026-09-28','2026-09-29','2026-09-30']
     daily=pd.DataFrame([dict(ts_code=c,trade_date=d,open=10.,high=12.,low=9.,close=11.,vol=100.,amount=1000.) for c in codes for d in dates])
@@ -76,7 +76,7 @@ def environment(tmp_path,monkeypatch):
     monkeypatch.setattr(module,'load_frozen',lambda p:copy.deepcopy(frozen))
     monkeypatch.setattr(module,'collect',collect)
     monkeypatch.setattr(module,'now',lambda:at('2026-10-08T17:00:00'))
-    output=app/'models/transformer/forward_signals_test'
+    output=app/'models/transformer/forward_signals_20261008'
     return module,freeze,output,calls,frozen
 
 
@@ -149,3 +149,42 @@ def test_new_session_cannot_revise_already_published_forward_history(environment
     with pytest.raises(ValueError,match='published|prior|prefix|revis'):
         module.run(freeze,output)
     assert not (output/'signals/2026-10-09').exists()
+
+
+def test_short_cached_calendar_is_extended_before_market_collection(environment,monkeypatch):
+    module,freeze,output,calls,frozen=environment
+    module._store(output,frozen,initialize=True)
+    short=output/'calendars/short';short.mkdir(parents=True)
+    opened={'2026-09-28','2026-09-29','2026-09-30','2026-10-08'}
+    body=dict(source='tushare.trade_cal',exchange='SZSE',start='2026-09-28',end='2026-10-08',
+        rows=[dict(cal_date=str(d.date()),is_open=int(str(d.date()) in opened)) for d in pd.date_range('2026-09-28','2026-10-08')])
+    write_json(short/'calendar.json',body)
+    write_json(short/'calendar_manifest.json',dict(calendar_sha256=sha256(short/'calendar.json')))
+    before=(short/'calendar.json').read_bytes()
+    calendar,path=module._calendar(output,frozen)
+    assert path!=short and calendar['end']>'2026-10-08'
+    assert calls==['calendar'] and (short/'calendar.json').read_bytes()==before
+
+
+def test_alternate_store_rejected_before_acquisition_or_inference(environment,monkeypatch):
+    module,freeze,output,calls,_=environment
+    monkeypatch.setattr(module,'collect',lambda *a:pytest.fail('alternate output must not acquire'))
+    monkeypatch.setattr(module,'score_session',lambda *a:pytest.fail('alternate output must not score'))
+    with pytest.raises(ValueError):module.run(freeze,output.with_name('forward_signals_other'),'2026-10-08')
+    assert calls==[]
+
+
+def test_default_completed_run_does_not_even_create_a_lock(environment,monkeypatch):
+    module,freeze,output,_,_=environment
+    result=module.run(freeze,output)
+    monkeypatch.setattr(module.ForwardSignalStore,'lock',lambda *a:pytest.fail('default completed resume must be read-only'))
+    assert module.run(freeze,output)==result
+
+
+def test_cli_safe_failure_includes_stage_and_never_provider_secret(environment,monkeypatch,capsys):
+    module,freeze,output,_,_=environment
+    monkeypatch.setattr(module,'collect',lambda *a:(_ for _ in ()).throw(RuntimeError('secret-token-value')))
+    assert module.main(['--stage','run','--freeze-dir',str(freeze),'--output',str(output)])==1
+    captured=capsys.readouterr()
+    assert 'secret-token-value' not in captured.err+captured.out
+    assert 'calendar_acquisition' in captured.err and 'retryable=' in captured.err

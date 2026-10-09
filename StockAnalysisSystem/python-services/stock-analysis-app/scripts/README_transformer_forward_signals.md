@@ -17,6 +17,10 @@ verify的日期应改为实际已发布日期；run可显式--signal-date，但�
 凭证只用python-collector现有配置，不在分析侧读取或输出。trade_cal权限不足会失败，
 不降级工作日猜测；daily/adj_factor串行限频，分钟/小时配额保存至少61/3601秒冷却。
 网络有限重试；权限/schema不重试。成功分片可复用，失败分片与安全acquisition.json保留。
+本冻结组只允许上述唯一forward_signals_20261008输出目录，不能换一个输出目录重发同日预测。
+所有采集阶段/日期共享根目录request_state.json及请求锁，自动继承已有分片ledger的已知
+冷却deadline，不存Token；切换日期或扩展日历也不能绕过冷却/最小请求间隔。
+缓存日历未来窗口不足T+5时另存扩展快照，旧日历证据不覆盖。
 
 ## 口径与状态
 
@@ -43,6 +47,7 @@ SZSE完整日历核对冻结历史起点至信号T，包括休市及T+1/T+5。T1
 失败过程，signals/T保存payload.json/marker.json/receipt.json/seal.json。旧文件SHA在根目录。
 同一冻结组/T只有一个完成包，及时或迟到均不可覆盖；重复run只verify，不采集或推理。
 锁冲突/异常残留、部分发布/无receipt请先保留全部证据并检查，程序不自动删除或修复原包。
+安全错误显示白名单stage/code/retryable/evidence；失败记录写failures，不输出原始provider异常。
 默认run使用真实当前时钟确定最近完成日；已及时完成包以后verify不会因当前时间晚而变迟到。
 
 尚未实现未来收益/净值成熟评估、盲测调仓锚点/最终区间、前端/自动调度或真实成交。

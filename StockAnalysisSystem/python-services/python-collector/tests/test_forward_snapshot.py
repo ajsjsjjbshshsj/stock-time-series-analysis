@@ -118,3 +118,32 @@ def test_complete_calendar_and_missing_calendar_fail_closed(tmp_path):
     client=Client('calendar_missing')
     with pytest.raises(ValueError):
         api().collect_calendar(client,'2026-10-08','2026-10-10',tmp_path/'bad',interval=.5,clock=lambda:100.,sleep=lambda n:None)
+
+
+@pytest.mark.parametrize('bad',['minute','hour'])
+def test_shared_cooldown_cannot_be_bypassed_by_another_date_or_stage(tmp_path,bad):
+    shared=tmp_path/'request_state.json'
+    with pytest.raises(RuntimeError):
+        api().collect_market_extension(Client(bad),['000001.SZ'],['2026-10-08','2026-10-09'],tmp_path/'a',
+            binding={'freeze_sha':'a'*64},interval=.5,clock=lambda:100.,sleep=lambda n:None,request_state=shared)
+    second=Client()
+    with pytest.raises(RuntimeError):
+        api().collect_calendar(second,'2026-10-08','2026-10-10',tmp_path/'b',interval=.5,
+                              clock=lambda:101.,sleep=lambda n:None,request_state=shared)
+    assert second.calls==[]
+    evidence=json.loads((tmp_path/'b/acquisition.json').read_text(encoding='utf-8'))
+    assert evidence['failure']=='QUOTA_COOLDOWN' and evidence['retry_not_before']>101.
+
+
+def test_shared_pacing_applies_between_calendar_and_market(tmp_path):
+    shared=tmp_path/'request_state.json';now=[100.];events=[]
+    def sleep(value):now[0]+=value
+    class Timed(Client):
+        def trade_calendar(self,**kwargs):events.append(now[0]);return super().trade_calendar(**kwargs)
+        def daily(self,**kwargs):events.append(now[0]);return super().daily(**kwargs)
+        def adj_factor(self,**kwargs):events.append(now[0]);return super().adj_factor(**kwargs)
+    client=Timed()
+    api().collect_calendar(client,'2026-10-08','2026-10-10',tmp_path/'a',interval=.5,clock=lambda:now[0],sleep=sleep,request_state=shared)
+    api().collect_market_extension(client,['000001.SZ'],['2026-10-08','2026-10-09'],tmp_path/'b',binding={'freeze_sha':'a'*64},
+        interval=.5,clock=lambda:now[0],sleep=sleep,request_state=shared)
+    assert len(events)==3 and all(b-a>=.5 for a,b in zip(events,events[1:]))

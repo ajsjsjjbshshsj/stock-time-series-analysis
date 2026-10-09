@@ -1,10 +1,13 @@
 """Serial, bounded forward acquisitions. Never touch the database or frozen history."""
 from datetime import datetime, timedelta, timezone, date
+from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import time
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -35,16 +38,75 @@ def day(value):
 
 class Requests:
     """Persist pacing and quota evidence without preserving upstream exception text."""
-    def __init__(self, directory, interval, clock, sleep):
+    def __init__(self, directory, interval, clock, sleep, request_state=None):
         self.path = Path(directory)/'acquisition.json'
         self.interval, self.clock, self.sleep = max(.5, float(interval)), clock, sleep
         if not np.isfinite(self.interval):
             raise ValueError('Finite request interval required')
         self.state = read(self.path) if self.path.exists() else {}
+        self.shared = Path(request_state).resolve() if request_state is not None else None
+        if self.shared is not None:
+            self.shared.parent.mkdir(parents=True,exist_ok=True)
+            self._refresh_shared()
         if self.state.get('retry_not_before', 0) > clock():
+            if self.state.get('failure') not in ('MINUTE_QUOTA','HOURLY_QUOTA'):
+                self.state['failure']='QUOTA_COOLDOWN'
+            write(self.path,self.state)
             raise RuntimeError('QUOTA_COOLDOWN: retry deadline not reached')
 
     def call(self, method, params):
+        with self._shared_lock():
+            if self.shared is not None:
+                self._refresh_shared()
+            if self.state.get('retry_not_before',0)>self.clock():
+                self.state['failure']='QUOTA_COOLDOWN'
+                write(self.path,self.state)
+                raise RuntimeError('QUOTA_COOLDOWN: shared retry deadline not reached')
+            return self._call(method,params)
+
+    def _refresh_shared(self):
+        # Carry pre-upgrade known deadlines across all stages/dates too.
+        states=[self.state]
+        if self.shared.exists():
+            states.append(read(self.shared))
+        for path in self.shared.parent.rglob('acquisition.json'):
+            if path.resolve().is_relative_to(self.shared.parent):
+                states.append(read(path))
+        for key in ('retry_not_before','last_request_at'):
+            values=[state[key] for state in states if key in state]
+            if values:
+                if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not np.isfinite(v) or v<0 for v in values):
+                    raise ValueError('Invalid shared request clock/deadline evidence')
+                self.state[key]=max(values)
+
+    @contextmanager
+    def _shared_lock(self):
+        if self.shared is None:
+            yield
+            return
+        path=self.shared.with_suffix('.lock')
+        try:
+            fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
+        except FileExistsError:
+            raise RuntimeError('REQUEST_STATE_BUSY: preserve existing lock evidence') from None
+        try:
+            os.write(fd,str(os.getpid()).encode('ascii'))
+            yield
+        finally:
+            os.close(fd)
+            path.unlink()
+
+    def _remember(self):
+        write(self.path,self.state)
+        if self.shared is not None:
+            temporary=self.shared.with_name(self.shared.name+'.'+uuid.uuid4().hex+'.tmp')
+            with temporary.open('x',encoding='utf-8') as stream:
+                json.dump(self.state,stream,ensure_ascii=False,indent=2,allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary,self.shared)
+
+    def _call(self,method,params):
         for attempt in range(3):
             previous = self.state.get('last_request_at')
             if previous is not None:
@@ -63,14 +125,14 @@ class Requests:
                 self.state.update(failure=kind, request=params, attempts=attempt+1)
                 if kind in ('HOURLY_QUOTA', 'MINUTE_QUOTA'):
                     self.state['retry_not_before'] = self.clock()+(3601 if hour else 61)
-                write(self.path, self.state)
+                self._remember()
                 if kind != 'NETWORK' or attempt == 2:
                     raise RuntimeError(f'ACQUISITION_{kind}: evidence retained') from None
                 self.sleep(2**(attempt+1))
             else:
                 self.state.pop('failure', None)
                 self.state.pop('retry_not_before', None)
-                write(self.path, self.state)
+                self._remember()
                 return result
 
 
@@ -126,7 +188,7 @@ def load_snapshot(directory, binding):
     return *frames, manifest
 
 
-def collect_market_extension(client, codes, dates, directory, *, binding, interval=.5, clock=time.time, sleep=time.sleep):
+def collect_market_extension(client, codes, dates, directory, *, binding, interval=.5, clock=time.time, sleep=time.sleep,request_state=None):
     directory = Path(directory)
     identity = _request_identity(codes, dates, binding)
     complete = directory/'acquisition_manifest.json'
@@ -142,7 +204,7 @@ def collect_market_extension(client, codes, dates, directory, *, binding, interv
             raise ValueError('Partial acquisition request identity mismatch')
     else:
         write(request_path, identity, exclusive=True)
-    requests = Requests(directory, interval, clock, sleep)
+    requests = Requests(directory, interval, clock, sleep,request_state)
     combined = {}
     for kind in ('daily', 'factor'):
         parts = []
@@ -188,7 +250,7 @@ def collect_market_extension(client, codes, dates, directory, *, binding, interv
     return manifest
 
 
-def collect_calendar(client, start, end, directory, *, interval=.5, clock=time.time, sleep=time.sleep):
+def collect_calendar(client, start, end, directory, *, interval=.5, clock=time.time, sleep=time.sleep,request_state=None):
     start_day, end_day = day(start), day(end)
     if not 0 <= (end_day-start_day).days <= 10000:
         raise ValueError('Invalid calendar range')
@@ -202,7 +264,7 @@ def collect_calendar(client, start, end, directory, *, interval=.5, clock=time.t
         if body.get('start') != start or body.get('end') != end or body.get('exchange') != 'SZSE':
             raise ValueError('Calendar request mismatch')
         return dict(body, calendar_sha256=digest(path))
-    frame = Requests(directory, interval, clock, sleep).call(client.trade_calendar,
+    frame = Requests(directory, interval, clock, sleep,request_state).call(client.trade_calendar,
         dict(exchange='SZSE', start_date=start.replace('-',''), end_date=end.replace('-',''), fields='exchange,cal_date,is_open'))
     if frame is None or frame.empty or not {'exchange','cal_date','is_open'}.issubset(frame):
         raise ValueError('Calendar unavailable')

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 
 APP=Path(__file__).resolve().parents[1]
 COLLECTOR=APP.parent/'python-collector'
@@ -26,11 +27,43 @@ def now(): return datetime.now(TZ)
 
 def validate_paths(freeze_dir,output):
     freeze_dir,output=Path(freeze_dir).resolve(),Path(output).resolve()
-    if (output.parent!=APP/'models/transformer' or not output.name.startswith('forward_signals_')
-            or not freeze_dir.name.startswith('forward_freeze_')
-            or output.is_relative_to(freeze_dir) or freeze_dir.is_relative_to(output)):
-        raise ValueError('Use a separate approved forward_signals_* output and frozen group')
+    if (output!=APP/'models/transformer/forward_signals_20261008'
+            or freeze_dir!=APP/'models/transformer/forward_freeze_20261005'):
+        raise ValueError('This frozen group has exactly one approved signal store; alternate outputs are rejected')
     return freeze_dir,output
+
+
+STAGES={'frozen_source','store_identity','calendar_acquisition','market_acquisition','calendar_selection',
+        'acquisition_validation','history_validation','frozen_scoring','signal_publication','verification'}
+SAFE_CODES={'PERMISSION','HOURLY_QUOTA','MINUTE_QUOTA','NETWORK','SCHEMA','PROVIDER',
+            'INVALID_INPUT','IO_ERROR','RUNTIME_ERROR','ACQUISITION_FAILED','QUOTA_COOLDOWN'}
+
+
+def _phase(stage,operation,output,evidence=None,persist=True):
+    try:
+        return operation()
+    except Exception as error:
+        if not hasattr(error,'_forward_stage'):
+            code='INVALID_INPUT' if isinstance(error,(ValueError,KeyError,TypeError)) else 'IO_ERROR' if isinstance(error,OSError) else 'RUNTIME_ERROR'
+            evidence=Path(evidence or output)
+            if stage.endswith('_acquisition'):
+                code='ACQUISITION_FAILED'
+                try:
+                    candidate=read(evidence/'acquisition.json').get('failure')
+                    if candidate in SAFE_CODES:
+                        code=candidate
+                except (OSError,ValueError,TypeError):
+                    pass
+            error._forward_stage=stage
+            error._forward_code=code
+            error._forward_retryable=code in {'HOURLY_QUOTA','MINUTE_QUOTA','NETWORK','QUOTA_COOLDOWN'}
+            error._forward_evidence=str(evidence)
+            if persist and (Path(output)/'binding.json').is_file():
+                folder=Path(output)/'failures'
+                folder.mkdir(exist_ok=True)
+                write_exclusive(folder/(uuid.uuid4().hex+'.json'),dict(stage=stage,code=code,
+                    retryable=error._forward_retryable,evidence=str(evidence),recorded_at=now().isoformat()))
+        raise
 
 
 def load_frozen(freeze_dir):
@@ -71,7 +104,8 @@ def collect(stage,request,output):
     else:
         write_exclusive(contract,request)
     command=[sys.executable,str(COLLECTOR/'scripts/collect_forward_snapshot.py'),'--stage',stage,
-             '--contract',str(contract),'--output',str(output)]
+             '--contract',str(contract),'--output',str(output),
+             '--request-state',str(output.parents[1]/'request_state.json')]
     result=subprocess.run(command,cwd=COLLECTOR,capture_output=True,text=True,encoding='utf-8',errors='replace')
     if result.returncode:
         # Never propagate raw SDK output or exception text, which may contain credentials.
@@ -128,11 +162,12 @@ def _calendar(output,frozen,requested=None):
         body=_calendar_file(path)
         if body['start']<=start and str(clock.date())<=body['end'] and probe<=body['end']:
             completed=select_signal_date(body,clock,requested,frozen['binding']['cutoff'])
-            if completed is None or session_dates(body,completed):
+            opened=validate_calendar(body)
+            if completed is None or opened.index(completed)+5<len(opened):
                 return body,path
     end=str((max(clock.date(),datetime.fromisoformat(probe).date())+timedelta(days=30)))
     path=output/'calendars'/f'{start}_{end}'
-    collect('calendar',dict(start=start,end=end),path)
+    _phase('calendar_acquisition',lambda:collect('calendar',dict(start=start,end=end),path),output,path)
     return _calendar_file(path),path
 
 
@@ -143,7 +178,7 @@ def _acquisition(output,signal_date,calendar_sha,frozen,calendar,fetch=False):
     request=dict(codes=frozen['binding']['codes'],dates=dates,binding=binding)
     path=output/'acquisitions'/signal_date
     if fetch and not (path/'acquisition_manifest.json').exists():
-        collect('market',request,path)
+        _phase('market_acquisition',lambda:collect('market',request,path),output,path)
     manifest=read(path/'acquisition_manifest.json')
     if (any(manifest.get(k)!=v for k,v in request.items()) or manifest.get('source')!='tushare'
             or manifest.get('volume_unit')!='lots' or manifest.get('amount_unit')!='thousand_CNY'
@@ -230,34 +265,37 @@ def verify(freeze_dir,output,signal_date):
 
 def run(freeze_dir,output,signal_date=None):
     freeze_dir,output=validate_paths(freeze_dir,output)
-    frozen=load_frozen(freeze_dir)
-    store=_store(output,frozen,initialize=True)
+    frozen=_phase('frozen_source',lambda:load_frozen(freeze_dir),output)
+    store=_phase('store_identity',lambda:_store(output,frozen,initialize=True),output)
     if signal_date is not None:
         iso_day(signal_date)
         if (output/'signals'/signal_date).exists():
             return verify(freeze_dir,output,signal_date)
-    calendar,calendar_path=_calendar(output,frozen,signal_date)
-    selected=select_signal_date(calendar,now(),signal_date,frozen['binding']['cutoff'])
+    calendar,calendar_path=_phase('calendar_selection',lambda:_calendar(output,frozen,signal_date),output)
+    selected=_phase('calendar_selection',lambda:select_signal_date(calendar,now(),signal_date,frozen['binding']['cutoff']),output)
     if selected is None:
         return dict(status='NO_NEW_SESSION',models=0,prospective_eligible=False,old_files_checked=_check_old(output))
     session_dates(calendar,selected)
+    if (output/'signals'/selected).exists():
+        return verify(freeze_dir,output,selected)  # Default completed run is strictly read-only too.
     with store.lock(selected):
         if (output/'signals'/selected).exists():
             return verify(freeze_dir,output,selected)
         attempt=store.new_attempt(selected)
         calendar_sha=sha256(calendar_path/'calendar.json')
-        daily,factors,acquisition=_acquisition(output,selected,calendar_sha,frozen,calendar,fetch=True)
-        _prior_forward_history(store,output,selected,daily,factors)
-        panels,proofs=_inputs(frozen,daily,factors,calendar,selected,acquisition)
+        daily,factors,acquisition=_phase('acquisition_validation',
+            lambda:_acquisition(output,selected,calendar_sha,frozen,calendar,fetch=True),output)
+        _phase('history_validation',lambda:_prior_forward_history(store,output,selected,daily,factors),output)
+        panels,proofs=_phase('history_validation',lambda:_inputs(frozen,daily,factors,calendar,selected,acquisition),output)
         records=[]
         for record in frozen['models']:
             print(f"FORWARD_SCORE seed={record['seed']} mode={record['mode']} date={selected}",flush=True)
-            rows=score_session(panels[record['mode']],record,selected,proofs[record['mode']])
+            rows=_phase('frozen_scoring',lambda:score_session(panels[record['mode']],record,selected,proofs[record['mode']]),output,attempt)
             records.append(dict(seed=record['seed'],mode=record['mode'],scores=rows,history_proof=proofs[record['mode']]))
         payload=dict(signal_date=selected,models=records,acquisition=acquisition,calendar_sha256=calendar_sha,
                      calendar_directory=calendar_path.relative_to(output).as_posix())
-        store.publish(selected,attempt,payload,calendar=calendar,
-                      frozen_at=datetime.fromisoformat(frozen['binding']['frozen_at']),clock=now)
+        _phase('signal_publication',lambda:store.publish(selected,attempt,payload,calendar=calendar,
+                      frozen_at=datetime.fromisoformat(frozen['binding']['frozen_at']),clock=now),output,attempt)
         return verify(freeze_dir,output,selected)
 
 
@@ -275,8 +313,13 @@ def main(argv=None):
         print('FORWARD_RESULT '+str(result['status'])+' date='+str(result.get('signal_date','none'))
               +' old_files_unchanged='+str(result['old_files_checked']),flush=True)
         return 0
-    except Exception:
-        print('FORWARD_FAILED: preserve existing evidence; check frozen source, calendar, quota and input completeness.',file=sys.stderr)
+    except Exception as error:
+        stage=getattr(error,'_forward_stage','verification' if args.stage=='verify' else 'path_validation')
+        code=getattr(error,'_forward_code','INVALID_INPUT')
+        stage=stage if stage in STAGES or stage=='path_validation' else 'verification'
+        code=code if code in SAFE_CODES else 'INVALID_INPUT'
+        print(f'FORWARD_FAILED stage={stage} code={code} retryable={bool(getattr(error,"_forward_retryable",False))}'
+              f' evidence={getattr(error,"_forward_evidence","none")}',file=sys.stderr)
         return 1
 
 

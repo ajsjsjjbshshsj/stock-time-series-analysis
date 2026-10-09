@@ -14,6 +14,7 @@ def main(argv=None, *, client=None, clock=time.time, sleep=time.sleep):
     parser.add_argument('--stage', choices=('calendar','market'), required=True)
     parser.add_argument('--contract', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--request-state', type=Path)
     args=parser.parse_args(argv)
     try:
         contract=json.loads(args.contract.read_text(encoding='utf-8'))
@@ -25,10 +26,10 @@ def main(argv=None, *, client=None, clock=time.time, sleep=time.sleep):
             client=TushareClient(ts.pro_api(TUSHARE_TOKEN, timeout=20))
             interval=COLLECTION_CONFIG['request_interval']
         if args.stage=='calendar':
-            collect_calendar(client,contract['start'],contract['end'],args.output,interval=interval,clock=clock,sleep=sleep)
+            collect_calendar(client,contract['start'],contract['end'],args.output,interval=interval,clock=clock,sleep=sleep,request_state=args.request_state)
         else:
             collect_market_extension(client,contract['codes'],contract['dates'],args.output,binding=contract['binding'],
-                                     interval=interval,clock=clock,sleep=sleep)
+                                     interval=interval,clock=clock,sleep=sleep,request_state=args.request_state)
         print('FORWARD_ACQUISITION_COMPLETE '+args.stage)
         return 0
     except Exception:
