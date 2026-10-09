@@ -51,7 +51,7 @@ LABEL_COLUMNS = frozenset({
 # 标识列 ── 非数值型或无预测意义的列
 IDENTITY_COLUMNS = frozenset({
     'ts_code', 'trade_date', '日期', '股票名称', 'name', 'symbol',
-    'instrument', 'is_val',
+    'instrument', 'is_val', 'label_target_date',
 })
 
 
@@ -84,8 +84,8 @@ def compute_labels(df: pd.DataFrame, forward_days: int = 5) -> pd.DataFrame:
     # 辅助标签
     df['future_return_1d'] = close.transform(lambda x: x.shift(-1) / x - 1)
     df['future_return_5d'] = close.transform(lambda x: x.shift(-5) / x - 1)
-    df['future_direction_1d'] = (df['future_return_1d'] > 0).astype(int)
-    df['future_direction_5d'] = (df['future_return_5d'] > 0).astype(int)
+    df['future_direction_1d'] = (df['future_return_1d'] > 0).astype(float).where(df['future_return_1d'].notna())
+    df['future_direction_5d'] = (df['future_return_5d'] > 0).astype(float).where(df['future_return_5d'].notna())
 
     valid = df['label'].notna().sum()
     logger.info("标签计算完成: %d 行有效（forward_days=%d）", valid, forward_days)
