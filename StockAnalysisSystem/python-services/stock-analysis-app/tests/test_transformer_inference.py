@@ -247,3 +247,10 @@ def test_legitimate_later_listing_uses_its_own_history_start(tmp_path, monkeypat
         args = dict(feature_path=str(cache))
     result = trainer.predict_top_stocks_transformer(model_path=str(model_path), config=config, **args)
     assert set(result['股票代码']) == {'000001.SZ', '000002.SZ'}
+def test_offline_prediction_does_not_write_checkpoint_plots(tmp_path):
+    panel = market_panel(count=320)
+    config, _, _, _, model_path = tiny_bundle(tmp_path, panel)
+    result = trainer.predict_top_stocks_transformer(panel_df=panel, model_path=str(model_path),
+        config=config, create_plots=False)
+    assert result is not None
+    assert not (tmp_path/'plots').exists()

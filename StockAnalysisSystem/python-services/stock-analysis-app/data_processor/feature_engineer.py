@@ -387,8 +387,8 @@ class FeatureEngineer:
         df[FEAT_FUTURE_RETURN_5D] = close.shift(-5) / close - 1
 
         # 涨跌方向标签
-        df[FEAT_FUTURE_DIRECTION_1D] = (df[FEAT_FUTURE_RETURN_1D] > 0).astype(int)
-        df[FEAT_FUTURE_DIRECTION_5D] = (df[FEAT_FUTURE_RETURN_5D] > 0).astype(int)
+        df[FEAT_FUTURE_DIRECTION_1D] = (df[FEAT_FUTURE_RETURN_1D] > 0).astype(float).where(df[FEAT_FUTURE_RETURN_1D].notna())
+        df[FEAT_FUTURE_DIRECTION_5D] = (df[FEAT_FUTURE_RETURN_5D] > 0).astype(float).where(df[FEAT_FUTURE_RETURN_5D].notna())
 
         return df
 
