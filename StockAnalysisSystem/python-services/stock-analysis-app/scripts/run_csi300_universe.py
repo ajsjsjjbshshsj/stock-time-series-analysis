@@ -17,31 +17,15 @@ from analysis.csi300_universe import (read, digest, identity, write_exclusive, i
     read_acquisition, build_universe, publish_universe, verify_universe)
 from analysis.csi300_readiness import diagnose_readiness, frame_identity, normalize
 from analysis.strategy_dates import SHANGHAI, validate_session_calendar
-from data_loader.csi300_readiness_source import read_local_sources
+from data_loader.csi300_readiness_source import read_local_sources, factor_source
 
 
 def now(): return datetime.now(SHANGHAI)
 
 
 def inherit_request_state():
-    """Carry existing known deadlines without rewriting old acquisition evidence."""
-    target = APP.parents[1]/'.runtime/market_requests/request_state.json'
-    old = APP/'models/transformer/forward_signals_20261008'
-    states = [read(p) for p in [old/'request_state.json', *old.rglob('acquisition.json')] if p.is_file()]
-    if target.exists(): states.append(read(target))
-    values = {}
-    for key in ('last_request_at', 'retry_not_before'):
-        observed = [s[key] for s in states if key in s]
-        if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in observed):
-            raise ValueError('Invalid quota state evidence')
-        if observed: values[key] = max(observed)
-    if not target.exists() or any(read(target).get(k,0) < v for k,v in values.items()):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        existing = read(target) if target.exists() else {}
-        temporary = target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
-        write_exclusive(temporary, dict(existing, **values))
-        os.replace(temporary, target)
-    return target
+    """Path only: atomic inheritance belongs to the Collector request boundary."""
+    return APP.parents[1]/'.runtime/market_requests/request_state.json'
 
 
 def collect(output, requested):
@@ -164,15 +148,16 @@ def run_diagnose(pool, calendar, selected_stock, output, *, clock=now, read_sour
     write_exclusive(output/'readiness.json',report)
     files = {str(p.relative_to(output)).replace('\\','/'):digest(p) for p in output.rglob('*') if p.is_file()}
     write_exclusive(output/'seal.json', dict(schema_version=1,files=files))
+    verify_readiness(output, require_complete=False)
     write_exclusive(output/'complete.json',dict(schema_version=1,seal_sha256=digest(output/'seal.json')))
     return verify_readiness(output)
 
 
-def verify_readiness(output):
+def verify_readiness(output, *, require_complete=True):
     root = Path(output)
     try:
         seal = read(root/'seal.json')
-        if read(root/'complete.json') != dict(schema_version=1,seal_sha256=digest(root/'seal.json')):
+        if require_complete and read(root/'complete.json') != dict(schema_version=1,seal_sha256=digest(root/'seal.json')):
             raise ValueError('Readiness completion hash invalid')
         actual = {str(p.relative_to(root)).replace('\\','/'):digest(p) for p in root.rglob('*')
                   if p.is_file() and p not in (root/'seal.json',root/'complete.json')}
@@ -187,10 +172,11 @@ def verify_readiness(output):
         for key, frame in [('daily',daily),('basic',basic),('factors',factors)]:
             if source.get(key+'_sha256') != frame_identity(frame): raise ValueError('Frozen frame hash mismatch')
         if source.get('factor_verified'):
-            proof = read(root/'source/factor_manifest.json')
-            if proof.get('source') != 'tushare.adj_factor' or proof.get('complete') is not True or proof['data_sha256'] != digest(root/'source/factor_original.parquet'):
-                raise ValueError('Frozen factor source proof invalid')
-            original = normalize(pd.read_parquet(root/'source/factor_original.parquet'))
+            original, actual_evidence = factor_source(root/'source/factor_manifest.json',
+                        data_path_override=root/'source/factor_original.parquet')
+            recorded = source.get('factor_evidence', {})
+            if any(recorded.get(k) != actual_evidence[k] for k in ('manifest_sha256','data_sha256')):
+                raise ValueError('Factor evidence changed after source read')
             expected = original[original.ts_code.isin(pool['codes']) & original.trade_date.between(context['start_date'],context['end_date'])]
             if frame_identity(expected) != frame_identity(factors): raise ValueError('Factor subset differs from frozen source')
         expected = diagnose_readiness(pool,daily,basic,context['calendar'],factors=factors,

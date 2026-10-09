@@ -42,6 +42,12 @@ profile1为保守数据检查：单股60预热+60成熟样本，LightGBM120预�
 Transformer253预热+60序列+60成熟样本；不足则NOT_READY，不填假价格。
 data_ready不等于模型已训练或策略盈利，model_ready在本阶段一律false。
 
+有效mature_samples只在该合同要求的完整连续来源成立时计数；有缺口/非法字段/缺因子时
+保守为0。potential_mature_samples只是按行数推导的潜在上界，不能当可训练样本。
+源、池及报告都先验收staged内容再发布complete标记；离线verify不需要DB配置，不建日志或连接数据库。
+共享冷却继承由Collector在同一请求锁下合并最大deadline，直接CLI同样执行，分析端不重写共享状态。
+初次报告与修复后的最终报告分别保留；旧计算合同无法精确重现时不得作为最新验收证据。
+
 阅读顺序：Collector csi300_constituent_snapshot→analysis/csi300_universe→
 data_loader/csi300_readiness_source→analysis/csi300_readiness→本runner。
 部分产物/锁冲突/坏SHA应保留证据排查，不自动删除或覆盖。

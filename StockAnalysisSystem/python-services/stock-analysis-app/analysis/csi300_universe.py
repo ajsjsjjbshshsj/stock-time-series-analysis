@@ -140,15 +140,16 @@ def publish_universe(acquisition_dir, output, frozen_at):
     seal = dict(schema_version=1, manifest_sha256=digest(output/'manifest.json'),
                 source_files={name:digest(target/name) for name in source_files})
     write_exclusive(output/'seal.json', seal)
+    verify_universe(output, require_complete=False)
     write_exclusive(output/'complete.json', dict(schema_version=1, seal_sha256=digest(output/'seal.json')))
     return verify_universe(output)
 
 
-def verify_universe(output):
+def verify_universe(output, *, require_complete=True):
     root = Path(output)
     try:
         seal, manifest = read(root/'seal.json'), read(root/'manifest.json')
-        if read(root/'complete.json') != dict(schema_version=1, seal_sha256=digest(root/'seal.json')):
+        if require_complete and read(root/'complete.json') != dict(schema_version=1, seal_sha256=digest(root/'seal.json')):
             raise ValueError('Pool completion proof invalid')
         if seal['manifest_sha256'] != digest(root/'manifest.json'):
             raise ValueError('Pool manifest hash invalid')

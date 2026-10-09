@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import re
 import time
+import os
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,37 @@ from app.market_data.forward_snapshot import Requests, TZ, day, read, write, dig
 
 INDEX = '000300.SH'
 FIELDS = ['index_code', 'con_code', 'trade_date', 'weight']
+PROJECT = Path(__file__).resolve().parents[4]
+
+
+def migrate_request_state(request_state, *, legacy_root=None):
+    """Merge deadline maxima under exactly the lock used by Requests.call."""
+    target = Path(request_state).resolve()
+    if legacy_root is None and target == (PROJECT/'.runtime/market_requests/request_state.json').resolve():
+        legacy_root = PROJECT/'python-services/stock-analysis-app/models/transformer/forward_signals_20261008'
+    if legacy_root is None: return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock = target.with_suffix('.lock')
+    try: fd = os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
+    except FileExistsError: raise RuntimeError('REQUEST_STATE_BUSY: existing shared lock retained') from None
+    try:
+        os.write(fd,str(os.getpid()).encode('ascii'))
+        current = read(target) if target.exists() else {}
+        old = Path(legacy_root)
+        states = [current]+[read(p) for p in [old/'request_state.json',*old.rglob('acquisition.json')] if p.is_file()]
+        merged = dict(current)
+        for key in ('retry_not_before','last_request_at'):
+            values = [s[key] for s in states if key in s]
+            if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not np.isfinite(v) or v<0 for v in values):
+                raise ValueError('Invalid legacy/shared request deadline')
+            if values: merged[key] = max(values)
+        if not target.exists() or merged != current:
+            tmp = target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
+            write(tmp,merged,exclusive=True)
+            os.replace(tmp,target)
+    finally:
+        os.close(fd)
+        lock.unlink()
 
 
 def month_requests(requested_as_of):
@@ -50,10 +83,10 @@ def select_rows(rows):
     return datetime.strptime(latest, '%Y%m%d').date().isoformat(), selected
 
 
-def verify_constituent_evidence(output, requested_as_of=None):
+def verify_constituent_evidence(output, requested_as_of=None, *, require_complete=True):
     root = Path(output)
     manifest = read(root/'acquisition_manifest.json')
-    if read(root/'complete.json') != dict(schema_version=1, manifest_sha256=digest(root/'acquisition_manifest.json')):
+    if require_complete and read(root/'complete.json') != dict(schema_version=1, manifest_sha256=digest(root/'acquisition_manifest.json')):
         raise ValueError('Acquisition completion hash mismatch')
     requested = manifest['requested_as_of']
     if requested_as_of is not None and requested != requested_as_of:
@@ -97,6 +130,7 @@ def collect_constituent_evidence(client, requested_as_of, output, *, request_sta
     if (root/'acquisition_manifest.json').exists():
         raise ValueError('Partial manifest retained; do not overwrite')
     root.mkdir(parents=True, exist_ok=True)
+    migrate_request_state(request_state)
     binding = dict(schema_version=1, source='tushare.index_weight', index_code=INDEX, requested_as_of=requested_as_of)
     if (root/'binding.json').exists():
         if read(root/'binding.json') != binding: raise ValueError('Request binding mismatch')
@@ -126,6 +160,7 @@ def collect_constituent_evidence(client, requested_as_of, output, *, request_sta
             manifest = dict(binding, pages=pages, provider_snapshot_date=source_day,
                             acquired_at=response['acquired_at'], rows=selected)
             write(root/'acquisition_manifest.json', manifest, exclusive=True)
+            verify_constituent_evidence(root, requested_as_of, require_complete=False)
             write(root/'complete.json', dict(schema_version=1, manifest_sha256=digest(root/'acquisition_manifest.json')), exclusive=True)
             return verify_constituent_evidence(root, requested_as_of)
     raise ValueError('NO_SNAPSHOT: no source snapshot in three months')

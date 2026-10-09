@@ -129,12 +129,15 @@ def diagnose_readiness(universe, daily, basic, calendar, *, factors=None, factor
                 f = factor_groups.get(code)
                 if f is None or not set(expected).issubset(set(f.trade_date)) or not _valid(f[f.trade_date.isin(expected)], ['adj_factor']):
                     issues.append('MISSING_FACTORS')
-            count = max(0, len(history)-profile['warmup']-profile['sequence']+2-profile['horizon'])
+            potential = max(0, len(history)-profile['warmup']-profile['sequence']+2-profile['horizon'])
+            # Full retained history is required for path-dependent features.
+            # Any source gap/invalid field makes this contract's usable count0.
+            count = potential if not issues else 0
             if count < profile['mature']: issues.append('INSUFFICIENT_WARMUP_HISTORY')
             warm_index = profile['warmup']+profile['sequence']-2
-            evaluation_start = str(expected[warm_index].date()) if len(expected) > warm_index else None
+            evaluation_start = str(expected[warm_index].date()) if count > 0 and len(expected) > warm_index else None
             evaluations[key][code] = dict(data_ready=not issues, mature_samples=count,
-                reasons=sorted(set(issues)), evaluation_start=evaluation_start)
+                reasons=sorted(set(issues)), evaluation_start=evaluation_start, potential_mature_samples=potential)
     for key in PROFILES:
         relevant = [selected_stock] if key == 'single_xgb' else codes
         per_stock = {c:evaluations[key][c] for c in relevant}
