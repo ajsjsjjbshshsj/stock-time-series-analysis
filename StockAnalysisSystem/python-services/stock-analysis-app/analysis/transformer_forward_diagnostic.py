@@ -32,6 +32,10 @@ def latest_scores(panel, record, date):
         raise ValueError('Diagnostic session is unavailable')
     config = record['config']
     scaler, metadata = load_model_preprocessing(record['model_path'], config)
+    starts = observed.assign(trade_date=pd.to_datetime(observed.trade_date)).groupby('ts_code').trade_date.min().to_dict()
+    expected_starts = {c: pd.Timestamp(d) for c, d in metadata['stock_history_starts'].items()}
+    if starts != expected_starts:
+        raise ValueError('Diagnostic input must retain each saved historical origin/start')
     inference = dict(config, feature_start_date=metadata['feature_history_start'],
                      stock_history_starts=metadata['stock_history_starts'])
     raw, columns, _, _ = build_feature_panel(observed, inference, metadata['stockid2idx'],
