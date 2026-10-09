@@ -1,216 +1,127 @@
-"""
-回测模块：基于预测信号模拟交易，计算策略收益与风险指标
+"""Signal research backtests: T close signal, T+1 open execution, close mark.
+No board-lot, suspension, price-limit queue or minimum-commission simulation.
 """
 import numpy as np
 import pandas as pd
-from config.logging_config import get_logger
-logger = get_logger(__name__)
 
 
 class Backtester:
-    """策略回测器"""
-
-    def __init__(self, initial_capital=1000000.0, commission_rate=0.0003, slippage=0.001):
-        """
-        初始化回测器
-
-        Args:
-            initial_capital: 初始资金
-            commission_rate: 佣金率（单边）
-            slippage: 滑点
-        """
+    def __init__(self, initial_capital=1000000., commission_rate=.0003, slippage=.001):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.slippage = slippage
-        logger.info("回测器初始化完成")
 
-    # =========================================================================
-    # 信号驱动回测
-    # =========================================================================
     def run_signal_backtest(self, df, signal_column, price_column='close',
                             date_column='trade_date', min_holding_days=1):
-        """
-        基于交易信号的回测（信号列中 1=买入，-1=卖出，0=持有）
-
-        Args:
-            df: 包含信号和价格的DataFrame（按时间排序）
-            signal_column: 信号列名
-            price_column: 价格列名
-            date_column: 日期列名
-            min_holding_days: 最小持有天数
-
-        Returns:
-            dict: 回测结果
-        """
-        df = df.copy().sort_values(date_column).reset_index(drop=True)
-
-        capital = self.initial_capital
-        position = 0  # 持仓股数
-        holding_days = 0
-        trades = []
-        equity_curve = []
-        daily_returns = []
-
-        for i in range(len(df)):
-            row = df.iloc[i]
-            price = row[price_column]
-            signal = row.get(signal_column, 0)
-            date = row[date_column]
-
-            # 买入信号
-            if signal == 1 and position == 0 and holding_days >= min_holding_days:
-                # 扣除滑点和佣金
-                buy_price = price * (1 + self.slippage)
-                shares = int(capital / buy_price * 0.95)  # 用95%仓位
+        config = (self.initial_capital, self.commission_rate, self.slippage)
+        if (any(isinstance(v, bool) or not np.isfinite(v) for v in config)
+                or self.initial_capital <= 0 or not 0 <= self.commission_rate < 1
+                or not 0 <= self.slippage < 1
+                or type(min_holding_days) is not int or min_holding_days < 0):
+            raise ValueError('Invalid backtest capital/costs/holding period')
+        if (df.empty or df.columns.duplicated().any()
+                or not {date_column, price_column, 'open', signal_column}.issubset(df)):
+            raise ValueError('Complete dated prices and signals required')
+        frame = df.copy()
+        frame[date_column] = pd.to_datetime(frame[date_column], errors='raise')
+        if (frame[date_column].isna().any() or frame[date_column].duplicated().any()
+                or frame[date_column].dt.tz is not None
+                or not frame[date_column].equals(frame[date_column].dt.normalize())):
+            raise ValueError('Invalid/duplicate price dates')
+        frame = frame.sort_values(date_column).reset_index(drop=True)
+        if 'ts_code' in frame and frame.ts_code.nunique() != 1:
+            raise ValueError('Signal backtest requires one stock')
+        for col in set(['open', price_column]):
+            values = pd.to_numeric(frame[col], errors='raise')
+            if not np.isfinite(values).all() or (values <= 0).any():
+                raise ValueError('Invalid market prices')
+            frame[col] = values
+        if not frame[signal_column].isin([-1, 0, 1]).all():
+            raise ValueError('Invalid trading signals')
+        cash, position, held = float(self.initial_capital), 0, 0
+        trades, equity = [], []
+        for i, row in frame.iterrows():
+            signal = frame.iloc[i-1][signal_column] if i else 0
+            origin = frame.iloc[i-1][date_column] if i else None
+            if signal == 1 and position == 0:
+                executed = float(row['open'])*(1+self.slippage)
+                shares = int(cash*.95/(executed*(1+self.commission_rate)))
                 if shares > 0:
-                    cost = shares * buy_price * (1 + self.commission_rate)
-                    capital -= cost
-                    position = shares
-                    holding_days = 0
-                    trades.append({
-                        'date': date,
-                        'action': 'BUY',
-                        'price': buy_price,
-                        'shares': shares,
-                        'cost': cost
-                    })
+                    cost = shares*executed*(1+self.commission_rate)
+                    cash -= cost
+                    position, held = shares, 0
+                    trades.append(dict(date=row[date_column], signal_date=origin, action='BUY',
+                                       price=executed, shares=shares, cost=cost))
+            elif signal == -1 and position and held >= min_holding_days:
+                executed = float(row['open'])*(1-self.slippage)
+                revenue = position*executed*(1-self.commission_rate)
+                cash += revenue
+                trades.append(dict(date=row[date_column], signal_date=origin, action='SELL',
+                                   price=executed, shares=position, revenue=revenue))
+                position, held = 0, 0
+            if position: held += 1
+            equity.append(dict(date=row[date_column], cash=cash, position=position,
+                               equity=cash+position*float(row[price_column])))
+        curve = pd.DataFrame(equity)
+        values = curve.equity.to_numpy()
+        curve['daily_return'] = values/np.r_[self.initial_capital, values[:-1]]-1
+        curve['cumulative_return'] = values/self.initial_capital-1
+        curve['benchmark'] = frame[price_column]/frame[price_column].iloc[0]-1
+        metrics = self._calculate_metrics(curve.daily_return)
+        metrics.update(total_trades=sum(t['action'] == 'BUY' for t in trades),
+                       final_equity=float(values[-1]), total_return=float(values[-1]/self.initial_capital-1))
+        return dict(equity_curve=curve, trades=pd.DataFrame(trades), metrics=metrics,
+                    execution_assumptions=dict(signal='T close', fill='T+1 open', mark='close',
+                                               allocation=.95, terminal='mark, no forced future fill',
+                                               price_basis='input prices; raw prices not dividend-adjusted',
+                                               commission_rate=self.commission_rate, slippage=self.slippage))
 
-            # 卖出信号
-            elif signal == -1 and position > 0 and holding_days >= min_holding_days:
-                sell_price = price * (1 - self.slippage)
-                revenue = position * sell_price * (1 - self.commission_rate)
-                capital += revenue
-                trades.append({
-                    'date': date,
-                    'action': 'SELL',
-                    'price': sell_price,
-                    'shares': position,
-                    'revenue': revenue
-                })
-                position = 0
-                holding_days = 0
-
-            holding_days += 1
-
-            # 计算当日权益
-            total_equity = capital + position * price
-            equity_curve.append({'date': date, 'equity': total_equity})
-            daily_returns.append(total_equity)
-
-        # 计算策略收益序列
-        equity_df = pd.DataFrame(equity_curve)
-        if len(equity_df) > 1:
-            equity_df['daily_return'] = equity_df['equity'].pct_change()
-            equity_df['cumulative_return'] = (equity_df['equity'] / self.initial_capital) - 1
-            equity_df['benchmark'] = df[price_column] / df[price_column].iloc[0] - 1
-        else:
-            equity_df['daily_return'] = 0
-            equity_df['cumulative_return'] = 0
-            equity_df['benchmark'] = 0
-
-        metrics = self._calculate_metrics(equity_df['daily_return'].dropna())
-        metrics['total_trades'] = len([t for t in trades if t['action'] == 'BUY'])
-        metrics['final_equity'] = equity_df['equity'].iloc[-1] if len(equity_df) > 0 else self.initial_capital
-        metrics['total_return'] = (metrics['final_equity'] / self.initial_capital) - 1
-
-        logger.info(f"回测完成: 总收益={metrics['total_return']:.2%}, "
-                     f"交易次数={metrics['total_trades']}, 夏普={metrics['sharpe_ratio']:.3f}")
-
-        return {
-            'equity_curve': equity_df,
-            'trades': pd.DataFrame(trades) if trades else pd.DataFrame(),
-            'metrics': metrics
-        }
-
-    # =========================================================================
-    # 预测驱动回测（使用模型预测生成信号）
-    # =========================================================================
     def run_prediction_backtest(self, df, predictor, price_column='close',
-                                date_column='trade_date', probability_threshold=0.55,
-                                min_holding_days=1):
-        """
-        基于模型预测的回测
+                                date_column='trade_date', probability_threshold=.55,
+                                min_holding_days=1, *, seen_through=None):
+        from analysis.strategy_samples import require_unseen
+        if predictor.model_type not in ('xgboost', 'lstm'):
+            raise ValueError('Model does not produce a binary probability strategy')
+        if not np.isfinite(probability_threshold) or not .5 < probability_threshold < 1:
+            raise ValueError('Invalid probability threshold')
+        metadata = predictor.train_metadata
+        if seen_through is not None and (not metadata or metadata.get('seen_through') != seen_through):
+            raise ValueError('Cannot override model dated evidence')
+        frame = df.copy().sort_values(date_column)
+        frame[date_column] = pd.to_datetime(frame[date_column])
+        eligible = require_unseen(frame.rename(columns={date_column: 'trade_date'}), metadata)
+        if eligible.empty:
+            raise ValueError('No unseen evaluation dates')
+        infer = predictor.prepare_inference_frame(frame)
+        infer = infer[infer[date_column].isin(eligible.trade_date)]
+        if infer.empty:
+            raise ValueError('No valid unseen feature samples')
+        if predictor.model_type == 'lstm':
+            raise ValueError('LSTM requires dated sequence inference; unsupported legacy artifact')
+        probabilities = np.asarray(predictor.predict_proba(infer[predictor.feature_names].to_numpy()), dtype=float)
+        if (probabilities.shape != (len(infer),) or not np.isfinite(probabilities).all()
+                or ((probabilities < 0) | (probabilities > 1)).any()):
+            raise ValueError('Invalid binary probabilities')
+        signals = pd.Series(np.where(probabilities > probability_threshold, 1,
+                                     np.where(probabilities < 1-probability_threshold, -1, 0)),
+                            index=infer[date_column])
+        output = frame[frame[date_column].isin(eligible.trade_date)].copy()
+        output['pred_signal'] = output[date_column].map(signals).fillna(0)
+        return self.run_signal_backtest(output, 'pred_signal', price_column, date_column, min_holding_days)
 
-        Args:
-            df: 原始数据DataFrame
-            predictor: 已训练的StockPredictor实例
-            price_column: 价格列名
-            date_column: 日期列名
-            probability_threshold: 预测概率阈值（高于此值才买入）
-            min_holding_days: 最小持有天数
-
-        Returns:
-            dict: 回测结果
-        """
-        # 准备特征并生成预测
-        X, y, features = predictor.prepare_features(df)
-        if X is None:
-            logger.error("特征准备失败，无法回测")
-            return None
-
-        predictions = predictor.predict(X)
-
-        # 将预测结果对齐回原始DataFrame
-        df_pred = df.iloc[-len(predictions):].copy()
-        df_pred['pred_signal'] = 0
-        df_pred.loc[predictions == 1, 'pred_signal'] = 1
-        df_pred.loc[predictions == 0, 'pred_signal'] = -1
-
-        return self.run_signal_backtest(df_pred, 'pred_signal', price_column, date_column, min_holding_days)
-
-    # =========================================================================
-    # 指标计算
-    # =========================================================================
     def _calculate_metrics(self, daily_returns):
-        """
-        计算回测指标
-
-        Args:
-            daily_returns: 日收益率Series
-
-        Returns:
-            dict: 指标字典
-        """
-        if daily_returns.empty or daily_returns.std() == 0:
-            return {
-                'annual_return': 0,
-                'annual_volatility': 0,
-                'sharpe_ratio': 0,
-                'max_drawdown': 0,
-                'win_rate': 0,
-                'profit_loss_ratio': 0
-            }
-
-        # 年化收益率
-        annual_return = (1 + daily_returns.mean()) ** 252 - 1
-
-        # 年化波动率
-        annual_vol = daily_returns.std() * np.sqrt(252)
-
-        # 夏普比率（无风险利率3%）
-        sharpe_ratio = (annual_return - 0.03) / annual_vol if annual_vol > 0 else 0
-
-        # 最大回撤
-        cumulative = (1 + daily_returns).cumprod()
-        running_max = cumulative.cummax()
-        drawdown = (cumulative - running_max) / running_max
-        max_drawdown = drawdown.min()
-
-        # 胜率
-        wins = (daily_returns > 0).sum()
-        total = len(daily_returns)
-        win_rate = wins / total if total > 0 else 0
-
-        # 盈亏比
-        avg_win = daily_returns[daily_returns > 0].mean() if (daily_returns > 0).any() else 0
-        avg_loss = abs(daily_returns[daily_returns < 0].mean()) if (daily_returns < 0).any() else 1
-        profit_loss_ratio = avg_win / avg_loss if avg_loss != 0 else 0
-
-        return {
-            'annual_return': annual_return,
-            'annual_volatility': annual_vol,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown,
-            'win_rate': win_rate,
-            'profit_loss_ratio': profit_loss_ratio
-        }
+        returns = np.asarray(daily_returns, dtype=float)
+        if not np.isfinite(returns).all() or (returns <= -1).any():
+            raise ValueError('Invalid realized return history')
+        if not len(returns):
+            return dict(annual_return=0., annual_volatility=0., sharpe_ratio=0., max_drawdown=0.,
+                        win_rate=0., profit_loss_ratio=0.)
+        cumulative = np.r_[1., np.cumprod(1+returns)]
+        annual = cumulative[-1]**(252/len(returns))-1
+        vol = np.std(returns, ddof=1)*np.sqrt(252) if len(returns) > 1 else 0.
+        wins, losses = returns[returns > 0], -returns[returns < 0]
+        return dict(annual_return=float(annual), annual_volatility=float(vol),
+                    sharpe_ratio=float((annual-.03)/vol) if vol else 0.,
+                    max_drawdown=float((cumulative/np.maximum.accumulate(cumulative)-1).min()),
+                    win_rate=float((returns > 0).mean()),
+                    profit_loss_ratio=float(wins.mean()/losses.mean()) if len(wins) and len(losses) else 0.)
