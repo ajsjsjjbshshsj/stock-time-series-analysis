@@ -8,7 +8,7 @@ import pandas as pd
 
 from app.market_data.forward_snapshot import Requests, TZ, read, write, digest
 from app.market_data.csi300_constituent_snapshot import migrate_request_state
-from app.market_data.repair_contract import identity, iso
+from app.market_data.repair_contract import identity, iso, request as make_request
 
 
 def validate_request(r):
@@ -18,6 +18,8 @@ def validate_request(r):
         or any(not re.fullmatch(r'\d{6}\.(SH|SZ)',c) for c in r['expected_codes'])
         or iso(r['start'])>iso(r['end']) or r['params']['fields']!=','.join(r['fields'])):
         raise ValueError('Invalid repair request contract')
+    if r!=make_request(r['method'],r['expected_codes'],r['start'],r['end']):
+        raise ValueError('Unexpected request fields/params/capacity')
 
 
 def validate_rows(rows,r):
@@ -141,7 +143,9 @@ def collect_requests(client: object,requests: list[dict],output: Path,request_st
     verify_acquisition(output,requests,require_complete=False)
     manifest=dict(schema_version=1,binding_sha256=digest(output/'binding.json'),
         files={p.name:digest(p) for p in sorted((output/'shards').iterdir()) if p.is_file()})
-    write(output/'manifest.json',manifest,exclusive=True)
+    if (output/'manifest.json').exists():
+        if read(output/'manifest.json')!=manifest: raise ValueError('Interrupted manifest differs from verified shards')
+    else: write(output/'manifest.json',manifest,exclusive=True)
     # Verify all proofs before publishing completion (no provider/config imports).
     verify_acquisition(output,requests,require_complete=False)
     write(output/'complete.json',dict(manifest_sha256=digest(output/'manifest.json')),exclusive=True)

@@ -143,12 +143,13 @@ def plan_requests(baseline: Path,additional_daily: list[dict] | None=None) -> li
     basic={(r['ts_code'],r['trade_date']) for r in t['stock_daily_basic']}
     extra={(r['ts_code'],r['trade_date']) for r in (additional_daily or [])}
     if any(c not in codes or d not in dates or d<listed[c] for c,d in extra): raise ValueError('Additional daily outside baseline')
+    quote_keys=daily|extra  # once, not a190000-key copy per stock-day
     result=[]
     for day in dates:
         missing=[c for c in codes if listed[c]<=day and (c,day) not in daily]
         if missing:
             result.extend([request('daily',missing,day,day),request('suspend_d',missing,day,day)])
-        missing_basic=[c for c in codes if (c,day) in daily|extra and (c,day) not in basic]
+        missing_basic=[c for c in codes if (c,day) in quote_keys and (c,day) not in basic]
         if missing_basic: result.append(request('daily_basic',missing_basic,day,day))
     for code in codes:
         start=max(iso(t['start']),iso(listed[code])); end=iso(t['end'])

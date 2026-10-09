@@ -102,6 +102,50 @@ class MarketRepairRepository:
         write(tmp,payload,exclusive=True)
         os.replace(tmp,path)
 
+    @staticmethod
+    def _validate_ledger(state,candidates,snapshot_sha):
+        binding=state['binding']; size=binding['batch_size']
+        if binding['snapshot_sha256']!=snapshot_sha or type(size) is not int or not 1<=size<=500:
+            raise ValueError('Import ledger binding invalid')
+        allowed={}
+        for table,rows in candidates.items():
+            for offset in range(0,len(rows),size):
+                batch=rows[offset:offset+size]
+                allowed[identity(dict(table=table,rows=batch))]=(table,[[r['ts_code'],r['trade_date']] for r in batch])
+        for bid,receipt in state['batches'].items():
+            if (bid not in allowed or (receipt['table'],receipt['keys'])!=allowed[bid]
+                or type(receipt['inserted']) is not int or type(receipt['already_equal']) is not int
+                or min(receipt['inserted'],receipt['already_equal'])<0
+                or receipt['inserted']+receipt['already_equal']!=len(receipt['keys']) or receipt['conflicts']!=[]):
+                raise ValueError('Import receipt does not match verified candidate batch')
+
+    def _import_batches(self,candidates,tables,codes,state,path,batch_size):
+        for table,rows in candidates.items():
+            for offset in range(0,len(rows),batch_size):
+                batch=rows[offset:offset+batch_size]; bid=identity(dict(table=table,rows=batch))
+                if bid in state['batches']: continue
+                try:
+                    # Recheck before EVERY write batch, including after another
+                    # transaction changed an original row since our last commit.
+                    current=self.capture_baseline(codes,tables['start'],tables['end'])
+                    self._assert_original(tables,current)
+                except Exception:
+                    state['failed']=dict(table=table,batch_id=bid,status='ORIGINAL_CHANGED')
+                    self._save_ledger(path,state)
+                    return dict(db_import_complete=False,failed=state['failed'],model_ready=False)
+                try: result=self._insert_batch(table,batch,tables['schema'][table]['types'])
+                except Exception:
+                    state['failed']=dict(table=table,batch_id=bid,status='TRANSACTION_FAILED')
+                    self._save_ledger(path,state)
+                    return dict(db_import_complete=False,failed=state['failed'],model_ready=False)
+                if result['conflicts']:
+                    state['failed']=dict(table=table,batch_id=bid,status='SOURCE_CONFLICT',conflicts=result['conflicts'])
+                    self._save_ledger(path,state)
+                    return dict(db_import_complete=False,failed=state['failed'],model_ready=False)
+                state['batches'][bid]=dict(table=table,keys=[[r['ts_code'],r['trade_date']] for r in batch],**result)
+                state.pop('failed',None); self._save_ledger(path,state)
+        return None
+
     def import_snapshot(self,snapshot: Path,ledger: Path,batch_size: int=500) -> dict:
         snapshot,ledger=Path(snapshot).resolve(),Path(ledger).resolve()
         candidates=import_candidates(snapshot)  # invalid package must never connect
@@ -118,21 +162,9 @@ class MarketRepairRepository:
             binding=dict(snapshot_sha256=digest(snapshot/'manifest.json'),batch_size=batch_size)
             state=read(path) if path.exists() else dict(binding=binding,batches={})
             if state['binding']!=binding: raise ValueError('Import ledger identity differs')
-            for table,rows in candidates.items():
-                for offset in range(0,len(rows),batch_size):
-                    batch=rows[offset:offset+batch_size]; bid=identity(dict(table=table,rows=batch))
-                    if bid in state['batches']: continue  # final read-back still verifies every key
-                    try: result=self._insert_batch(table,batch,tables['schema'][table]['types'])
-                    except Exception:
-                        state['failed']=dict(table=table,batch_id=bid,status='TRANSACTION_FAILED')
-                        self._save_ledger(path,state)
-                        return dict(db_import_complete=False,failed=state['failed'],model_ready=False)
-                    if result['conflicts']:
-                        state['failed']=dict(table=table,batch_id=bid,status='SOURCE_CONFLICT',conflicts=result['conflicts'])
-                        self._save_ledger(path,state)
-                        return dict(db_import_complete=False,failed=state['failed'],model_ready=False)
-                    state['batches'][bid]=dict(table=table,keys=[[r['ts_code'],r['trade_date']] for r in batch],**result)
-                    state.pop('failed',None); self._save_ledger(path,state)
+            self._validate_ledger(state,candidates,binding['snapshot_sha256'])
+            stopped=self._import_batches(candidates,tables,codes,state,path,batch_size)
+            if stopped is not None: return stopped
             if not path.exists(): self._save_ledger(path,state)
             verified=self.verify_import(snapshot,ledger)
             state['verification']=verified; self._save_ledger(path,state)
@@ -143,10 +175,10 @@ class MarketRepairRepository:
     def verify_import(self,snapshot: Path,ledger: Path) -> dict:
         snapshot,ledger=Path(snapshot),Path(ledger)
         candidates=import_candidates(snapshot); baseline=load_baseline(snapshot/'evidence/baseline')
+        state=read(ledger/'ledger.json')
+        self._validate_ledger(state,candidates,digest(snapshot/'manifest.json'))
         tables=baseline['tables']; current=self.capture_baseline(baseline['pool']['codes'],tables['start'],tables['end'])
         self._assert_original(tables,current)
-        state=read(ledger/'ledger.json')
-        if state['binding']['snapshot_sha256']!=digest(snapshot/'manifest.json'): raise ValueError('Import ledger SHA differs')
         missing=[]; conflicts=[]; counts={}
         for table,rows in candidates.items():
             actual={(r['ts_code'],str(r['trade_date'])):r for r in current[table]}

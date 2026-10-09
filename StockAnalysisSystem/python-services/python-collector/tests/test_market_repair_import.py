@@ -92,3 +92,30 @@ def test_original_table_rows_and_schema_are_preserved(repository,change):
     if change=='schema': current['schema']['stock_daily']['columns'].append('new')
     if change=='deleted': current['stock_daily']=[]
     with pytest.raises(ValueError): method(repo,'_assert_original')(original,current)
+
+
+def test_baseline_change_after_first_batch_stops_second_batch(repository,tmp_path):
+    repo,engine=repository
+    schema={'stock_daily':{},'stock_daily_basic':{'types':{'pe':'decimal(20,6)'}}}
+    def capture(*args):
+        with engine.connect() as conn: rows=[dict(r) for r in conn.execute(text('SELECT * FROM stock_daily_basic')).mappings().all()]
+        return dict(schema=schema,stock_daily=[],stock_daily_basic=rows,start='2023-10-09',end='2023-10-09')
+    original=capture(); real_insert=repo._insert_batch; calls=[]
+    def insert(*args):
+        calls.append(args[1]); result=real_insert(*args)
+        if len(calls)==1:
+            with engine.begin() as conn: conn.execute(text("UPDATE stock_daily_basic SET pe=99 WHERE ts_code='000001.SZ'"))
+        return result
+    repo.capture_baseline=capture; repo._insert_batch=insert
+    state=dict(batches={})
+    result=method(repo,'_import_batches')({'stock_daily_basic':[row(),row('000003.SZ')]},original,['000001.SZ'],state,tmp_path/'ledger.json',1)
+    assert result['db_import_complete'] is False and result['failed']['status']=='ORIGINAL_CHANGED'
+    assert len(calls)==1
+
+
+def test_bad_journal_accounting_is_rejected(repository):
+    repo,_=repository
+    from app.market_data.repair_contract import identity
+    rows=[row()]; bid=identity(dict(table='stock_daily_basic',rows=rows))
+    state=dict(binding={'snapshot_sha256':'abc','batch_size':1},batches={bid:dict(table='stock_daily_basic',keys=[['000002.SZ','2023-10-09']],inserted=500,already_equal=0,conflicts=[])})
+    with pytest.raises(ValueError): method(repo,'_validate_ledger')(state,{'stock_daily_basic':rows},'abc')

@@ -1,5 +1,6 @@
 """Offline source attribution and immutable repair packages; no SDK/SQL calls."""
 from collections import Counter
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import re
@@ -18,6 +19,8 @@ def key(row): return row['ts_code'],row['trade_date']
 def sql_value(value,type_name):
     """Match actual MySQL DECIMAL precision without changing raw source evidence."""
     if value is None: return None
+    if isinstance(value,datetime): return value.isoformat()
+    if isinstance(value,date): return value.isoformat()
     match=re.fullmatch(r'decimal\((\d+),(\d+)\)',type_name.lower())
     if match:
         precision,scale=map(int,match.groups()); number=Decimal(str(value))
@@ -78,6 +81,9 @@ def classify_sources(data: dict,sources: dict[str,list[dict]]) -> dict:
             full=bool(events) and all(e['suspend_type']=='S' and e['suspend_timing'] is None for e in events)
             ambiguous=any(e['suspend_type']=='S' for e in events) and any(e['suspend_type']=='R' for e in events)
             suspension_conflict=ambiguous or (full and k in daily)
+            if suspension_conflict:
+                conflicts.append(dict(table='stock_daily',ts_code=code,trade_date=day,
+                    reason='QUOTE_SUSPENSION_CONFLICT',quote=daily.get(k),suspensions=events))
             ds=('PRE_LISTING' if day<listed[code] else 'SOURCE_CONFLICT' if suspension_conflict else
                 origins['daily'][k] if k in daily else 'FULL_DAY_SUSPENSION' if full else 'UNRESOLVED_MISSING')
             bs=origins['daily_basic'].get(k,'PRE_LISTING' if day<listed[code] else 'MISSING_BASIC_ROW')
@@ -88,10 +94,14 @@ def classify_sources(data: dict,sources: dict[str,list[dict]]) -> dict:
                 row[field+'_status']=('NO_ROW' if k not in basic else 'SOURCE_CONFLICT' if bs=='SOURCE_CONFLICT' else
                     'VALUE' if value is not None else 'PROVIDER_NULL' if bs in ('PROVIDER_ROW','PROVIDER_VERIFIED_EXISTING') else 'DATABASE_NULL_UNVERIFIED')
             statuses.append(row)
+    # Cross-source conflicts are known only after quote/suspension attribution.
+    # Preserve raw evidence and merged source rows, but never import these keys.
+    blocked={(r['ts_code'],r['trade_date']) for r in statuses if r['daily_status']=='SOURCE_CONFLICT'}
+    for table in candidates: candidates[table]=[r for r in candidates[table] if key(r) not in blocked]
     counts=Counter(r['daily_status'] for r in statuses)
     issues={k:counts[k] for k in ('UNRESOLVED_MISSING','SOURCE_CONFLICT')}
     issues.update(MISSING_BASIC_ROW=sum(r['basic_status']=='MISSING_BASIC_ROW' and r['daily_status'] not in ('PRE_LISTING','FULL_DAY_SUSPENSION') for r in statuses),
-                  MISSING_FACTOR=sum(r['factor_status']=='MISSING_FACTOR' for r in statuses),EXISTING_KEY_CONFLICT=len(conflicts))
+                  MISSING_FACTOR=sum(r['factor_status']=='MISSING_FACTOR' for r in statuses),EXISTING_KEY_CONFLICT=sum('old' in r for r in conflicts))
     report=dict(pool_version=data['pool']['pool_version'],stock_count=300,start=t['start'],end=t['end'],
         acquisition_complete=True,source_issue_counts=issues,status_counts=dict(counts),model_ready=False,
         daily_rows=len(daily),basic_rows=len(basic),factor_rows=len(factor),
@@ -121,6 +131,12 @@ def _tree_hashes(path):
     return {p.relative_to(path).as_posix():digest(p) for p in sorted(path.rglob('*')) if p.is_file()}
 
 
+def output_columns(data,result):
+    return dict(daily=list(data['tables']['schema']['stock_daily']['columns']),
+        basic=list(data['tables']['schema']['stock_daily_basic']['columns']),factors=FACTOR,
+        suspensions=SUSPEND,status=list(result['status'][0]))
+
+
 def assemble_snapshot(baseline: Path,acquisition: Path,output: Path) -> dict:
     base,acq,output=map(Path,(baseline,acquisition,output))
     data=load_baseline(base); sources=_sources(base,acq); expected=classify_sources(data,sources)
@@ -135,8 +151,7 @@ def assemble_snapshot(baseline: Path,acquisition: Path,output: Path) -> dict:
         dest=evidence/'acquisition'/phase; dest.mkdir(parents=True)
         for name in ('binding.json','manifest.json','complete.json'): shutil.copyfile(acq/phase/name,dest/name)
         shutil.copytree(acq/phase/'shards',dest/'shards')
-    for name,columns in [('daily',list(t for t in data['tables']['schema']['stock_daily']['columns'])),
-        ('basic',list(t for t in data['tables']['schema']['stock_daily_basic']['columns'])),('factors',FACTOR),('suspensions',SUSPEND),('status',list(expected['status'][0]))]:
+    for name,columns in output_columns(data,expected).items():
         pd.DataFrame(expected[name],columns=columns).to_parquet(output/(name+'.parquet'),index=False)
     for name in ('conflicts','candidates','report'): write(output/(name+'.json'),expected[name],exclusive=True)
     files={p.relative_to(output).as_posix():digest(p) for p in sorted(output.rglob('*')) if p.is_file()}
@@ -156,12 +171,13 @@ def verify_snapshot(path: Path,require_complete: bool=True) -> dict:
         base,acq=path/'evidence/baseline',path/'evidence/acquisition'
         if manifest['binding']!=dict(baseline_sha256=digest(base/'manifest.json'),acquisition_sha256={phase:digest(acq/phase/'manifest.json') for phase in ('initial','basic')}):
             raise ValueError('Snapshot upstream binding invalid')
-        expected=classify_sources(load_baseline(base),_sources(base,acq))
+        data=load_baseline(base); expected=classify_sources(data,_sources(base,acq))
         for name in ('conflicts','candidates','report'):
             if read(path/(name+'.json'))!=expected[name]: raise ValueError('Snapshot attribution/report differs')
-        for name in ('daily','basic','factors','suspensions','status'):
+        for name,columns in output_columns(data,expected).items():
             actual=pd.read_parquet(path/(name+'.parquet'))
-            columns=list(actual.columns)
+            if list(actual.columns)!=columns or actual.columns.duplicated().any():
+                raise ValueError('Snapshot independent column contract differs')
             want=pd.DataFrame(expected[name],columns=columns)
             if not actual.equals(want): raise ValueError('Snapshot rows differ from original evidence')
         return dict(manifest=manifest,report=expected['report'])

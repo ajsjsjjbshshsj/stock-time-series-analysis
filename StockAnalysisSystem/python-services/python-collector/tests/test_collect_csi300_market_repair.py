@@ -44,6 +44,7 @@ def test_inventory_acquire_assemble_verify_resume_without_credentials(tmp_path,m
     root=Path(__file__).resolve().parents[4]; output=tmp_path/'repair'
     def run(stage): return m.run_stage(stage,root,fixture.POOL,output,'2023-10-09','2023-10-11',deps)
     run('inventory'); assert run('acquire')['acquisition_complete']
+    with pytest.raises(ValueError): m.run_stage('inventory',root,fixture.POOL,output,'2023-10-10','2023-10-11',deps)
     report=run('assemble'); assert report['model_ready'] is False
     deps['client_factory']=lambda:pytest.fail('Completed source initialized SDK/Token')
     deps['repo_factory']=lambda:pytest.fail('Offline verification initialized database')

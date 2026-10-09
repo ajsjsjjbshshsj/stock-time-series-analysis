@@ -104,3 +104,19 @@ def test_prelisting_members_not_requested_for_factors(tmp_path):
     late=inputs()[1]['stock_basic'][-1]['ts_code']
     request=next(r for r in plan if r['method']=='adj_factor' and r['expected_codes']==[late])
     assert request['start']=='2023-10-11'
+
+
+def test_large_existing_quote_panel_plans_in_bounded_time(tmp_path):
+    """A quote-key union per stock-day makes real300-stock inventory unusable."""
+    from datetime import date,timedelta
+    import time
+    m=module(); cal,tables=inputs(); start=date(2023,10,9)
+    days=[(start+timedelta(days=i)).isoformat() for i in range(200)]
+    cal.update(end=days[-1],rows=[dict(cal_date=d,is_open=1) for d in days]); tables['end']=days[-1]
+    for stock in tables['stock_basic']: stock['list_date']='2000-01-01'
+    template=tables['stock_daily'][0]
+    tables['stock_daily']=[dict(template,id=i*300+j+1,ts_code=stock['ts_code'],trade_date=day) for i,day in enumerate(days) for j,stock in enumerate(tables['stock_basic'])]
+    m.write_baseline(tmp_path/'large',POOL,cal,tables)
+    begun=time.monotonic(); requests=m.plan_requests(tmp_path/'large'); elapsed=time.monotonic()-begun
+    assert elapsed<10.,f'Planning60000 existing quotes took {elapsed:.1f}s; must not rebuild quote set per stock-day'
+    assert len([r for r in requests if r['method']=='daily_basic'])==200

@@ -85,11 +85,8 @@ def test_hash_tamper_refuses_cached_shard(tmp_path):
 
 
 def test_capacity_boundary_cannot_publish_complete(tmp_path):
-    req=request('daily',['000001.SZ'],'2026-09-30','2026-09-30'); req['capacity']=1
-    # A smaller capacity represents provider truncation in a deterministic test.
-    from app.market_data.repair_contract import identity
-    req['id']=identity({k:v for k,v in req.items() if k!='id'})
-    report=collect(tmp_path,Client(),requests=[req])
+    req=request('daily',['000001.SZ'],'2026-09-30','2026-09-30')
+    report=collect(tmp_path,Client([daily()]*6000),requests=[req])
     assert not report['complete']
 
 
@@ -107,3 +104,23 @@ def test_native_basic_null_and_external_stock_preserved(tmp_path):
     assert collect(tmp_path,Basic(),requests=[req])['complete']
     data=module().verify_acquisition(tmp_path/'acq',[req])['shards'][0]['rows']
     assert len(data)==2 and data[0]['pe'] is None
+
+
+def test_manifest_present_without_complete_resumes_without_sdk(tmp_path,monkeypatch):
+    m=module(); original=m.write
+    def interrupt(path,payload,exclusive=False):
+        if path.name=='complete.json': raise OSError('simulated process interruption')
+        return original(path,payload,exclusive)
+    monkeypatch.setattr(m,'write',interrupt)
+    with pytest.raises(OSError): collect(tmp_path,Client())
+    monkeypatch.setattr(m,'write',original)
+    assert (tmp_path/'acq/manifest.json').exists()
+    assert collect(tmp_path,None)['complete']
+
+
+def test_injected_credential_params_refused_before_any_file(tmp_path):
+    from app.market_data.repair_contract import identity
+    r=request('daily',['000001.SZ'],'2026-09-30','2026-09-30')
+    r['params']['token']='SECRET'; r['id']=identity({k:v for k,v in r.items() if k!='id'})
+    with pytest.raises(ValueError): collect(tmp_path,Client(),requests=[r])
+    assert not (tmp_path/'acq').exists()

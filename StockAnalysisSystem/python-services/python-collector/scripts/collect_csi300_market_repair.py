@@ -33,7 +33,7 @@ def _calendar():
     seal=read(path/'seal.json')
     if read(path/'complete.json')!=dict(schema_version=1,seal_sha256=digest(path/'seal.json')):
         raise ValueError('Calendar origin completion invalid')
-    actual={p.relative_to(path).as_posix():digest(p) for p in path.rglob('*') if p.is_file() and p.name not in ()}
+    actual={p.relative_to(path).as_posix():digest(p) for p in path.rglob('*') if p.is_file()}
     actual.pop('seal.json'); actual.pop('complete.json')
     if seal['files']!=actual: raise ValueError('Calendar origin SHA invalid')
     return dict(read(path/'context.json')['calendar'],origin_context_sha256=digest(path/'context.json'),
@@ -75,7 +75,11 @@ def run_stage(stage: str,root: Path,pool: Path,output: Path,start: str,end: str,
         raise ValueError('Canonical root/frozen pool/repair output required')
     manifest=verify_pool(pool); base=output/'baseline'; acq=output/'acquisition'; snapshot=output/'snapshot'
     if stage=='inventory':
-        if base.exists(): return dict(stage=stage,baseline=load_baseline(base)['manifest'],model_ready=False)
+        if base.exists():
+            previous=load_baseline(base)
+            if previous['manifest']['binding']['pool_sha256']!=digest(pool/'manifest.json') or (previous['tables']['start'],previous['tables']['end'])!=(start,end):
+                raise ValueError('Existing inventory pool/window differs')
+            return dict(stage=stage,baseline=previous['manifest'],model_ready=False)
         calendar=deps.get('calendar_factory',_calendar)()
         tables=deps.get('repo_factory',_repository)().capture_baseline(manifest['codes'],start,end)
         return dict(stage=stage,baseline=write_baseline(base,pool,calendar,tables),model_ready=False)
