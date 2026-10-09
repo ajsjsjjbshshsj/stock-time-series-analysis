@@ -14,6 +14,9 @@ class TushareClient:
     def adj_factor(self, **kwargs):
         return self.pro.adj_factor(**kwargs)
 
+    def suspend_d(self, **kwargs):
+        return self.pro.suspend_d(**kwargs)
+
     def stock_basic(self, **kwargs):
         return self.pro.stock_basic(**kwargs)
 
