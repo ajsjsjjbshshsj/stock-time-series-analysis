@@ -105,7 +105,8 @@ def test_competing_process_cannot_acquire_same_date(tmp_path):
     s=store(tmp_path)
     script="import json,sys; from analysis.transformer_forward_store import ForwardSignalStore; s=ForwardSignalStore(sys.argv[1],json.loads(sys.argv[2]));\ntry:\n with s.lock('2026-10-08'): sys.exit(0)\nexcept RuntimeError: sys.exit(2)"
     with s.lock('2026-10-08'):
-        result=subprocess.run([sys.executable,'-c',script,str(s.root),json.dumps(binding())],capture_output=True,text=True)
+        result=subprocess.run([sys.executable,'-c',script,str(s.root),json.dumps(binding())],capture_output=True,text=True,
+                              cwd=Path(__file__).resolve().parents[1])
         assert result.returncode==2,result.stderr
     with s.lock('2026-10-08'): pass
 
