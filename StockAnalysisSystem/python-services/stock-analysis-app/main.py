@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+import json
 import numpy as np
 import pandas as pd
 from config.logging_config import get_logger
@@ -168,6 +169,8 @@ def run_prediction(df, model_type='xgboost'):
     Returns:
         dict: 预测结果
     """
+    if model_type == 'lstm':
+        raise ValueError('LSTM training is not implemented; no substitute model will be trained')
     logger.info("="*50)
     logger.info(f"开始预测流程 ({model_type})")
     logger.info("="*50)
@@ -236,54 +239,55 @@ def run_prediction(df, model_type='xgboost'):
     return result
 
 
-def run_backtest(df, stock_code="unknown"):
-    """
-    执行回测流程
+def load_strategy_calendar(calendar):
+    """Explicit local trusted calendar; no network or weekday fallback."""
+    from analysis.strategy_dates import validate_session_calendar
+    if calendar is None:
+        raise ValueError('A trusted --calendar is required for strategy validation')
+    if not isinstance(calendar, dict):
+        with open(calendar, encoding='utf-8') as stream:
+            calendar = json.load(stream)
+    validate_session_calendar(calendar)
+    return calendar
 
-    Args:
-        df: 处理后数据（包含技术指标）
-        stock_code: 股票代码
-    """
-    logger.info("="*50)
-    logger.info("开始回测流程")
-    logger.info("="*50)
 
+def select_strategy_snapshot(frame, calendar, request_time=None):
+    from analysis.strategy_dates import select_data_cutoff, SHANGHAI
+    from analysis.ranking_accounting import validate_ranking_history
+    calendar = load_strategy_calendar(calendar)
+    if frame.empty or 'ts_code' not in frame:
+        raise ValueError('Dated stock pool required')
+    selected = select_data_cutoff(calendar, request_time or datetime.now(SHANGHAI), frame,
+                                  sorted(frame.ts_code.unique()))
+    result = frame[pd.to_datetime(frame.trade_date) <= pd.Timestamp(selected['data_cutoff'])].copy()
+    result['trade_date'] = pd.to_datetime(result.trade_date)
+    validate_ranking_history(result, calendar)
+    logger.info('目标交易日=%s 实际截止=%s 回退原因=%s', selected['target_trade_date'],
+                selected['data_cutoff'], selected['fallback_reason'])
+    return result, selected
+
+
+def run_backtest(df, stock_code="unknown", *, calendar=None, request_time=None):
+    """Validated single-stock technical and dated XGBoost research accounts."""
+    raw, selected = select_strategy_snapshot(df, calendar, request_time)
+    if raw.ts_code.nunique() != 1:
+        raise ValueError('Single-stock strategy needs one stock')
+    signals = raw.copy()
+    signals['signal'] = 0
+    for field, value in [('golden_cross', 1), ('death_cross', -1),
+                         ('rsi_overbought', -1), ('rsi_oversold', 1)]:
+        if field in signals:
+            signals.loc[signals[field] == 1, 'signal'] = value
+    if not any(c in signals for c in ('golden_cross', 'death_cross', 'rsi_overbought', 'rsi_oversold')):
+        raise ValueError('Technical strategy signal features missing')
     backtester = Backtester()
-
-    # 1. 技术指标信号回测
-    logger.info("--- 技术指标信号回测 ---")
-    df_signal = df.copy()
-    df_signal['signal'] = 0
-    if 'golden_cross' in df_signal.columns:
-        df_signal.loc[df_signal['golden_cross'] == 1, 'signal'] = 1
-    if 'death_cross' in df_signal.columns:
-        df_signal.loc[df_signal['death_cross'] == 1, 'signal'] = -1
-    if 'rsi_overbought' in df_signal.columns:
-        df_signal.loc[df_signal['rsi_overbought'] == 1, 'signal'] = -1
-    if 'rsi_oversold' in df_signal.columns:
-        df_signal.loc[df_signal['rsi_oversold'] == 1, 'signal'] = 1
-
-    tech_result = backtester.run_signal_backtest(df_signal, 'signal')
-    if tech_result:
-        m = tech_result['metrics']
-        logger.info(f"技术指标回测: 总收益={m['total_return']:.2%}, "
-                     f"夏普={m['sharpe_ratio']:.3f}, 胜率={m['win_rate']:.2%}, "
-                     f"最大回撤={m['max_drawdown']:.2%}")
-
-    # 2. 模型预测信号回测
-    logger.info("--- 模型预测信号回测 ---")
-    predictor = StockPredictor(model_type='xgboost')
-    X, y, features = predictor.prepare_features(df)
-    if X is not None:
-        pred_result = predictor.train_xgboost(X, y, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
-        if pred_result:
-            pred_backtest = backtester.run_prediction_backtest(df, predictor)
-            if pred_backtest:
-                m = pred_backtest['metrics']
-                logger.info(f"模型预测回测: 总收益={m['total_return']:.2%}, "
-                             f"夏普={m['sharpe_ratio']:.3f}, 胜率={m['win_rate']:.2%}")
-
-    logger.info("回测流程完成")
+    tech = backtester.run_signal_backtest(signals, 'signal')
+    predictor = StockPredictor('xgboost')
+    names = [c for c in ('ma5', 'ma10', 'rsi', 'macd_dif', 'vol') if c in raw]
+    training = predictor.train_dated(raw, feature_names=names)
+    prediction = backtester.run_prediction_backtest(raw, predictor)
+    return dict(technical=tech, prediction=prediction, model_metadata=training['metadata'],
+                data_selection=selected)
 
 
 def save_data_to_db(stock_code, df_raw, df_processed, prediction_result=None, model_type=None):
@@ -419,140 +423,51 @@ def init_database():
     logger.info("数据库初始化完成")
 
 
-def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=False, skip_update=False, delay=0.5, use_gpu=False, n_workers=None, sectors=None, index_codes=None):
-    """
-    执行全市场排名选股流程。
-    """
-    from data_processor.panel_builder import (
-        incremental_update,
-        prepare_panel_for_training,
-        load_all_stock_data_from_db,
-    )
-
-    logger.info("=" * 60)
-    logger.info("全市场排名选股系统")
-    logger.info("=" * 60)
-
-    # 1. 加载数据
+def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=False,
+                         skip_update=False, delay=.5, use_gpu=False, n_workers=None,
+                         sectors=None, index_codes=None, *, calendar=None, request_time=None):
+    from data_processor.panel_builder import incremental_update, prepare_panel_for_training, load_all_stock_data_from_db
+    calendar = load_strategy_calendar(calendar)  # Reject missing calendar before DB.
     if skip_update:
-        logger.info("步骤1: 从数据库加载已有数据（跳过采集）...")
-        panel_df = load_all_stock_data_from_db(
-            sectors=sectors, index_codes=index_codes, use_tushare=use_tushare
-        )
+        raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes, use_tushare=use_tushare)
     else:
-        logger.info("步骤1: 增量数据采集...")
-        panel_df = incremental_update(
-            use_tushare=use_tushare, delay=delay,
-            sectors=sectors, index_codes=index_codes, start_date=None
-        )
-    if panel_df.empty:
-        logger.error("无有效数据，请先初始化数据库并采集数据")
-        return None
-
-    # 2. 计算特征 + 添加 label
-    logger.info("步骤2: 计算技术指标...")
-    featured_df = prepare_panel_for_training(
-        panel_df, forward_days=forward_days, use_tushare=use_tushare,
-        n_workers=n_workers, use_parallel=True)
-    if featured_df.empty:
-        logger.error("特征计算失败")
-        return None
-
-    # 3. 训练模型
-    logger.info("步骤3: 训练排名模型...")
-    result = train_ranking_model(
-        featured_df,
-        use_probe=use_probe,
-        save_name="ranking_model_latest",
-        use_gpu=use_gpu,
-    )
-    if result is None:
-        logger.error("模型训练失败")
-        return None
-
-    # 4. 输出 Top N
-    logger.info("步骤4: 生成排名预测...")
-    top_stocks = predict_top_n(featured_df, top_n=top_n)
-    return top_stocks
+        raw = incremental_update(use_tushare=use_tushare, delay=delay,
+                                 sectors=sectors, index_codes=index_codes, start_date=None)
+    raw, selection = select_strategy_snapshot(raw, calendar, request_time)
+    featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
+                                          n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
+    result = train_ranking_model(featured, use_probe=use_probe, forward_days=forward_days, use_gpu=use_gpu)
+    stocks = predict_top_n(featured, model_path=result['model_path'], top_n=top_n)
+    stocks.attrs['data_selection'] = selection
+    stocks.attrs['model_metadata'] = result.get('metadata', {})
+    return stocks
 
 
 def run_ranking_backtest_pipeline(top_n=10, use_probe=True, forward_days=5,
                                   train_window=365, rebalance_days=5, use_tushare=False,
-                                  delay=0.5, skip_update=False, use_gpu=False, n_workers=None,
-                                  sectors=None, index_codes=None):
-    """
-    执行排名策略回测。
-
-    先训练模型，然后进行滚动训练回测。
-    """
-    from data_processor.panel_builder import (
-        incremental_update,
-        prepare_panel_for_training,
-        load_all_stock_data_from_db,
-    )
-
-    logger.info("=" * 60)
-    logger.info("排名策略回测")
-    logger.info("=" * 60)
-
-    # 1. 加载数据
+                                  delay=.5, skip_update=False, use_gpu=False, n_workers=None,
+                                  sectors=None, index_codes=None, *, calendar=None, request_time=None):
+    from data_processor.panel_builder import incremental_update, prepare_panel_for_training, load_all_stock_data_from_db
+    from analysis.ranking_predictor import get_feature_columns
+    calendar = load_strategy_calendar(calendar)
     if skip_update:
-        logger.info("步骤1: 从数据库加载已有数据（跳过采集）...")
-        panel_df = load_all_stock_data_from_db(
-            sectors=sectors, index_codes=index_codes, use_tushare=use_tushare
-        )
+        raw = load_all_stock_data_from_db(sectors=sectors, index_codes=index_codes, use_tushare=use_tushare)
     else:
-        logger.info("步骤1: 增量数据采集...")
-        panel_df = incremental_update(
-            use_tushare=use_tushare, delay=delay,
-            sectors=sectors, index_codes=index_codes, start_date=None
-        )
-    if panel_df.empty:
-        logger.error("无有效数据")
-        return None
-
-    # 2. 计算特征
-    logger.info("步骤2: 计算技术指标...")
-    featured_df = prepare_panel_for_training(
-        panel_df, forward_days=forward_days, use_tushare=use_tushare,
-        n_workers=n_workers, use_parallel=True)
-    if featured_df.empty:
-        logger.error("特征计算失败")
-        return None
-
-    # 3. 训练模型
-    logger.info("步骤3: 训练排名模型...")
-    train_result = train_ranking_model(
-        featured_df,
-        use_probe=use_probe,
-        save_name="ranking_model_backtest",
-        use_gpu=use_gpu,
-    )
-    if train_result is None:
-        logger.error("模型训练失败")
-        return None
-
-    # 4. 滚动训练回测
-    logger.info("步骤4: 滚动训练回测...")
-    feature_names = train_result['feature_names']
-    backtest_result = run_walk_forward_backtest(
-        featured_df,
-        feature_names,
-        top_n=top_n,
-        train_window=train_window,
-        rebalance_days=rebalance_days,
-    )
-
-    # 5. 可视化回测结果
-    if backtest_result and 'equity_curve' in backtest_result:
-        plotter = StockPlotter()
-        equity_curve = backtest_result['equity_curve']
-        plotter.plot_candlestick(
-            equity_curve.rename(columns={'date': 'trade_date', 'equity': 'close'}),
-            title='排名策略权益曲线'
-        )
-
-    return backtest_result
+        raw = incremental_update(use_tushare=use_tushare, delay=delay,
+                                 sectors=sectors, index_codes=index_codes, start_date=None)
+    raw, selection = select_strategy_snapshot(raw, calendar, request_time)
+    featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
+                                          n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
+    # No full-history fitted feature selector before evaluating earlier dates.
+    # Warm-up rows are removed only from training inside dated_samples.
+    features = get_feature_columns(featured)
+    result = run_walk_forward_backtest(featured, features, top_n=top_n,
+                                       train_window=train_window, rebalance_days=rebalance_days,
+                                       initial_capital=1000000., calendar=calendar, prices=raw,
+                                       forward_days=forward_days)
+    result['data_selection'] = selection
+    result['feature_selection'] = 'fixed numeric feature schema, no full-history probe'
+    return result
 
 
 def run_probe_selection_only(top_n=10, forward_days=5, use_tushare=False, skip_update=False, delay=0.5, sectors=None, index_codes=None):
@@ -793,6 +708,10 @@ def cmd_feature(args, sector_list, index_list):
 
 def cmd_train(args, sector_list, index_list):
     """train 子命令：模型训练"""
+    if args.pipeline == 'traditional' and args.model == 'lstm':
+        raise ValueError('LSTM training is not implemented')
+    if args.pipeline == 'traditional' and args.backtest:
+        load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
         # 原 demo 模式的训练部分：单股采集 → 处理 → 分析 → 训练
@@ -810,11 +729,10 @@ def cmd_train(args, sector_list, index_list):
         df_raw = df.copy()
         df_processed = run_data_processing(df, args.stock)
         run_analysis(df_processed, args.stock)
+        if args.backtest:
+            return run_backtest(df_processed, args.stock, calendar=args.calendar)
         prediction_result = run_prediction(df_processed, args.model)
         save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
-
-        if args.backtest:
-            run_backtest(df_processed, args.stock)
 
         logger.info("传统管线训练完成")
 
@@ -835,6 +753,7 @@ def cmd_train(args, sector_list, index_list):
                 n_workers=args.n_workers,
                 sectors=sector_list,
                 index_codes=index_list,
+                calendar=args.calendar,
             )
         else:
             logger.info("运行排名管线训练...")
@@ -849,6 +768,7 @@ def cmd_train(args, sector_list, index_list):
                 n_workers=args.n_workers,
                 sectors=sector_list,
                 index_codes=index_list,
+                calendar=args.calendar,
             )
         logger.info("排名管线训练完成")
 
@@ -901,6 +821,10 @@ def cmd_train(args, sector_list, index_list):
 
 def cmd_predict(args, sector_list, index_list):
     """predict 子命令：模型预测"""
+    if args.pipeline == 'traditional' and args.model == 'lstm':
+        raise ValueError('LSTM training is not implemented')
+    if args.pipeline == 'traditional' and args.backtest:
+        load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
         init_database()
@@ -919,11 +843,10 @@ def cmd_predict(args, sector_list, index_list):
             df_raw = df.copy()
             df_processed = run_data_processing(df, args.stock)
             run_analysis(df_processed, args.stock)
+            if args.backtest:
+                return run_backtest(df_processed, args.stock, calendar=args.calendar)
             prediction_result = run_prediction(df_processed, args.model)
             save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
-
-            if args.backtest:
-                run_backtest(df_processed, args.stock)
 
             logger.info("单股预测完成")
         else:
@@ -1052,6 +975,7 @@ def cmd_predict(args, sector_list, index_list):
                 n_workers=args.n_workers,
                 sectors=sector_list,
                 index_codes=index_list,
+                calendar=args.calendar,
             )
         else:
             logger.info("运行排名管线预测...")
@@ -1066,6 +990,7 @@ def cmd_predict(args, sector_list, index_list):
                 n_workers=args.n_workers,
                 sectors=sector_list,
                 index_codes=index_list,
+                calendar=args.calendar,
             )
 
     elif args.pipeline == 'transformer':
@@ -1149,6 +1074,8 @@ def main():
                         help='行业板块筛选，逗号分隔，如 "银行,医药"')
     common.add_argument('--index', type=str, default=None,
                         help='指数成分股筛选，逗号分隔指数代码，如 "000300"')
+    common.add_argument('--calendar', type=str, default=None,
+                        help='策略验证必需：可信交易日历 JSON 本地路径（不猜工作日）')
 
     # ---- 主解析器 ----
     parser = argparse.ArgumentParser(
