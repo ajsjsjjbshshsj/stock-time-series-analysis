@@ -5,6 +5,12 @@ class TushareClient:
     def __init__(self, pro):
         self.pro = pro
 
+    @classmethod
+    def from_token(cls, token, timeout=20, session=None):
+        """Opt-in checked transport; legacy injected SDK clients remain supported."""
+        from app.market_data.checked_tushare_api import CheckedTushareApi
+        return cls(CheckedTushareApi(token,timeout=timeout,session=session))
+
     def daily(self, **kwargs):
         return self.pro.daily(**kwargs)
 

@@ -26,5 +26,8 @@
 
 ## 阅读代码
 
+B1真实HTTP客户端使用 `app/market_data/checked_tushare_api.py`：HTTP408/5xx/连接超时不会被伪装为空表，而是交给同一共享Requests最多尝试3次；429按分钟/小时保存61/3601秒冷却，权限/参数/坏包一次停止。不跟随重定向，不保存Token或供应商原始错误文字。账本可记录安全整数`http_status`，后续成功会清除过期错误状态。
+HTTP成功且业务code0、字段完整的零行响应仍是合法空响应；成功包若没有声明字段，B1仍拒绝。这个修复不接受坏价格、缺字段或所有无字段空表，不更改原始单位/股票池/日期范围。已有有效分片按原SHA复用，无须重新抓取。其它采集CLI和旧SDK注入方式本轮保持兼容、不全局替换。
+
 先读 `app/market_data/repair_contract.py`（基线/请求）→ `repair_acquisition.py`（共享限频/分片）→ `repair_snapshot.py`（归因/离线重验）→ `app/repositories/market_repair_repository.py`（只插/事务/存量校验）→ `scripts/collect_csi300_market_repair.py`（阶段入口）。对应新增测试覆盖空值、停牌、限额、SHA篡改、竞争插入及回滚。
 代码/测试/此业务指南可以提交；Token/.env、原始分片、Parquet、账本、模型和本地规划不能公开提交。

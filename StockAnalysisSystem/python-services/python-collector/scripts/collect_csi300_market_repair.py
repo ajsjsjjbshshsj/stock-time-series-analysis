@@ -41,10 +41,9 @@ def _calendar():
 
 
 def _client():
-    import tushare as ts
     from app.config import TUSHARE_TOKEN
     from app.market_data.tushare_client import TushareClient
-    return TushareClient(ts.pro_api(TUSHARE_TOKEN,timeout=20))
+    return TushareClient.from_token(TUSHARE_TOKEN,timeout=20)
 
 
 class LazyClient:

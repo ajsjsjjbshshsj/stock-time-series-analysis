@@ -11,6 +11,7 @@ import uuid
 
 import numpy as np
 import pandas as pd
+from app.market_data.checked_tushare_api import TushareRequestError
 
 DAILY = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount']
 FACTOR = ['ts_code', 'trade_date', 'adj_factor']
@@ -116,15 +117,21 @@ class Requests:
             try:
                 result = method(**params)
             except Exception as error:
-                message = str(error).lower()
-                permission = any(x in message for x in ('token', '权限', '积分', 'unauthorized', 'forbidden', '参数'))
-                hour = any(x in message for x in ('小时', 'hour'))
-                minute = any(x in message for x in ('分钟', '频率', 'rate limit', '429', 'too many requests'))
-                network = any(x in message for x in ('timeout', 'timed out', 'connection', '502', '503', '504', 'temporary'))
-                kind = 'PERMISSION' if permission else 'HOURLY_QUOTA' if hour else 'MINUTE_QUOTA' if minute else 'NETWORK' if network else 'PROVIDER'
+                self.state.pop('http_status',None)
+                if isinstance(error,TushareRequestError):
+                    kind=error.kind
+                    if error.http_status is not None: self.state['http_status']=error.http_status
+                else:
+                    # Preserve the established contract for legacy injected SDKs.
+                    message = str(error).lower()
+                    permission = any(x in message for x in ('token', '权限', '积分', 'unauthorized', 'forbidden', '参数'))
+                    hour = any(x in message for x in ('小时', 'hour'))
+                    minute = any(x in message for x in ('分钟', '频率', 'rate limit', '429', 'too many requests'))
+                    network = any(x in message for x in ('timeout', 'timed out', 'connection', '502', '503', '504', 'temporary'))
+                    kind = 'PERMISSION' if permission else 'HOURLY_QUOTA' if hour else 'MINUTE_QUOTA' if minute else 'NETWORK' if network else 'PROVIDER'
                 self.state.update(failure=kind, request=params, attempts=attempt+1)
                 if kind in ('HOURLY_QUOTA', 'MINUTE_QUOTA'):
-                    self.state['retry_not_before'] = self.clock()+(3601 if hour else 61)
+                    self.state['retry_not_before'] = self.clock()+(3601 if kind=='HOURLY_QUOTA' else 61)
                 self._remember()
                 if kind != 'NETWORK' or attempt == 2:
                     raise RuntimeError(f'ACQUISITION_{kind}: evidence retained') from None
@@ -132,6 +139,7 @@ class Requests:
             else:
                 self.state.pop('failure', None)
                 self.state.pop('retry_not_before', None)
+                self.state.pop('http_status',None)
                 self._remember()
                 return result
 
