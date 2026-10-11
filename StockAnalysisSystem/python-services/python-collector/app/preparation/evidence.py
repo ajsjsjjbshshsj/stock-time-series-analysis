@@ -53,7 +53,7 @@ class EvidenceStore:
             raise ValueError('EVIDENCE_PATH_OUTSIDE_ROOT')
         return result
 
-    def register_verified(self,bundle):
+    def register_verified(self,bundle,*,owner_guard=None):
         bundle=validate_bundle(bundle)
         content=identity(bundle)
         relative=f'bundles/{content}/manifest.json'
@@ -73,7 +73,8 @@ class EvidenceStore:
             ref=dict(kind=bundle['kind'],ts_code=code,start_date=bundle['start_date'],end_date=bundle['end_date'],
                 provider=bundle['provider'],relative_path=relative,manifest_sha256=manifest_sha,content_sha256=content)
             refs.append(ref)
-        return self.repository.register_many(refs)
+        if owner_guard is None:return self.repository.register_many(refs)
+        return self.repository.register_many(refs,owner_guard=owner_guard)
 
     def load(self,references,*,codes,start,end):
         result={method:[] for method in METHODS}
