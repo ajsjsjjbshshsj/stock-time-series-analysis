@@ -102,7 +102,7 @@ def classify_sources(data: dict,sources: dict[str,list[dict]]) -> dict:
     issues={k:counts[k] for k in ('UNRESOLVED_MISSING','SOURCE_CONFLICT')}
     issues.update(MISSING_BASIC_ROW=sum(r['basic_status']=='MISSING_BASIC_ROW' and r['daily_status'] not in ('PRE_LISTING','FULL_DAY_SUSPENSION') for r in statuses),
                   MISSING_FACTOR=sum(r['factor_status']=='MISSING_FACTOR' for r in statuses),EXISTING_KEY_CONFLICT=sum('old' in r for r in conflicts))
-    report=dict(pool_version=data['pool']['pool_version'],stock_count=300,start=t['start'],end=t['end'],
+    report=dict(pool_version=data['pool']['pool_version'],stock_count=len(codes),start=t['start'],end=t['end'],
         acquisition_complete=True,source_issue_counts=issues,status_counts=dict(counts),model_ready=False,
         daily_rows=len(daily),basic_rows=len(basic),factor_rows=len(factor),
         insert_candidates={table:len(rows) for table,rows in candidates.items()})

@@ -11,11 +11,13 @@ from app.market_data.csi300_constituent_snapshot import migrate_request_state
 from app.market_data.repair_contract import identity, iso, request as make_request
 
 
-def validate_request(r):
+def validate_request(r,*,allowed_markets=('SH','SZ')):
+    if not allowed_markets or not set(allowed_markets)<={'SH','SZ','BJ'}:
+        raise ValueError('Invalid request market boundary')
     if (r['method'] not in ('daily','daily_basic','adj_factor','suspend_d')
         or r['id']!=identity({k:v for k,v in r.items() if k!='id'})
         or r['expected_codes']!=sorted(set(r['expected_codes'])) or not r['expected_codes']
-        or any(not re.fullmatch(r'\d{6}\.(SH|SZ)',c) for c in r['expected_codes'])
+        or any(not re.fullmatch(r'\d{6}\.(SH|SZ|BJ)',c) or c.split('.')[-1] not in allowed_markets for c in r['expected_codes'])
         or iso(r['start'])>iso(r['end']) or r['params']['fields']!=','.join(r['fields'])):
         raise ValueError('Invalid repair request contract')
     if r!=make_request(r['method'],r['expected_codes'],r['start'],r['end']):
@@ -76,14 +78,14 @@ def _rows(frame):
     return frame.astype(object).where(frame.notna(),None).to_dict('records')
 
 
-def verify_acquisition(output: Path,requests: list[dict],require_complete: bool=True) -> dict:
+def verify_acquisition(output: Path,requests: list[dict],require_complete: bool=True,*,allowed_markets=('SH','SZ')) -> dict:
     output=Path(output)
     try:
         if read(output/'binding.json')!=dict(schema_version=1,requests=requests): raise ValueError('Acquisition binding differs')
         if len({r['id'] for r in requests})!=len(requests): raise ValueError('Duplicate request ID')
         shards=[]; missing=[]
         for r in requests:
-            validate_request(r)
+            validate_request(r,allowed_markets=allowed_markets)
             file=output/'shards'/f"{r['id']}.json"
             if not file.exists() and not file.with_suffix('.proof.json').exists():
                 missing.append(r['id']); continue
@@ -100,12 +102,12 @@ def verify_acquisition(output: Path,requests: list[dict],require_complete: bool=
 
 
 def collect_requests(client: object,requests: list[dict],output: Path,request_state: Path,
-                     interval: float,clock: callable,sleep: callable) -> dict:
+                     interval: float,clock: callable,sleep: callable,*,allowed_markets=('SH','SZ')) -> dict:
     output=Path(output)
-    for r in requests: validate_request(r)
+    for r in requests: validate_request(r,allowed_markets=allowed_markets)
     if len({r['id'] for r in requests})!=len(requests): raise ValueError('Duplicate request ID')
     binding=dict(schema_version=1,requests=requests)
-    if (output/'complete.json').exists(): return verify_acquisition(output,requests)
+    if (output/'complete.json').exists(): return verify_acquisition(output,requests,allowed_markets=allowed_markets)
     output.mkdir(parents=True,exist_ok=True); (output/'shards').mkdir(exist_ok=True)
     if (output/'binding.json').exists():
         if read(output/'binding.json')!=binding: raise ValueError('Partial acquisition identity differs')
@@ -140,13 +142,13 @@ def collect_requests(client: object,requests: list[dict],output: Path,request_st
         except (ValueError,TypeError,KeyError):
             report=dict(complete=False,status='SCHEMA',model_ready=False)
             write(output/'report.json',report); return report
-    verify_acquisition(output,requests,require_complete=False)
+    verify_acquisition(output,requests,require_complete=False,allowed_markets=allowed_markets)
     manifest=dict(schema_version=1,binding_sha256=digest(output/'binding.json'),
         files={p.name:digest(p) for p in sorted((output/'shards').iterdir()) if p.is_file()})
     if (output/'manifest.json').exists():
         if read(output/'manifest.json')!=manifest: raise ValueError('Interrupted manifest differs from verified shards')
     else: write(output/'manifest.json',manifest,exclusive=True)
     # Verify all proofs before publishing completion (no provider/config imports).
-    verify_acquisition(output,requests,require_complete=False)
+    verify_acquisition(output,requests,require_complete=False,allowed_markets=allowed_markets)
     write(output/'complete.json',dict(manifest_sha256=digest(output/'manifest.json')),exclusive=True)
-    return verify_acquisition(output,requests)
+    return verify_acquisition(output,requests,allowed_markets=allowed_markets)
