@@ -110,3 +110,18 @@ def test_factory_preserves_old_injection_and_uses_checked_protocol():
     for method,remote in [('daily','daily'),('adj_factor','adj_factor'),('suspend_d','suspend_d'),
         ('trade_calendar','trade_cal'),('index_weight','index_weight')]:
         assert getattr(old,method)(trade_date='20260930')==(remote,{'trade_date':'20260930'})
+
+
+@pytest.mark.parametrize('transport_error',[requests.ConnectionError('SECRET connection'),requests.exceptions.ChunkedEncodingError('SECRET incomplete read')])
+def test_safe_transport_error_does_not_retain_original_exception(transport_error):
+    m=api(); client=m.CheckedTushareApi('SECRET',session=Session(transport_error))
+    with pytest.raises(m.TushareRequestError) as caught: client.daily()
+    assert caught.value.kind=='NETWORK'
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+def test_bad_json_does_not_retain_response_document_through_context():
+    m=api(); client=m.CheckedTushareApi('SECRET',session=Session(response(raw='SECRET body')))
+    with pytest.raises(m.TushareRequestError) as caught: client.daily()
+    assert caught.value.kind=='SCHEMA'
+    assert caught.value.__context__ is None and caught.value.__cause__ is None

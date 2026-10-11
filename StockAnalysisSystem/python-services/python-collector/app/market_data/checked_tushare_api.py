@@ -46,12 +46,16 @@ class CheckedTushareApi:
             raise ValueError('Invalid public Tushare API name')
         if not isinstance(fields,str): raise ValueError('Fields must be a string')
         payload=dict(api_name=api_name,token=self._token,params=params,fields=fields)
+        transport_failure=None
         try:
             response=self._session.post(API_ROOT+'/'+api_name,json=payload,timeout=self._timeout,allow_redirects=False)
-        except (requests.exceptions.Timeout,requests.exceptions.ConnectionError):
-            raise TushareRequestError('NETWORK') from None
+        except (requests.exceptions.Timeout,requests.exceptions.ConnectionError,requests.exceptions.ChunkedEncodingError):
+            transport_failure='NETWORK'
         except requests.exceptions.RequestException:
-            raise TushareRequestError('PROVIDER') from None
+            transport_failure='PROVIDER'
+        # Raise outside the handler: "from None" alone hides display but still
+        # retains the original exception/request through __context__.
+        if transport_failure is not None: raise TushareRequestError(transport_failure) from None
         status=response.status_code
         if type(status) is not int or not 100<=status<=599: raise TushareRequestError('SCHEMA')
         if status==408 or status>=500: raise TushareRequestError('NETWORK',status)
@@ -64,8 +68,10 @@ class CheckedTushareApi:
             except ValueError: pass
             raise TushareRequestError(kind,status) from None
         if not 200<=status<300: raise TushareRequestError('PROVIDER',status)
+        bad_json=False
         try: body=response.json()
-        except ValueError: raise TushareRequestError('SCHEMA',status) from None
+        except ValueError: bad_json=True
+        if bad_json: raise TushareRequestError('SCHEMA',status) from None
         if not isinstance(body,dict) or type(body.get('code')) is not int:
             raise TushareRequestError('SCHEMA',status)
         if body['code']!=0: raise TushareRequestError(_provider_kind(body.get('msg')),status)

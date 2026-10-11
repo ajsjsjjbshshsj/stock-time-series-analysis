@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.market_data.forward_snapshot import Requests
 from app.market_data.tushare_client import TushareClient
@@ -80,3 +81,19 @@ def test_legacy_error_clears_previous_typed_http_status(tmp_path):
     with pytest.raises(RuntimeError): pacing(first,clock,tmp_path/'shared.json').call(old_sdk,{})
     state=json.loads((first/'acquisition.json').read_text())
     assert state['failure']=='PERMISSION' and 'http_status' not in state
+
+
+def test_mid_response_disconnect_is_network_and_exhausts_three_attempts(tmp_path):
+    clock=Clock(); session=Session(*[requests.exceptions.ChunkedEncodingError('SECRET truncated body') for _ in range(3)])
+    client=TushareClient.from_token('SECRET',session=session)
+    with pytest.raises(RuntimeError): pacing(tmp_path/'first',clock,tmp_path/'shared.json').call(client.daily,{})
+    state=json.loads((tmp_path/'shared.json').read_text())
+    assert len(session.calls)==3 and state['failure']=='NETWORK' and state['attempts']==3
+    assert 'SECRET' not in json.dumps(state)
+
+
+def test_mid_response_disconnect_then_success_returns_real_data(tmp_path):
+    clock=Clock(); session=Session(requests.exceptions.ChunkedEncodingError('SECRET truncated body'),response())
+    client=TushareClient.from_token('SECRET',session=session)
+    frame=pacing(tmp_path/'first',clock,tmp_path/'shared.json').call(client.daily,{})
+    assert len(session.calls)==2 and frame.ts_code.tolist()==['000001.SZ']
