@@ -60,3 +60,11 @@ def test_invalid_stage_and_outside_window_are_rejected(tmp_path):
     root=Path(__file__).resolve().parents[4]
     with pytest.raises(ValueError): m.run_stage('train',root,fixture.POOL,tmp_path,'2023-10-09','2023-10-11',{})
     with pytest.raises(ValueError): m.run_stage('inventory',root,fixture.POOL,tmp_path,'2023-10-09','2026-10-09',{})
+
+
+def test_production_factory_uses_checked_transport_not_false_empty_sdk(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from app.market_data.checked_tushare_api import CheckedTushareApi
+    monkeypatch.setitem(sys.modules,'app.config',SimpleNamespace(TUSHARE_TOKEN='SECRET'))
+    assert isinstance(module()._client().pro,CheckedTushareApi)
