@@ -19,6 +19,8 @@ class Market:
     def __init__(self,tables): self.tables=deepcopy(tables); self.writes=0; self.owner_guard=None
     def capture(self,codes,start,end):
         result=deepcopy(self.tables); result.update(start=start,end=end)
+        for table in ('stock_daily','stock_daily_basic'):
+            result[table]=[r for r in result[table] if r['ts_code'] in codes and start<=r['trade_date']<=end]
         return result
     def insert_batch(self,table,rows,schema):
         if self.owner_guard: self.owner_guard(None)
@@ -282,3 +284,70 @@ def test_full_market_basic_response_reusable_by_stock_outside_requesting_pool(tm
         assert len(refs)==1
         data=service.evidence_store.load(refs,codes=['600001.SH'],start='2026-09-28',end='2026-09-28')
         assert data['daily_basic'][0]['ts_code']=='600001.SH'
+
+
+@pytest.mark.parametrize('operation,kind', [('capture','STORAGE_UNAVAILABLE'),('insert','TRANSACTION_FAILED')])
+def test_database_failure_persists_safe_failed_task(tmp_path,operation,kind):
+    from sqlalchemy.exc import IntegrityError,OperationalError
+    with database() as factory:
+        service,_,tasks,market,_,req=make(factory,tmp_path)
+        def fail(*args,**kwargs):
+            typ=IntegrityError if operation=='insert' else OperationalError
+            raise typ('SQL containing private credentials',{},Exception('private-token'))
+        if operation=='capture': market.capture=fail
+        else:
+            # Real orchestration reaches the insert boundary using verified source.
+            from app.market_data.repair_contract import DAILY
+            row=market.tables['stock_daily'].pop(0)
+            raw={k:float(row[k]) if k not in ('ts_code','trade_date') else row[k] for k in DAILY}
+            service.evidence_store.register_verified(dict(kind='daily',provider='tushare.daily',
+                start_date='2026-09-28',end_date='2026-09-28',expected_codes=['000001.SZ'],rows=[raw]))
+            market.insert_batch=fail
+        task=service.submit(req)
+        result=service.execute(claim(tasks,task),owner_token=OWNER['token'])
+        assert result['status']=='FAILED' and result['error_kind']==kind
+        assert 'private' not in str(result)
+        assert market.writes==0
+
+
+def test_submission_crossing_16_uses_one_timestamp_and_frozen_cutoff(tmp_path):
+    with database() as factory:
+        service,_,tasks,_,_,req=make(factory,tmp_path)
+        ticks=iter([datetime.fromisoformat(t).timestamp() for t in
+            ('2026-09-30T07:59:59.999999Z','2026-09-30T08:00:00.000001Z')])
+        service.clock=lambda:next(ticks)
+        task=service.submit(req)
+        assert task['created_at']=='2026-09-30T07:59:59.999999+00:00'
+        result=service._inventory(fixture()[0],task['request'],acquire=False,
+            clicked='2026-10-11T09:00:00Z')
+        assert result['window']['end']=='2026-09-29'
+        assert result['window']['requested_end']=='2026-09-30'
+
+
+def test_busy_lock_after_expired_quota_has_future_deadline(tmp_path):
+    from app.preparation.acquisition import MarketAcquirer
+    from app.preparation.service import PreparationFailure
+    from app.market_data.forward_snapshot import write
+    from app.market_data.repair_contract import request as market_request
+    state=tmp_path/'request_state.json'
+    write(state,dict(failure='HOURLY_QUOTA',retry_not_before=10,request_count=0))
+    state.with_suffix('.lock').write_text('foreign owner',encoding='utf-8')
+    acq=MarketAcquirer(lambda:pytest.fail('busy lock must not initialize SDK'),state,clock=lambda:20)
+    with pytest.raises(PreparationFailure) as caught:
+        acq.collect([market_request('daily',['000001.SZ'],'2026-09-28','2026-09-28')],tmp_path/'run')
+    assert caught.value.kind=='REQUEST_STATE_BUSY'
+    assert caught.value.retry_not_before==80
+    assert caught.value.http_status is None
+
+
+def test_expired_retry_failure_never_persists_immediately_claimable_task(tmp_path):
+    from app.preparation.service import PreparationFailure
+    with database() as factory:
+        service,_,tasks,_,_,req=make(factory,tmp_path,missing_basic=True)
+        class ExpiredQuota:
+            def collect(self,requests,directory):
+                raise PreparationFailure('HOURLY_QUOTA',retry_not_before=10)
+        service.acquirer=ExpiredQuota()
+        task=service.submit(req)
+        result=service.execute(claim(tasks,task),owner_token=OWNER['token'])
+        assert datetime.fromisoformat(result['retry_not_before']).timestamp()==service.clock()+60

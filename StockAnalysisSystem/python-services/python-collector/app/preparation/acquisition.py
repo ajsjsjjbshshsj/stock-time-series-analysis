@@ -47,6 +47,9 @@ class MarketAcquirer:
             local=Path(directory)/'acquisition.json'
             state=read(local) if local.exists() else read(self.request_state) if self.request_state.exists() else {}
             kind=result['status']
+            # A current lock collision must not inherit an expired quota cause.
+            if self.request_state.with_suffix('.lock').exists() and (state.get('retry_not_before') or 0)<=self.clock():
+                raise PreparationFailure('REQUEST_STATE_BUSY',retry_not_before=self.clock()+60)
             if kind=='BLOCKED': kind='REQUEST_STATE_BUSY' if self.request_state.with_suffix('.lock').exists() else state.get('failure','PROVIDER')
             state=dict(state,failure=kind)
             raise source_failure(state)

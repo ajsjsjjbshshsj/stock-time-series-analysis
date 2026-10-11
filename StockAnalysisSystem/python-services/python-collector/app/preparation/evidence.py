@@ -78,7 +78,7 @@ class EvidenceStore:
     def load(self,references,*,codes,start,end):
         result={method:[] for method in METHODS}
         result['queried_suspensions']=[]
-        loaded={}; seen={method:{} for method in METHODS}
+        loaded={}; seen={method:{} for method in METHODS}; queried=set()
         for reference in references:
             path=self._path(reference['relative_path'])
             ref={k:reference[k] for k in FIELDS}
@@ -102,6 +102,10 @@ class EvidenceStore:
                     or (body['start_date'],body['end_date'])!=(ref['start_date'],ref['end_date'])):
                 raise ValueError('EVIDENCE_INDEX_BINDING')
             method=body['kind']
+            # Native suspend_d queries are single-date. Aggregated legacy ranges
+            # do not prove that every member/day was queried, even when empty.
+            if method=='suspend_d' and body['start_date']==body['end_date'] and start<=body['start_date']<=end:
+                queried.add((ref['ts_code'],body['start_date']))
             for row in by_stock.get(ref['ts_code'],[]):
                 day=row['trade_date']; normalized=f'{day[:4]}-{day[4:6]}-{day[6:]}'
                 if row['ts_code']!=ref['ts_code'] or not start<=normalized<=end: continue
@@ -112,6 +116,7 @@ class EvidenceStore:
                 seen[method][key]=value
         for method in METHODS:
             result[method]=[seen[method][k] for k in sorted(seen[method],key=lambda k:tuple(str(v) for v in k))]
+        result['queried_suspensions']=sorted(queried)
         return result
 
     def import_legacy_b1(self,snapshot_path):

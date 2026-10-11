@@ -2,6 +2,7 @@
 from datetime import datetime,time as walltime,timedelta,timezone
 from pathlib import Path
 import time
+from sqlalchemy.exc import SQLAlchemyError,IntegrityError
 
 from app.market_data.forward_snapshot import read,write,digest
 from app.market_data.repair_contract import canonical
@@ -34,13 +35,17 @@ class DataPreparationService:
     def submit(self,request):
         validate_request(request)
         self.pools.resolve(pool_version=request['pool_version'])
-        local=datetime.fromtimestamp(self.clock(),TZ)
+        submitted=datetime.fromtimestamp(self.clock(),timezone.utc)
+        local=submitted.astimezone(TZ)
         cutoff=local.date() if local.time()>walltime(16) else local.date()-timedelta(days=1)
         concrete=dict(request,cutoff_date=min(iso(request['requested_end']),cutoff).isoformat())
-        return self.tasks.submit(concrete,now=self._now())
+        return self.tasks.submit(concrete,now=submitted.isoformat())
 
     def _inventory(self,pool,request,*,acquire,clicked=None,tables=None):
         now=datetime.fromisoformat(clicked) if clicked else datetime.fromtimestamp(self.clock(),timezone.utc)
+        if 'cutoff_date' in request:
+            # The server-bound cutoff survives queue delays and a 16:00 crossing.
+            now=datetime.combine(iso(request['cutoff_date']),walltime(17),TZ)
         calendar=self.calendar_store.get(request['requested_start'],request['requested_end'],now,acquire=acquire)
         if calendar is None:
             return dict(data_ready=False,issues={'CALENDAR_COVERAGE_REQUIRED':1},missing_calendar=True)
@@ -102,6 +107,10 @@ class DataPreparationService:
             return self._execute(task,owner_token)
         except PreparationFailure as error:
             failure=error
+        except IntegrityError:
+            failure=PreparationFailure('TRANSACTION_FAILED')
+        except SQLAlchemyError:
+            failure=PreparationFailure('STORAGE_UNAVAILABLE')
         except (ValueError,KeyError,TypeError,OSError):
             failure=PreparationFailure('SCHEMA')
         except RuntimeError as error:
@@ -110,7 +119,9 @@ class DataPreparationService:
         target='WAITING_RETRY' if failure.kind in {'MINUTE_QUOTA','HOURLY_QUOTA','QUOTA_COOLDOWN','REQUEST_STATE_BUSY'} else 'FAILED'
         patch=dict(status=target,error_kind=failure.kind,updated_at=self._now(),result=dict(data_ready=False,error_kind=failure.kind))
         if target=='WAITING_RETRY':
-            deadline=failure.retry_not_before or self.clock()+60
+            current=self.clock()
+            deadline=failure.retry_not_before
+            if deadline is None or deadline<=current: deadline=current+60
             patch['retry_not_before']=datetime.fromtimestamp(deadline,timezone.utc).isoformat()
         if not self.tasks.update(task['task_id'],owner_token,patch): raise RuntimeError('OWNER_EXPIRED_OR_CHANGED')
         return self.tasks.get(task['task_id'])
