@@ -102,21 +102,26 @@ def verify_acquisition(output: Path,requests: list[dict],require_complete: bool=
 
 
 def collect_requests(client: object,requests: list[dict],output: Path,request_state: Path,
-                     interval: float,clock: callable,sleep: callable,*,allowed_markets=('SH','SZ')) -> dict:
+                     interval: float,clock: callable,sleep: callable,*,allowed_markets=('SH','SZ'),on_progress=None) -> dict:
     output=Path(output)
     for r in requests: validate_request(r,allowed_markets=allowed_markets)
     if len({r['id'] for r in requests})!=len(requests): raise ValueError('Duplicate request ID')
     binding=dict(schema_version=1,requests=requests)
-    if (output/'complete.json').exists(): return verify_acquisition(output,requests,allowed_markets=allowed_markets)
+    if (output/'complete.json').exists():
+        result=verify_acquisition(output,requests,allowed_markets=allowed_markets)
+        if on_progress is not None: on_progress(len(requests),len(requests))
+        return result
     output.mkdir(parents=True,exist_ok=True); (output/'shards').mkdir(exist_ok=True)
     if (output/'binding.json').exists():
         if read(output/'binding.json')!=binding: raise ValueError('Partial acquisition identity differs')
     else: write(output/'binding.json',binding,exclusive=True)
     state=None
-    for r in requests:
+    for index,r in enumerate(requests):
         file=output/'shards'/f"{r['id']}.json"
         if file.exists() or file.with_suffix('.proof.json').exists():
-            _load_shard(output,r); continue
+            _load_shard(output,r)
+            if on_progress is not None: on_progress(index+1,len(requests))
+            continue
         if file.with_suffix('.parquet').exists(): raise ValueError('Unverified raw response retained; use a new acquisition directory')
         try:
             if state is None:
@@ -142,6 +147,7 @@ def collect_requests(client: object,requests: list[dict],output: Path,request_st
         except (ValueError,TypeError,KeyError):
             report=dict(complete=False,status='SCHEMA',model_ready=False)
             write(output/'report.json',report); return report
+        if on_progress is not None: on_progress(index+1,len(requests))
     verify_acquisition(output,requests,require_complete=False,allowed_markets=allowed_markets)
     manifest=dict(schema_version=1,binding_sha256=digest(output/'binding.json'),
         files={p.name:digest(p) for p in sorted((output/'shards').iterdir()) if p.is_file()})

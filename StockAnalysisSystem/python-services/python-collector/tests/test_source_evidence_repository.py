@@ -28,3 +28,14 @@ def test_evidence_reference_rejects_untrusted_paths_and_identity(changes):
     cls = load('source_evidence_repository', 'SourceEvidenceRepository')
     with database() as factory:
         with pytest.raises(ValueError): cls(factory).register(ref(**changes))
+
+
+def test_batch_registration_validates_all_inputs_and_is_idempotent():
+    typ=load('source_evidence_repository','SourceEvidenceRepository')
+    with database() as factory:
+        repo=typ(factory)
+        assert callable(getattr(repo,'register_many',None)),'batch evidence registration not implemented'
+        refs=[ref(),ref(ts_code='600000.SH')]
+        assert repo.register_many(refs)==repo.register_many(refs)
+        with pytest.raises(ValueError): repo.register_many([ref(ts_code='600001.SH'),ref(relative_path='../escape')])
+        assert repo.list('adj_factor',['600001.SH'],'2026-09-28','2026-09-30')==[]

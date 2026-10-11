@@ -18,12 +18,15 @@ PATCH_FIELDS = {'status','phase','progress','result','error_kind','retry_not_bef
 
 
 def validate_request(request):
-    if (set(request) != {'pool_version','requested_start','requested_end','requirements_version'}
+    required={'pool_version','requested_start','requested_end','requirements_version'}
+    if (not required<=set(request)<=required|{'cutoff_date'}
             or request['requirements_version'] != 'market-v1'
             or type(request['pool_version']) is not str
             or re.fullmatch(r'(pool_[0-9a-f]{32}|csi300_[0-9a-f]{16})', request['pool_version']) is None
             or iso(request['requested_start']) > iso(request['requested_end'])):
         raise ValueError('PREPARATION_REQUEST_INVALID')
+    if 'cutoff_date' in request and iso(request['cutoff_date'])>iso(request['requested_end']):
+        raise ValueError('PREPARATION_CUTOFF_INVALID')
     return request
 
 
@@ -57,6 +60,36 @@ class PreparationRepository:
     def get(self, task_id):
         with transaction(self.session_factory) as session:
             return self._get(session,task_id)
+
+    def fence(self,task_id,owner_token,*,now,session=None):
+        def check(current):
+            task=self._get(current,task_id,lock=True)
+            if (task['status']!='RUNNING' or task['owner_token']!=owner_token
+                    or task['lease_until'] is None or stamp(task['lease_until'])<=stamp(now)):
+                raise RuntimeError('OWNER_EXPIRED_OR_CHANGED')
+            return task
+        if session is not None: return check(session)
+        with transaction(self.session_factory) as current: return check(current)
+
+    def expired(self,*,now):
+        with transaction(self.session_factory) as session:
+            rows=session.execute(text("SELECT * FROM data_preparation_task WHERE status='RUNNING' AND lease_until<=:now"),
+                                 dict(now=stamp(now))).mappings().all()
+            return [_task(r) for r in rows]
+
+    def recover(self,task_id,old_owner_token,*,now):
+        # Called only after the worker independently proves the old process dead.
+        with transaction(self.session_factory) as session:
+            result=session.execute(text("UPDATE data_preparation_task SET status='QUEUED',owner_token=NULL,"
+                'owner_json=NULL,lease_until=NULL,updated_at=:now '
+                "WHERE task_id=:id AND owner_token=:token AND status='RUNNING' AND lease_until<=:now"),
+                dict(id=task_id,token=old_owner_token,now=stamp(now)))
+            return result.rowcount==1
+
+    def next_retry(self):
+        with transaction(self.session_factory) as session:
+            value=session.execute(text("SELECT MIN(retry_not_before) FROM data_preparation_task WHERE status='WAITING_RETRY'")).scalar()
+            return utc(value)
 
     def submit(self, request, *, now):
         validate_request(request)

@@ -8,6 +8,7 @@ import pandas as pd
 
 from .contracts import TZ, CODE, freeze_pool, iso, validate_pool
 from app.market_data.forward_snapshot import digest, read
+from app.market_data.codes import to_ts_code
 
 INDEXES = {'000300.SH': ('沪深300', 300), '000852.SH': ('中证1000', 1000)}
 INDEX_FIELDS = ['index_code', 'con_code', 'trade_date', 'weight']
@@ -44,8 +45,7 @@ class PoolSources:
             for value in frame['代码']:
                 if not isinstance(value, str) or not value.isdigit() or len(value) != 6:
                     raise ValueError('INDUSTRY_MEMBER_CODE')
-                market = 'SH' if value.startswith(('6', '9')) else 'BJ' if value.startswith(('4', '8')) else 'SZ'
-                members.append(dict(ts_code=value + '.' + market))
+                members.append(dict(ts_code=to_ts_code(value)))
         else:
             raise ValueError('UNSUPPORTED_POOL_TYPE')
         return freeze_pool(metadata, members)

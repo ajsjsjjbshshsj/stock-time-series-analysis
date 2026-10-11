@@ -74,3 +74,8 @@ def test_industry_current_snapshot_has_no_fake_historical_provider_date():
 def test_unknown_index_refused_before_request():
     with pytest.raises(ValueError):
         sources(frame(300)).acquire('index', 'USER_TEXT', '2026-10-11')
+
+
+def test_industry_920_codes_resolve_to_beijing_not_shanghai():
+    pool=sources(industry_response=pd.DataFrame({'代码':['920118']})).acquire('industry','化学制品','2026-10-11')
+    assert pool['codes']==['920118.BJ']

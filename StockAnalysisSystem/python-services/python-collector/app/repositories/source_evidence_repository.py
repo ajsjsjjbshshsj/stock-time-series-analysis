@@ -35,22 +35,35 @@ class SourceEvidenceRepository:
         self.session_factory = session_factory
 
     def register(self, ref: dict) -> dict:
-        validate_ref(ref)
-        binding = {k:ref[k] for k in ('kind','ts_code','start_date','end_date','content_sha256')}
-        payload = dict(ref, evidence_id=identity(binding))
+        return self.register_many([ref])[0]
+
+    def register_many(self, refs: list[dict]) -> list[dict]:
+        payloads={}
+        for ref in refs:
+            validate_ref(ref)
+            binding={k:ref[k] for k in ('kind','ts_code','start_date','end_date','content_sha256')}
+            payload=dict(ref,evidence_id=identity(binding))
+            key=payload['evidence_id']
+            if key in payloads and payloads[key]!=payload: raise ValueError('EVIDENCE_REFERENCE_CONFLICT')
+            payloads[key]=payload
+        if not payloads: return []
+        keys=list(payloads)
+        columns=','.join(('evidence_id',)+FIELDS)
+        params=','.join(':'+k for k in ('evidence_id',)+FIELDS)
         with transaction(self.session_factory) as session:
-            existing = session.execute(text('SELECT * FROM market_source_evidence WHERE evidence_id=:e'),
-                                       dict(e=payload['evidence_id'])).mappings().first()
-            if existing:
-                actual = dict(existing)
-                for k in ('start_date', 'end_date'): actual[k] = str(actual[k])
-                if actual != payload:
-                    raise ValueError('EVIDENCE_REFERENCE_CONFLICT')
-                return actual
-            columns = ','.join(('evidence_id',) + FIELDS)
-            params = ','.join(':'+k for k in ('evidence_id',) + FIELDS)
-            session.execute(text(f'INSERT INTO market_source_evidence ({columns}) VALUES ({params})'), payload)
-        return payload
+            for offset in range(0,len(keys),500):
+                batch=keys[offset:offset+500]
+                stmt=text('SELECT * FROM market_source_evidence WHERE evidence_id IN :keys').bindparams(bindparam('keys',expanding=True))
+                existing=session.execute(stmt,dict(keys=batch)).mappings().all()
+                present=set()
+                for r in existing:
+                    actual=dict(r)
+                    for k in ('start_date','end_date'): actual[k]=str(actual[k])
+                    if actual!=payloads[actual['evidence_id']]: raise ValueError('EVIDENCE_REFERENCE_CONFLICT')
+                    present.add(actual['evidence_id'])
+                missing=[payloads[k] for k in batch if k not in present]
+                if missing: session.execute(text(f'INSERT INTO market_source_evidence ({columns}) VALUES ({params})'),missing)
+        return list(payloads.values())
 
     def list(self, kind: str, codes: list[str], start: str, end: str) -> list[dict]:
         if kind not in PROVIDERS or iso(start)>iso(end) or not codes or any(CODE.fullmatch(c) is None for c in codes):
