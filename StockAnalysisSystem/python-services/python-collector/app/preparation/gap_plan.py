@@ -5,6 +5,7 @@ import re
 from app.preparation.contracts import identity, iso, timestamp
 from app.nightly.contracts import SCOPE, START, _reference, excluded_legacy_reference, is_a_share
 from app.nightly.symbol_periods import eligible_on
+from app.market_data.repair_contract import DAILY, BASIC
 
 STRATEGY = 'market-gap-v1'
 
@@ -67,3 +68,111 @@ def make_coverage_snapshot(members, calendar, start, end, daily_keys, basic_keys
         existing_counts=counts)
     result['coverage_sha256'] = identity(result)
     return result
+
+
+def validate_coverage(snapshot):
+    if (snapshot.get('strategy') != STRATEGY or snapshot.get('schema_version') != 1
+            or snapshot.get('scope') != SCOPE
+            or snapshot.get('coverage_sha256') != identity({
+                key: value for key, value in snapshot.items() if key != 'coverage_sha256'})):
+        raise ValueError('GAP_COVERAGE_HASH_INVALID')
+    return snapshot
+
+
+def eligible_bits(snapshot):
+    return {row['ts_code']: sum(1 << i for i, day in enumerate(snapshot['sessions'])
+        if eligible_on(row['ts_code'], day, list_date=row['list_date'], delist_date=row['delist_date']))
+        for row in snapshot['members']}
+
+
+def make_gap_request(method, mode, codes, expected_keys, *, snapshot):
+    validate_coverage(snapshot)
+    return _make_request(method, mode, codes, expected_keys, snapshot,
+        eligible_bits(snapshot), {day: i for i, day in enumerate(snapshot['sessions'])})
+
+
+def _make_request(method, mode, codes, expected_keys, snapshot, valid, index):
+    if method not in ('daily', 'daily_basic') or mode not in ('stock_range', 'full_date'):
+        raise ValueError('GAP_REQUEST_METHOD_INVALID')
+    codes, keys = list(codes), [list(key) for key in expected_keys]
+    if (not codes or codes != sorted(set(codes)) or not keys or keys != sorted(keys)
+            or len({tuple(key) for key in keys}) != len(keys)
+            or sorted({key[0] for key in keys}) != codes):
+        raise ValueError('GAP_REQUEST_KEYS_INVALID')
+    present = snapshot['daily_bits' if method == 'daily' else 'basic_bits']
+    for code, day in keys:
+        if (code not in valid or day not in index or not valid[code] & (1 << index[day])
+                or int(present[code], 16) & (1 << index[day])):
+            raise ValueError('GAP_REQUEST_OUTSIDE_MISSING_KEYS')
+    start, end = min(key[1] for key in keys), max(key[1] for key in keys)
+    fields = list(DAILY if method == 'daily' else BASIC)
+    if mode == 'stock_range':
+        expected_days = snapshot['sessions'][index[start]:index[end]+1]
+        if (len(codes) != 1 or start[:4] != end[:4]
+                or [key[1] for key in keys] != expected_days):
+            raise ValueError('GAP_RANGE_NOT_CONTIGUOUS')
+        params = dict(ts_code=codes[0], start_date=start.replace('-', ''),
+                      end_date=end.replace('-', ''), fields=','.join(fields))
+    else:
+        if (start != end or any(int(bits, 16) & (1 << index[start]) for bits in present.values())
+                or len(keys) >= 6000):
+            raise ValueError('GAP_FULL_DATE_NOT_ENTIRELY_MISSING')
+        params = dict(trade_date=start.replace('-', ''), fields=','.join(fields))
+    body = dict(strategy=STRATEGY, method=method, mode=mode, expected_codes=codes,
+        expected_keys=keys, start=start, end=end, fields=fields, params=params, capacity=6000,
+        coverage_sha256=snapshot['coverage_sha256'], reference_sha256=snapshot['reference_sha256'],
+        calendar_sha256=snapshot['calendar_sha256'])
+    return dict(body, id=identity(body))
+
+
+def _plan(snapshot, method, missing, valid):
+    days = snapshot['sessions']
+    index = {day: i for i, day in enumerate(days)}
+    present = snapshot['daily_bits' if method == 'daily' else 'basic_bits']
+    result = []
+    # Full-date requests are exceptional: prove NO eligible stored keys exist.
+    for i, day in enumerate(days):
+        flag = 1 << i
+        targets = [code for code in sorted(missing) if missing[code] & flag]
+        if (targets and len(targets) < 6000
+                and not any(int(bits, 16) & flag for bits in present.values())):
+            result.append(_make_request(method, 'full_date', targets,
+                [(code, day) for code in targets], snapshot, valid, index))
+            for code in targets:
+                missing[code] &= ~flag
+    for code in sorted(missing):
+        run = []
+        def flush():
+            if run:
+                result.append(_make_request(method, 'stock_range', [code],
+                    [(code, day) for day in run], snapshot, valid, index))
+                run.clear()
+        for i, day in enumerate(days):
+            if missing[code] & (1 << i):
+                if run and run[-1][:4] != day[:4]:
+                    flush()
+                run.append(day)
+            else:
+                flush()
+        flush()
+    return sorted(result, key=lambda item: (item['expected_codes'], item['start'], item['method']))
+
+
+def plan_daily(snapshot):
+    validate_coverage(snapshot)
+    valid = eligible_bits(snapshot)
+    missing = {code: bits & ~int(snapshot['daily_bits'][code], 16) for code, bits in valid.items()}
+    return _plan(snapshot, 'daily', missing, valid)
+
+
+def plan_basic(snapshot, new_daily_keys):
+    validate_coverage(snapshot)
+    valid = eligible_bits(snapshot)
+    actual = {code: int(snapshot['daily_bits'][code], 16) for code in valid}
+    index = {day: i for i, day in enumerate(snapshot['sessions'])}
+    for code, day in new_daily_keys:
+        if code not in valid or day not in index or not valid[code] & (1 << index[day]):
+            raise ValueError('NEW_QUOTE_OUTSIDE_COVERAGE')
+        actual[code] |= 1 << index[day]
+    missing = {code: actual[code] & ~int(snapshot['basic_bits'][code], 16) for code in valid}
+    return _plan(snapshot, 'daily_basic', missing, valid)
