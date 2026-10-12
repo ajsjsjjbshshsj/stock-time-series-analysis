@@ -46,7 +46,11 @@ class GapUpdateService:
         candidates = list((self.data_root/'gap_references').glob('*/complete.json'))
         candidates += list((self.data_root/'market_updates').glob('*/attempts/*/reference/complete.json'))
         if not candidates:return None
-        bundles = [verify_reference(path.parent) for path in sorted(candidates)]
+        bundles = []
+        for path in sorted(candidates):
+            if self.paths is not None:
+                persist_reference(path.parent,self.paths)
+            bundles.append(verify_reference(path.parent))
         return max(bundles, key=lambda value: timestamp(value['acquired_at']))
 
     def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True):
@@ -63,7 +67,10 @@ class GapUpdateService:
             require_root_lock(self.data_root)
             # New nightly day gets a fresh master; repeated submissions that day
             # reuse its sealed query, while historical callers can pin a bundle.
-            bundle = self.universe.source_reference(self.data_root/'gap_references'/local.date().isoformat())
+            reference_root=self.data_root/'gap_references'/local.date().isoformat()
+            if self.paths is not None:
+                persist_reference(reference_root,self.paths)
+            bundle = self.universe.source_reference(reference_root)
         calendar = self.calendar.get(start, end, now, acquire=acquire_reference)
         if calendar is None:raise ValueError('LOCAL_VERIFIED_CALENDAR_REQUIRED')
         members = reference_rows(bundle['rows'])
@@ -101,8 +108,18 @@ class GapUpdateService:
             api_requests=0, verification_mode='missing-only', existing_data_revalidated=False, model_ready=False)
         if not persist:return summary
         batch = self.batch_store.create_or_load(snapshot, daily)
-        self.batch_store.save(Path(batch['path'])/'reference.json',
-            dict(source_directory=persist_reference(bundle['source_directory'],self.paths), manifest_sha256=bundle['manifest_sha256']), immutable=True)
+        reference_path=Path(batch['path'])/'reference.json'
+        if reference_path.exists():
+            # Resolve and verify an equivalent legacy reference, but do not
+            # rewrite its hash-bound bytes just because URI writing is enabled.
+            prior=self.batch_store.read(reference_path)
+            if (set(prior)!={'source_directory','manifest_sha256'}
+                    or resolve_reference(prior['source_directory'],self.paths)!=Path(bundle['source_directory']).resolve()
+                    or prior['manifest_sha256']!=bundle['manifest_sha256']):
+                raise ValueError('PINNED_REFERENCE_CHANGED')
+        else:
+            self.batch_store.save(reference_path,
+                dict(source_directory=persist_reference(bundle['source_directory'],self.paths), manifest_sha256=bundle['manifest_sha256']), immutable=True)
         return batch
 
     def submit(self, day, run_at='20:00'):

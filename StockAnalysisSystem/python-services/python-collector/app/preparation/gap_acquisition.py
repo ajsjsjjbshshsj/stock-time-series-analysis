@@ -58,13 +58,34 @@ def _response(rows, request, snapshot):
 
 
 def _paths(directory, request):
-    path = scoped_path(directory, f"shards/{request['id']}.json")
-    return path, path.with_suffix('.parquet'), path.with_suffix('.proof.json')
+    return tuple(scoped_path(directory, f"shards/{request['id']}{suffix}")
+                 for suffix in ('.json', '.parquet', '.proof.json'))
+
+
+def _manifest(root):
+    shards = scoped_path(root, 'shards')
+    files = {}
+    for item in sorted(shards.iterdir()):
+        path = scoped_path(root, 'shards/' + item.name)
+        if path.is_file():
+            files[item.name] = digest(path)
+    return dict(binding_sha256=digest(scoped_path(root, 'binding.json')), files=files)
+
+
+def _verify_completion(root):
+    manifest = scoped_path(root, 'manifest.json')
+    complete = scoped_path(root, 'complete.json')
+    if (not complete.is_file() or not manifest.is_file()
+            or read(manifest) != _manifest(root)
+            or read(complete) != dict(manifest_sha256=digest(manifest))):
+        raise ValueError('GAP_COMPLETION_HASH_INVALID')
 
 
 def verify_gap_shard(directory, request, *, snapshot,paths=None):
     validate_request(request, snapshot)
     root = Path(directory).resolve()
+    if paths is not None:
+        persist_reference(root, paths)  # Reject an escaped source before any read.
     path, raw, proof = _paths(root, request)
     if read(proof) != dict(sha256=digest(path), raw_sha256=digest(raw)):
         raise ValueError('GAP_SHARD_HASH_INVALID')
@@ -96,8 +117,10 @@ def verify_gap_shard(directory, request, *, snapshot,paths=None):
 
 def _verify_pointer(pointer,*,paths=None):
     root = resolve_reference(pointer['source_directory'],paths)
-    binding = read(root/'binding.json')
-    if (digest(root/'binding.json') != pointer['binding_sha256']
+    _verify_completion(root)
+    binding_path = scoped_path(root, 'binding.json')
+    binding = read(binding_path)
+    if (digest(binding_path) != pointer['binding_sha256']
             or pointer['request'] not in binding['requests']):
         raise ValueError('GAP_PARENT_BINDING_HASH_INVALID')
     snapshot = read(resolve_reference(binding['snapshot_ref']['path'],paths))
@@ -111,24 +134,27 @@ def _verify_pointer(pointer,*,paths=None):
 
 
 def _index_root(source_store):
-    return Path(source_store.root).resolve()/'gap_source_index'
+    return scoped_path(source_store.root, 'gap_source_index')
 
 
 def lookup_cached_gap(request, *, snapshot, source_store,paths=None):
     validate_request(request, snapshot)
     root = _index_root(source_store)
-    locations = [root/request['method']/'stocks'/code for code in request['expected_codes']]
-    locations.extend(root/request['method']/'dates'/day for day in sorted({key[1] for key in request['expected_keys']}))
+    locations = [scoped_path(root, f"{request['method']}/stocks/{code}") for code in request['expected_codes']]
+    locations.extend(scoped_path(root, f"{request['method']}/dates/{day}") for day in sorted({key[1] for key in request['expected_keys']}))
     index_files = sorted({path for location in locations for path in location.glob('*.json')})
     target = {tuple(key) for key in request['expected_keys']}
     for path in index_files:
+        path = scoped_path(root, path.relative_to(root).as_posix())
         pointer = read(path)
         old = pointer['request']
         if old['method'] != request['method'] or not old['start'] <= request['start'] <= request['end'] <= old['end']:
             continue
         # A proven query covers keys even if the provider returned no quote.
         if old['mode']=='full_date':
-            parent_binding=read(resolve_reference(pointer['source_directory'],paths)/'binding.json')
+            parent_root=resolve_reference(pointer['source_directory'],paths)
+            _verify_completion(parent_root)
+            parent_binding=read(scoped_path(parent_root,'binding.json'))
             parent_snapshot=read(resolve_reference(parent_binding['snapshot_ref']['path'],paths))
             if identity(parent_snapshot)!=parent_binding['snapshot_ref']['sha256']:
                 raise ValueError('GAP_PARENT_SNAPSHOT_HASH_INVALID')
@@ -152,14 +178,14 @@ def _register(source_store, directory, request, result,*,paths=None):
     if result['parent'] is not None:
         return
     pointer = dict(source_directory=persist_reference(directory,paths), request=request,
-        binding_sha256=digest(Path(directory)/'binding.json'), raw_sha256=result['raw_sha256'],
+        binding_sha256=digest(scoped_path(directory,'binding.json')), raw_sha256=result['raw_sha256'],
         manifest_sha256=result['manifest_sha256'])
-    root = _index_root(source_store)/request['method']
-    locations = ([root/'dates'/request['start']] if request['mode'] == 'full_date'
-                 else [root/'stocks'/code for code in request['expected_codes']])
+    root = scoped_path(_index_root(source_store), request['method'])
+    locations = ([scoped_path(root,'dates/'+request['start'])] if request['mode'] == 'full_date'
+                 else [scoped_path(root,'stocks/'+code) for code in request['expected_codes']])
     for location in locations:
         location.mkdir(parents=True, exist_ok=True)
-        path = location/(identity(pointer)+'.json')
+        path = scoped_path(location,identity(pointer)+'.json')
         if path.exists():
             if read(path) != pointer:
                 raise ValueError('GAP_SOURCE_INDEX_CHANGED')
@@ -182,11 +208,19 @@ class GapAcquirer:
         if not requests:
             return dict(complete=True, shards=[], api_requests=0, cache_hits=0, empty_requests=0)
         root = Path(directory).resolve()
+        if self.paths is not None:
+            persist_reference(root,self.paths)  # Before mkdir, including junctions.
+        binding_path=scoped_path(root,'binding.json')
+        manifest_path=scoped_path(root,'manifest.json')
+        complete_path=scoped_path(root,'complete.json')
+        shard_root=scoped_path(root,'shards')
+        if complete_path.exists():
+            _verify_completion(root)
         root.mkdir(parents=True, exist_ok=True)
-        (root/'shards').mkdir(exist_ok=True)
-        snapshot_root = Path(self.source_store.root).resolve()/'gap_snapshots'
+        shard_root.mkdir(exist_ok=True)
+        snapshot_root = scoped_path(self.source_store.root,'gap_snapshots')
         snapshot_root.mkdir(parents=True, exist_ok=True)
-        snapshot_path = snapshot_root/(snapshot['coverage_sha256']+'.json')
+        snapshot_path = scoped_path(snapshot_root,snapshot['coverage_sha256']+'.json')
         if snapshot_path.exists():
             if read(snapshot_path) != snapshot:
                 raise ValueError('GAP_SHARED_SNAPSHOT_CHANGED')
@@ -194,8 +228,8 @@ class GapAcquirer:
             write(snapshot_path, snapshot, exclusive=True)
         binding = dict(schema_version=1, requests=requests,
             snapshot_ref=dict(path=persist_reference(snapshot_path,self.paths), sha256=identity(snapshot)))
-        if (root/'binding.json').exists():
-            old=read(root/'binding.json')
+        if binding_path.exists():
+            old=read(binding_path)
             equivalent=old==binding
             if not equivalent and self.paths is not None and set(old)==set(binding) and isinstance(old.get('snapshot_ref'),dict) and set(old['snapshot_ref'])=={'path','sha256'}:
                 # Compare a temporary resolved view; never reseal the original
@@ -205,7 +239,7 @@ class GapAcquirer:
             if not equivalent:
                 raise ValueError('GAP_PLAN_CHANGED')
         else:
-            write(root/'binding.json', binding, exclusive=True)
+            write(binding_path, binding, exclusive=True)
         shards, api, hits, empty = [], 0, 0, 0
         pacing = client = None
         for index, request in enumerate(requests):
@@ -216,7 +250,7 @@ class GapAcquirer:
                 result = verify_gap_shard(root, request, snapshot=snapshot,paths=self.paths)
                 hits += 1
             else:
-                if raw.exists() or (root/'complete.json').exists():
+                if raw.exists() or complete_path.exists():
                     raise ValueError('GAP_UNVERIFIED_RESPONSE_RETAINED')
                 cached = lookup_cached_gap(request, snapshot=snapshot, source_store=self.source_store,paths=self.paths)
                 if cached is not None:
@@ -242,17 +276,16 @@ class GapAcquirer:
                     row_count=len(rows), parent=parent), exclusive=True)
                 write(proof, dict(sha256=digest(path), raw_sha256=digest(raw)), exclusive=True)
                 result = verify_gap_shard(root, request, snapshot=snapshot,paths=self.paths)
-            _register(self.source_store, root, request, result,paths=self.paths)
             shards.append(result)
             empty += int(not result['rows'])
-        manifest = dict(binding_sha256=digest(root/'binding.json'),
-            files={path.name: digest(path) for path in sorted((root/'shards').iterdir()) if path.is_file()})
-        if (root/'complete.json').exists():
-            if read(root/'manifest.json') != manifest or read(root/'complete.json') != dict(manifest_sha256=digest(root/'manifest.json')):
-                raise ValueError('GAP_COMPLETION_HASH_INVALID')
+        manifest = _manifest(root)
+        if complete_path.exists():
+            _verify_completion(root)
         else:
-            write(root/'manifest.json', manifest, exclusive=True)
-            write(root/'complete.json', dict(manifest_sha256=digest(root/'manifest.json')), exclusive=True)
+            write(manifest_path, manifest, exclusive=True)
+            write(complete_path, dict(manifest_sha256=digest(manifest_path)), exclusive=True)
+        for request,result in zip(requests,shards):
+            _register(self.source_store, root, request, result,paths=self.paths)
         if on_progress is not None:
             on_progress(len(requests), len(requests))
         return dict(complete=True, shards=shards, api_requests=api, cache_hits=hits, empty_requests=empty)

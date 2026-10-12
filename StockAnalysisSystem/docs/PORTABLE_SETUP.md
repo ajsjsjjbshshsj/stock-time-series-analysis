@@ -66,7 +66,9 @@ python scripts/manage_project.py start --service frontend
 
 ## 数据根和完整恢复
 
-代码、数据库、模型和运行来源是不同交付物。完整恢复需要相同 Git commit、完整数据库、运行数据根（来源/断点/回执/共享限频状态）及用到的模型；不能只拷三张行情表就声称项目一致。凭据由接收者配置，不随备份公开交接。
+代码、数据库、模型和运行来源是不同交付物。完整恢复需要相同 Git commit、完整数据库、运行数据根（来源/断点/回执）、独立共享限频目录及用到的模型；不能只拷三张行情表就声称项目一致。凭据由接收者配置，不随备份公开交接。
+
+共享限频状态**不在** `PREPARATION_DATA_ROOT` 内，必须另外交接 `StockAnalysisSystem/.runtime/market_requests/`，包括 `request_state.json`、存在时的同级锁及配额冷却证据。它按项目根定位，与其他采集客户端共享；不得通过更换数据根、漏拷该目录或删除未知锁来重置配额。停止原机所有使用者后，核对该目录文件的 SHA256、冷却时间与 owner；跨主机 owner/遗留锁保持拒绝和暂停，不自动恢复。运行数据根、共享请求目录、数据库及模型应取一致停止写入时的副本。
 
 `PREPARATION_DATA_ROOT` 留空默认使用项目的 `.runtime/stock_pool_preparation`；相对值相对于 `StockAnalysisSystem`，不是当前终端目录。绝对值是部署配置，允许自行填写。模型沿用所用训练/发布入口的配置，未包含在 Git 仓库中。
 
