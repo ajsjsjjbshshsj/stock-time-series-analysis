@@ -49,6 +49,29 @@ def generate_probe_labels(df, date_column='trade_date'):
     return label_cls, label_reg, label_dir
 
 
+def split_probe_data(df, train_ratio=.9):
+    """Split entire dates and purge labels realized inside probe validation."""
+    date_column = '日期' if '日期' in df else 'trade_date'
+    if not 0 < train_ratio < 1 or date_column not in df or 'label_target_date' not in df:
+        raise ValueError('Probe requires dated target history')
+    frame = df.copy()
+    frame[date_column] = pd.to_datetime(frame[date_column])
+    frame['label_target_date'] = pd.to_datetime(frame.label_target_date)
+    if frame[[date_column,'label_target_date']].isna().any().any():
+        raise ValueError('Probe target history contains missing dates')
+    dates = sorted(frame[date_column].unique())
+    split = int(len(dates)*train_ratio)
+    if not 0 < split < len(dates):
+        raise ValueError('Insufficient probe history')
+    boundary = dates[split]
+    train = frame[(frame[date_column]<boundary) & (frame.label_target_date<boundary)]
+    val = frame[frame[date_column]>=boundary]
+    if train.empty or val.empty:
+        raise ValueError('Insufficient purged probe history')
+    return (train.sort_values(date_column).reset_index(drop=True),
+            val.sort_values(date_column).reset_index(drop=True))
+
+
 def probe_feature_selection(df, feature_names, n_iter=10, n_noise=10,
                             train_ratio=0.9, seed=42, output_path=None):
     """
@@ -74,11 +97,18 @@ def probe_feature_selection(df, feature_names, n_iter=10, n_noise=10,
     """
     np.random.seed(seed)
 
+    if 'label_target_date' in df:
+        train, val = split_probe_data(df, train_ratio)
+        df = pd.concat([train, val], ignore_index=True)
+        split_point = len(train)
+    else:
+        # Compatibility for non-Transformer callers without horizon metadata.
+        split_point = int(len(df) * train_ratio)
+
     # 生成三个任务标签
     label_cls, label_reg, label_dir = generate_probe_labels(df)
 
     # 按时间顺序划分训练/验证集
-    split_point = int(len(df) * train_ratio)
     train_idx = df.index[:split_point]
     val_idx = df.index[split_point:]
 

@@ -11,6 +11,7 @@
 """
 
 from contextlib import contextmanager
+import logging
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -19,9 +20,9 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from config.settings import DATABASE_CONFIG, mask_secret
-from config.logging_config import get_logger
 
-logger = get_logger(__name__)
+# Preserve the public logger object without eagerly creating file handlers.
+logger = logging.getLogger(__name__)
 
 # 创建Base类
 Base = declarative_base()
@@ -30,13 +31,21 @@ Base = declarative_base()
 class DatabaseConnector:
     """数据库连接器 — 项目唯一入口"""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, diagnostic=False):
         """
         初始化数据库连接
 
         Args:
             config: 数据库配置字典，默认使用 DATABASE_CONFIG
         """
+        # Diagnostic connections must not import the file-logging initializer.
+        if diagnostic:
+            self.logger = logging.getLogger(__name__ + '.diagnostic')
+            self.logger.addHandler(logging.NullHandler())
+            self.logger.propagate = False
+        else:
+            from config.logging_config import get_logger
+            self.logger = get_logger(__name__)
         self.config = config or DATABASE_CONFIG
         self.engine = None
         self.Session = None
@@ -65,12 +74,12 @@ class DatabaseConnector:
                 connect_args=connect_args,
             )
             self.Session = sessionmaker(bind=self.engine)
-            logger.info(
+            self.logger.info(
                 f"数据库连接成功 ({cfg['host']}:{cfg['port']}/{cfg['database']})"
             )
         except OperationalError as e:
             safe_msg = str(e).replace(cfg['password'], mask_secret(cfg['password']))
-            logger.error(
+            self.logger.error(
                 f"数据库连接失败: {safe_msg}\n"
                 f"  请检查:\n"
                 f"    1. MySQL 服务是否运行 ({cfg['host']}:{cfg['port']})\n"
@@ -81,16 +90,16 @@ class DatabaseConnector:
             raise
         except Exception as e:
             safe_msg = str(e).replace(cfg['password'], mask_secret(cfg['password']))
-            logger.error(f"数据库连接异常: {safe_msg}")
+            self.logger.error(f"数据库连接异常: {safe_msg}")
             raise
 
     def create_tables(self):
         """创建所有 ORM 定义的表"""
         try:
             Base.metadata.create_all(self.engine)
-            logger.info("数据库表创建/同步完成")
+            self.logger.info("数据库表创建/同步完成")
         except Exception as e:
-            logger.error(f"创建数据库表失败: {e}")
+            self.logger.error(f"创建数据库表失败: {e}")
             raise
 
     def get_session(self):
@@ -101,7 +110,7 @@ class DatabaseConnector:
         """关闭连接池"""
         if self.engine:
             self.engine.dispose()
-            logger.info("数据库连接已关闭")
+            self.logger.info("数据库连接已关闭")
 
     def __enter__(self):
         return self
@@ -175,7 +184,7 @@ class DatabaseConnector:
                     raise
                 total += len(batch)
                 if (i // batch_size + 1) % 20 == 0:
-                    logger.info(
+                    self.logger.info(
                         f"已写入 {total}/{len(records)} 条 → {table_name}"
                     )
         return total

@@ -6,7 +6,7 @@ def to_ts_code(code: str) -> str:
     normalized = str(code).strip().upper()
     if "." in normalized:
         return normalized
-    if normalized.startswith(("4", "8")):
+    if normalized.startswith(("4", "8", "920")):
         return f"{normalized}.BJ"
     if normalized.startswith(("6", "9")):
         return f"{normalized}.SH"

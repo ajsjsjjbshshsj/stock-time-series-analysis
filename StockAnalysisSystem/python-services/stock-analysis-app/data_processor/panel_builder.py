@@ -102,7 +102,7 @@ def restore_turnover_rate_from_cache(panel_df, raw_cache_path):
 
 def load_all_stock_data_from_db(start_date=None, end_date=None,
                                 sectors=None, index_codes=None, use_tushare=False,
-                                stock_codes=None):
+                                stock_codes=None, *, strict_validation=False):
     """
     从数据库加载所有股票的日线数据。
 
@@ -141,6 +141,7 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
                         basic_df = basic_df[basic_df['ts_code'].isin(filtered_codes)]
                         logger.info(f"板块/指数筛选后: {len(basic_df)} 只股票")
 
+                requested_codes = list(stock_codes) if stock_codes is not None else basic_df['ts_code'].tolist()
                 stock_codes = basic_df['ts_code'].tolist()
                 code_name_map = dict(zip(basic_df['ts_code'], basic_df['name']))
                 logger.info(f"从数据库获取 {len(stock_codes)} 只股票")
@@ -167,11 +168,16 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
                 # DB JOIN 是主来源；旧缓存只填补尚未历史补采的空值。
                 CACHE_DIR = os.path.join(os.path.dirname(__file__), '..', 'models', 'traditional_features')
                 raw_cache = os.path.join(CACHE_DIR, 'raw_panel.parquet')
-                panel_df = restore_turnover_rate_from_cache(panel_df, raw_cache)
+                if not strict_validation:
+                    panel_df = restore_turnover_rate_from_cache(panel_df, raw_cache)
+                panel_df.attrs['requested_codes'] = sorted(requested_codes)
+                panel_df.attrs['source_mode'] = 'strict_database' if strict_validation else 'legacy_compatibility'
 
                 return panel_df
 
     except Exception as e:
+        if strict_validation:
+            raise ValueError('Strict market database loading failed') from None
         logger.error(f"从数据库加载数据失败: {e}")
         return pd.DataFrame()
 
@@ -619,10 +625,14 @@ def add_label(panel_df, forward_days=5):
     返回:
         DataFrame: 添加了 label 列的面板数据
     """
+    if type(forward_days) is not int or forward_days < 1:
+        raise ValueError('forward_days must be a positive integer')
     panel_df = panel_df.copy()
+    panel_df['trade_date'] = pd.to_datetime(panel_df['trade_date'])
 
     # 按股票分组计算未来收益率
     panel_df = panel_df.sort_values(['ts_code', 'trade_date'])
+    panel_df['label_target_date'] = panel_df.groupby('ts_code')['trade_date'].shift(-forward_days)
     panel_df['label'] = panel_df.groupby('ts_code')['close'].transform(
         lambda x: x.shift(-forward_days) / x - 1
     )
@@ -631,7 +641,12 @@ def add_label(panel_df, forward_days=5):
     panel_df['future_return_1d'] = panel_df.groupby('ts_code')['close'].transform(
         lambda x: x.shift(-1) / x - 1
     )
-    panel_df['future_return_5d'] = panel_df['label']
+    panel_df['future_return_5d'] = panel_df.groupby('ts_code')['close'].transform(
+        lambda x: x.shift(-5) / x - 1
+    )
+    for horizon in (1, 5):
+        returns = panel_df[f'future_return_{horizon}d']
+        panel_df[f'future_direction_{horizon}d'] = (returns > 0).astype(float).where(returns.notna())
     valid_count = panel_df['label'].notna().sum()
     logger.info(f"添加 label 列（未来{forward_days}日收益率）完成，有效样本: {valid_count}")
     return panel_df
@@ -736,7 +751,8 @@ def compute_cross_sectional_features(
 
 
 def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
-                               n_workers=None, use_parallel=True, save_to_db=False):
+                               n_workers=None, use_parallel=True, save_to_db=False, *,
+                               keep_unlabelled=False, cache_dir=None):
     """
     完整的训练数据准备流程：
     1. 增量采集最新数据
@@ -762,23 +778,18 @@ def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
     stock_universe = sorted(panel_df['ts_code'].dropna().astype(str).unique())
     universe_hash = hashlib.md5('|'.join(stock_universe).encode('utf-8')).hexdigest()[:10]
     universe_key = f"{len(stock_universe)}_{universe_hash}"
-    CACHE_DIR = os.path.join(
+    CACHE_DIR = os.fspath(cache_dir) if cache_dir is not None else os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
-        'models', 'traditional_features', universe_key
+        'models', 'traditional_features', universe_key, 'validation_v1'
     )
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(CACHE_DIR, 'panel_features.parquet')
     raw_cache_path = os.path.join(CACHE_DIR, 'raw_panel.parquet')
 
     # 自动检测：已有缓存时走增量
-    if os.path.exists(cache_path) and os.path.exists(raw_cache_path):
-        logger.info("检测到传统管线特征缓存，使用增量模式...")
-        featured_panel = _prepare_panel_incremental(
-            panel_df, cache_path, raw_cache_path, forward_days, n_workers, use_parallel
-        )
-        if featured_panel.empty:
-            return pd.DataFrame()
-    else:
+    # Caches without a verified full source identity are never incrementally
+    # mixed. Rebuild from supplied history in the isolated validation namespace.
+    if not panel_df.empty:
         # 全量计算（原有逻辑）
         engineer = FeatureEngineer()
         if use_parallel:
@@ -824,9 +835,12 @@ def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
     featured_panel = add_label(featured_panel, forward_days=forward_days)
 
     # 清理无效数据（只保留 label 和核心标识列有效的行）
-    featured_panel = featured_panel.dropna(subset=['label', 'ts_code'])
+    featured_panel = featured_panel.dropna(subset=['ts_code'])
     featured_panel = featured_panel.replace([np.inf, -np.inf], np.nan)
-    featured_panel = featured_panel.dropna(subset=['label', 'ts_code'])
+    featured_panel = featured_panel.dropna(subset=['ts_code'])
+    featured_panel.to_parquet(cache_path, engine='pyarrow', index=False)
+    if not keep_unlabelled:
+        featured_panel = featured_panel.dropna(subset=['label'])
 
     logger.info(f"训练数据准备完成: {len(featured_panel)} 行, "
                 f"{featured_panel['ts_code'].nunique()} 只股票, "

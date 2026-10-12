@@ -129,6 +129,50 @@ class StockPredictor:
     # =========================================================================
     # 数据集划分辅助方法
     # =========================================================================
+    def prepare_inference_frame(self, df, feature_names=None):
+        """Keep source dates; unknown labels never remove latest inference rows."""
+        from analysis.pipeline import LABEL_COLUMNS, IDENTITY_COLUMNS
+        names = feature_names or self.feature_names
+        if (not names or len(set(names)) != len(names)
+                or set(names) & (LABEL_COLUMNS | IDENTITY_COLUMNS)
+                or not {'trade_date', *names}.issubset(df)):
+            raise ValueError('Missing or unsafe model feature schema')
+        result = df.copy()
+        result['trade_date'] = pd.to_datetime(result.trade_date, errors='raise')
+        if result.trade_date.isna().any() or result.trade_date.duplicated().any():
+            raise ValueError('Invalid inference sample dates')
+        values = result[names].apply(pd.to_numeric, errors='raise')
+        result.loc[:, names] = values
+        return result[np.isfinite(values.to_numpy(dtype=float)).all(axis=1)].sort_values('trade_date')
+
+    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2):
+        """Date-bound alternative to legacy anonymous-array trainers; no save."""
+        from analysis.strategy_samples import dated_samples, purged_splits
+        from xgboost import XGBClassifier, XGBRegressor
+        if self.model_type not in ('xgboost', 'xgboost_regression'):
+            raise ValueError('Unsupported dated trainer; legacy LSTM training is absent')
+        if 'ts_code' not in df or df.ts_code.nunique() != 1:
+            raise ValueError('Single-stock training requires one stock')
+        classification = self.model_type == 'xgboost'
+        samples = dated_samples(df, feature_names, horizon=horizon, classification=classification)
+        groups = purged_splits(samples, train_ratio=train_ratio, val_ratio=val_ratio, test_ratio=test_ratio)
+        train, val, test = (groups[k] for k in ('train', 'val', 'test'))
+        params = dict(MODEL_CONFIG['xgboost_params'])
+        params.setdefault('random_state', MODEL_CONFIG.get('random_seed', 42))
+        params.update(objective='binary:logistic' if classification else 'reg:squarederror',
+                      eval_metric='logloss' if classification else 'rmse')
+        model = (XGBClassifier if classification else XGBRegressor)(**params)
+        model.fit(train[feature_names], train.label, eval_set=[(val[feature_names], val.label)], verbose=False)
+        predictions = model.predict(test[feature_names])
+        self.model, self.feature_names = model, list(feature_names)
+        self.train_metadata = dict(validation_schema=1, seen_through=groups['seen_through'],
+                                   splits=groups['splits'], horizon=horizon, feature_names=list(feature_names))
+        output = test[['ts_code', 'trade_date', 'label_target_date', 'label']].copy()
+        output['prediction'] = predictions
+        metrics = self._evaluate_model(test.label, predictions) if classification else self._evaluate_regression(test.label, predictions)
+        return dict(model=model, metrics=metrics, test_predictions=output,
+                    predictions=predictions, y_test=test.label.to_numpy(), metadata=dict(self.train_metadata))
+
     def _split_time_series(self, X, y, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2):
         """
         按时间顺序划分为训练集/验证集/测试集
