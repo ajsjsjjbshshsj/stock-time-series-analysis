@@ -15,16 +15,25 @@ from app.nightly.symbol_periods import reference_rows
 from app.nightly.universe import verify_reference
 from app.nightly.acquisition import NativeDayAcquirer
 from app.repositories.preparation_repository import ERRORS
+from app.runtime_paths import resolve_reference,persist_reference
 
 
 class GapUpdateService:
     def __init__(self, tasks, coverage, imports, calendar, universe, acquirer,
-                 reference_loader, batch_store, data_root, *, clock=time.time):
+                 reference_loader, batch_store, data_root, *, clock=time.time,paths=None):
         self.tasks, self.coverage, self.imports = tasks, coverage, imports
         self.calendar, self.universe, self.acquirer = calendar, universe, acquirer
         self.reference_loader, self.batch_store = reference_loader, batch_store
         self.data_root, self.clock = Path(data_root).resolve(), clock
         self.tasks.prepare_batch = self.prepare_batch
+        self.paths=paths
+
+    def _verified_reference(self,pinned):
+        directory=resolve_reference(pinned['source_directory'],self.paths)
+        bundle=verify_reference(directory)
+        if bundle!=dict(pinned,source_directory=str(directory)):
+            raise ValueError('PINNED_REFERENCE_CHANGED')
+        return bundle
 
     def _now(self):
         return datetime.fromtimestamp(self.clock(), timezone.utc)
@@ -32,8 +41,7 @@ class GapUpdateService:
     def _local_reference(self):
         pinned = self.universe.pinned_reference
         if pinned is not None:
-            bundle = verify_reference(pinned['source_directory'])
-            if bundle != pinned:raise ValueError('PINNED_REFERENCE_CHANGED')
+            bundle = self._verified_reference(pinned)
             return bundle
         candidates = list((self.data_root/'gap_references').glob('*/complete.json'))
         candidates += list((self.data_root/'market_updates').glob('*/attempts/*/reference/complete.json'))
@@ -47,8 +55,7 @@ class GapUpdateService:
         cutoff = local.date() if local.time() > daytime(16) else local.date()-timedelta(days=1)
         if first > last or last > cutoff:raise ValueError('GAP_RANGE_NOT_COMPLETED')
         if pinned_reference is not None:
-            bundle = verify_reference(pinned_reference['source_directory'])
-            if bundle != pinned_reference:raise ValueError('PINNED_REFERENCE_CHANGED')
+            bundle = self._verified_reference(pinned_reference)
         elif not acquire_reference:
             bundle = self._local_reference()
             if bundle is None:raise ValueError('LOCAL_VERIFIED_REFERENCE_REQUIRED')
@@ -95,7 +102,7 @@ class GapUpdateService:
         if not persist:return summary
         batch = self.batch_store.create_or_load(snapshot, daily)
         self.batch_store.save(Path(batch['path'])/'reference.json',
-            dict(source_directory=bundle['source_directory'], manifest_sha256=bundle['manifest_sha256']), immutable=True)
+            dict(source_directory=persist_reference(bundle['source_directory'],self.paths), manifest_sha256=bundle['manifest_sha256']), immutable=True)
         return batch
 
     def submit(self, day, run_at='20:00'):
@@ -143,7 +150,7 @@ class GapUpdateService:
                 query_codes=proof.get('query_codes',[code])
                 if query_codes is not None and query_codes!=[code]:raise ValueError('NO_QUOTE_QUERY_SCOPE_INVALID')
                 root=folder/'suspensions'/('market' if query_codes is None else code)
-                if Path(proof['directory']).resolve()!=root.resolve():raise ValueError('NO_QUOTE_SOURCE_OUTSIDE_ROOT')
+                if resolve_reference(proof['directory'],self.paths)!=root.resolve():raise ValueError('NO_QUOTE_SOURCE_OUTSIDE_ROOT')
                 def forbidden(*args):raise ValueError('NO_QUOTE_COMPLETION_PROOF_REQUIRED')
                 source_key=(str(root),day)
                 if source_key not in native_sources:
@@ -182,7 +189,7 @@ class GapUpdateService:
         batch = self.batch_store.load(task['requirements_version'])
         snapshot = batch['snapshot']
         reference = self.batch_store.read(Path(batch['path'])/'reference.json')
-        source = verify_reference(reference['source_directory'])
+        source = verify_reference(resolve_reference(reference['source_directory'],self.paths))
         if source['manifest_sha256'] != snapshot['reference_sha256'] or reference['manifest_sha256'] != source['manifest_sha256']:
             raise ValueError('GAP_REFERENCE_CHANGED')
         universe = freeze_market(day, snapshot['members'], source['manifest_sha256'], source['acquired_at'], schema_version=2)
@@ -283,7 +290,7 @@ class GapUpdateService:
                 existed = (root/'complete.json').exists()
                 acquired = native.collect(day, ['suspend_d'], root)
                 shard=acquired['shards'][0]
-                proof=dict(source_kind='native',directory=str(root),query_codes=None,
+                proof=dict(source_kind='native',directory=persist_reference(root,self.paths),query_codes=None,
                     raw_sha256=shard['raw_sha256'],manifest_sha256=shard['manifest_sha256'])
                 budget += int(not existed);state['api_requests'] += int(not existed)
                 from collections import defaultdict
@@ -305,7 +312,7 @@ class GapUpdateService:
         self.imports.owner_guard=guard
         try:
             for request,candidates,table in verified_receipts:
-                verify_gap_shard(Path(batch['path'])/'sources'/request['id'],request,snapshot=snapshot)
+                verify_gap_shard(Path(batch['path'])/'sources'/request['id'],request,snapshot=snapshot,paths=self.paths)
                 result=import_gap_candidates(self.imports,candidates,
                     binding=dict(batch_sha256=batch['full_sha256'],coverage_sha256=snapshot['coverage_sha256'],request_sha256=request['id']),
                     allowed_keys={table:[key for key in request['expected_keys'] if key[1]==day]},schema={table:schemas[table]},

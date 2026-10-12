@@ -98,3 +98,14 @@ class RuntimePaths:
         length,kind=max(candidates)
         suffix='/'.join(original[length:])
         return self._inside(kind,suffix,must_exist=must_exist)
+
+
+def resolve_reference(reference,paths=None):
+    if paths is not None:return paths.resolve(reference,must_exist=True)
+    if not isinstance(reference,str) or '://' in reference:
+        raise ValueError('RUNTIME_RESOLVER_REQUIRED')
+    return Path(reference).resolve()
+
+
+def persist_reference(path,paths=None):
+    return paths.encode(path) if paths is not None else str(Path(path).resolve())

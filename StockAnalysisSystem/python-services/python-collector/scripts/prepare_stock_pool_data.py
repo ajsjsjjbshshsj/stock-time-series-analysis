@@ -34,7 +34,9 @@ class Runtime:
         from app.preparation.acquisition import MarketAcquirer
         from app.preparation.reference import ReferenceLoader
         from app.preparation.service import DataPreparationService
-        self.data_root=Path(os.getenv('PREPARATION_DATA_ROOT',str(PROJECT/'.runtime/stock_pool_preparation'))).resolve()
+        from app.runtime_paths import RuntimePaths
+        self.paths=RuntimePaths.from_environment(PROJECT,os.environ)
+        self.data_root=self.paths.data_root
         interval=float(os.getenv('COLLECTION_REQUEST_INTERVAL','.5'))
         if not math.isfinite(interval) or interval<.5: raise ValueError('REQUEST_INTERVAL_INVALID')
         self.db=DatabaseConnector()
@@ -96,8 +98,8 @@ class Runtime:
             self._market_service=GapUpdateService(self.market_tasks(),GapCoverageRepository(self.db.Session),
                 GapImportRepository(self.db.Session),self.calendar,
                 MarketUniverseProvider(self.client,self.acquirer.requests,schema_version=2),
-                GapAcquirer(self.client,self.acquirer.requests,source_store=self.evidence),
-                SnapshotReferenceWriter(self.db.Session),GapBatchStore(self.data_root),self.data_root)
+                GapAcquirer(self.client,self.acquirer.requests,source_store=self.evidence,paths=self.paths),
+                SnapshotReferenceWriter(self.db.Session),GapBatchStore(self.data_root),self.data_root,paths=self.paths)
         return self._market_service
 
     def scheduler(self,*,run_at='20:00',bootstrap_start=None):
