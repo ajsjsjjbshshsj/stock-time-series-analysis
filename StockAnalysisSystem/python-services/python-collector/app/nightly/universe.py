@@ -6,7 +6,7 @@ import pandas as pd
 
 from app.market_data.forward_snapshot import read,write,digest
 from app.preparation.contracts import TZ,iso,timestamp
-from .contracts import FIELDS,market_day,freeze_market,_reference
+from .contracts import FIELDS,market_day,freeze_market,_reference,excluded_legacy_reference
 from .acquisition import scoped_path,rows_of,make_pacing,paced_call,lazy_source_client
 
 PARTITIONS=[(exchange,status) for exchange in ('SSE','SZSE') for status in ('L','D','P')]
@@ -17,9 +17,9 @@ def _validated(rows,params,acquired):
     if not isinstance(rows,list) or len(rows)>=6000 or params['list_status']=='L' and not rows:
         raise ValueError('REFERENCE_PARTITION_INCOMPLETE')
     for row in rows:
-        _reference(row,acquired)
         if row['exchange']!=params['exchange'] or row['list_status']!=params['list_status']:
             raise ValueError('REFERENCE_QUERY_BOUNDARY_INVALID')
+        if excluded_legacy_reference(row,acquired) is None:_reference(row,acquired)
         for field in ('list_date','delist_date'):
             value=row[field]
             if value not in (None,'') and (type(value) is not str or len(value)!=8):
@@ -56,7 +56,8 @@ def verify_reference(directory):
     acquired=max(timestamp(part['acquired_at']) for part in parts).isoformat()
     # Validation also catches conflicting identities across separate L/D/P calls.
     freeze_market(timestamp(acquired).date().isoformat(),rows,digest(manifest),acquired)
-    return dict(source_directory=str(root),manifest_sha256=digest(manifest),acquired_at=acquired,rows=rows)
+    exclusions=[item for row in rows if (item:=excluded_legacy_reference(row,timestamp(acquired))) is not None]
+    return dict(source_directory=str(root),manifest_sha256=digest(manifest),acquired_at=acquired,rows=rows,excluded_references=exclusions)
 
 class MarketUniverseProvider:
     def __init__(self,client_factory,requests_factory,*,clock=time.time,pinned_reference=None):

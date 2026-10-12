@@ -63,3 +63,37 @@ def test_missing_ipo_or_calendar_is_explicit_prerequisite_not_guess():
     result=build(pool,window,tables,evidence)
     assert result['data_ready'] is False
     assert result['missing_reference']==['000001.SZ']
+
+def intraday_fixture(*,quote=True,timing='11:13-11:23'):
+    from app.market_data.repair_contract import DAILY
+    pool,window,tables,evidence=fixture()
+    original=tables['stock_daily'].pop(0)
+    if quote:
+        evidence['daily']=[{k:original[k] if k in ('ts_code','trade_date') else float(original[k]) for k in DAILY}]
+    evidence['suspend_d']=[dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='S',suspend_timing=timing),
+        dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='R',suspend_timing=None)]
+    return pool,window,tables,evidence
+
+def test_precise_intraday_stop_and_resume_with_verified_quote_is_not_a_conflict():
+    result=build(*intraday_fixture())
+    assert result['data_ready'] and result['issues']['SOURCE_CONFLICT']==0
+    assert result['attribution']['candidates']['stock_daily'][0]['ts_code']=='000001.SZ'
+
+def test_intraday_stop_without_quote_does_not_invent_full_day_suspension():
+    result=build(*intraday_fixture(quote=False))
+    assert not result['data_ready'] and result['issues']['SOURCE_CONFLICT']==1
+    assert result['attribution']['candidates']['stock_daily']==[]
+
+@pytest.mark.parametrize('timing',[None,'','unknown','25:00-25:10','11:23-11:13','09:30-15:00','08:00-08:30'])
+def test_unknown_or_full_session_sr_events_remain_conflicting_even_with_quote(timing):
+    result=build(*intraday_fixture(timing=timing))
+    assert not result['data_ready'] and result['issues']['SOURCE_CONFLICT']==1
+    assert result['attribution']['candidates']['stock_daily']==[]
+
+def test_frozen_repair_default_policy_keeps_original_conservative_replay():
+    from app.market_data.repair_snapshot import classify_sources
+    pool,window,tables,evidence=intraday_fixture()
+    data=dict(pool=pool,tables=tables,calendar=evidence['calendar'])
+    sources={method:evidence[method] for method in ('daily','daily_basic','adj_factor','suspend_d')}
+    assert classify_sources(data,sources)['report']['source_issue_counts']['SOURCE_CONFLICT']==1
+    assert classify_sources(data,sources,allow_verified_intraday=True)['report']['source_issue_counts']['SOURCE_CONFLICT']==0

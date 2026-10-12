@@ -83,7 +83,7 @@ def build_stock_inventory(pool: dict, window: dict, tables: dict, evidence: dict
             row['trade_date'] = f'{day[:4]}-{day[4:6]}-{day[6:]}' if len(day)==8 else day
             if row['ts_code'] in listed and row['trade_date'] in dates and row['trade_date']>=listed[row['ts_code']]:
                 sources[method].append(row)
-    result = classify_sources(dict(pool=pool,calendar=calendar,tables=tables),sources)
+    result = classify_sources(dict(pool=pool,calendar=calendar,tables=tables),sources,allow_verified_intraday=True)
     issues = dict(result['report']['source_issue_counts'],INVALID_EXISTING_DATA=len(invalid_keys))
     queried = {tuple(k) for k in evidence.get('queried_suspensions',[])}
     statuses = result['status']

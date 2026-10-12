@@ -35,7 +35,23 @@ def equal_business(old,new,fields,types):
     return all(sql_value(old.get(f),types.get(f,''))==sql_value(new.get(f),types.get(f,'')) for f in fields)
 
 
-def classify_sources(data: dict,sources: dict[str,list[dict]]) -> dict:
+def _precise_intraday_stops(events):
+    stops=[event for event in events if event['suspend_type']=='S']
+    if not stops:return False
+    for event in stops:
+        value=event['suspend_timing']
+        match=re.fullmatch(r'([0-9]{2}):([0-9]{2})-([0-9]{2}):([0-9]{2})',value) if isinstance(value,str) else None
+        if match is None:return False
+        sh,sm,eh,em=map(int,match.groups());start=(sh,sm);end=(eh,em)
+        if sm>=60 or em>=60 or not (9,30)<=start<end<=(15,0) or (start,end)==((9,30),(15,0)):
+            return False
+    return True
+
+
+def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_intraday=False) -> dict:
+    # Frozen repair packages replay their original conservative attribution.
+    # Current stock inventories explicitly opt in to verified intraday quotes.
+    if type(allow_verified_intraday) is not bool:raise ValueError('INVALID_INTRADAY_POLICY')
     t=data['tables']; codes=data['pool']['codes']; listed={r['ts_code']:r['list_date'] for r in t['stock_basic']}
     dates=sorted(r['cal_date'] for r in data['calendar']['rows'] if r['is_open']==1 and t['start']<=r['cal_date']<=t['end'])
     normalized={}
@@ -79,7 +95,10 @@ def classify_sources(data: dict,sources: dict[str,list[dict]]) -> dict:
         for code in codes:
             k=(code,day); events=suspend.get(k,[])
             full=bool(events) and all(e['suspend_type']=='S' and e['suspend_timing'] is None for e in events)
-            ambiguous=any(e['suspend_type']=='S' for e in events) and any(e['suspend_type']=='R' for e in events)
+            confirmed_intraday=(allow_verified_intraday and origins['daily'].get(k) in ('PROVIDER_ROW','PROVIDER_VERIFIED_EXISTING')
+                and _precise_intraday_stops(events))
+            ambiguous=(any(e['suspend_type']=='S' for e in events) and any(e['suspend_type']=='R' for e in events)
+                and not confirmed_intraday)
             suspension_conflict=ambiguous or (full and k in daily)
             if suspension_conflict:
                 conflicts.append(dict(table='stock_daily',ts_code=code,trade_date=day,

@@ -70,3 +70,28 @@ def test_bad_or_incomplete_reference_partitions_are_not_frozen(tmp_path,bad):
 def test_reference_future_day_rejected_before_sdk(tmp_path):
     def forbidden():raise AssertionError('SDK_FOR_FUTURE_DAY')
     with pytest.raises(ValueError):module().MarketUniverseProvider(forbidden,lambda directory:Pacing(),clock=lambda:NOW).freeze('2027-01-01',tmp_path)
+
+def legacy_port():
+    # Actual provider identity retained verbatim, not mapped to 600018.SH.
+    return reference('T600018.SH',symbol='T600018',name='上港集箱(退)',exchange='SSE',market=None,
+        area=None,industry=None,list_status='D',list_date='20000719',delist_date='20061020')
+
+def test_verified_pre_scope_legacy_alias_remains_in_raw_audit_not_target_members(tmp_path):
+    calls=[];rows=[reference(),reference('600018.SH',exchange='SSE',list_date='20061026'),legacy_port()]
+    provider=module().MarketUniverseProvider(lambda:client(rows,calls),lambda directory:Pacing(),clock=lambda:NOW)
+    snapshot=provider.freeze('2026-09-28',tmp_path)
+    assert snapshot['codes']==['000001.SZ','600018.SH']
+    raw=pd.read_parquet(tmp_path/'SSE_D.parquet')
+    assert raw['ts_code'].tolist()==['T600018.SH'] and raw['symbol'].tolist()==['T600018']
+    bundle=module().verify_reference(tmp_path)
+    assert bundle['excluded_references']==[dict(ts_code='T600018.SH',reason='VERIFIED_LEGACY_RETIRED_BEFORE_SCOPE',delist_date='2006-10-20')]
+    assert next(row for row in bundle['rows'] if row['ts_code']=='T600018.SH')==legacy_port()
+    def forbidden():raise AssertionError('SDK_ON_RETAINED_LEGACY_REFERENCE')
+    assert module().MarketUniverseProvider(forbidden,lambda directory:Pacing(),clock=lambda:NOW).freeze('2026-09-28',tmp_path)==snapshot
+
+@pytest.mark.parametrize('change',[dict(delist_date='20250928'),dict(list_status='L'),dict(symbol='600018'),dict(exchange='SZSE')])
+def test_legacy_alias_exception_never_excludes_in_scope_or_mismatched_identity(tmp_path,change):
+    calls=[];old=legacy_port();old.update(change)
+    rows=[reference(),reference('600000.SH',exchange='SSE'),old]
+    provider=module().MarketUniverseProvider(lambda:client(rows,calls),lambda directory:Pacing(),clock=lambda:NOW)
+    with pytest.raises(ValueError):provider.freeze('2026-09-28',tmp_path)

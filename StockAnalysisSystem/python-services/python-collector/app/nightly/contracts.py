@@ -39,6 +39,28 @@ def _reference_date(value,*,nullable=False):
     if re.fullmatch(r'[0-9]{8}',value):return datetime.strptime(value,'%Y%m%d').date().isoformat()
     return iso(value).isoformat()
 
+def excluded_legacy_reference(raw,acquired):
+    """Recognize only the verified, pre-2023 retired port-company alias.
+
+    Tushare returns T600018.SH for the old entity; it must NEVER be stripped
+    to the current 600018.SH. Keep every source field in the sealed raw bundle.
+    The issuer's absorption/listing history is documented at
+    https://www.sse.com.cn/disclosure/bond/c/2011-04-07/122065_20110407_1.pdf
+    All other malformed identities remain errors, even when seemingly old.
+    """
+    if not isinstance(raw,dict) or raw.get('ts_code')!='T600018.SH':return None
+    if (set(raw)!=set(FIELDS) or raw['symbol']!='T600018' or raw['exchange']!='SSE'
+            or raw['curr_type']!='CNY' or raw['list_status']!='D'
+            or raw['market'] not in (None,'主板')
+            or _reference_date(raw['list_date'])!='2000-07-19'
+            or _reference_date(raw['delist_date'])!='2006-10-20'
+            or acquired.date()<iso('2006-10-20')):
+        raise ValueError('LEGACY_REFERENCE_BOUNDARY_INVALID')
+    for field,limit in (('name',50),('area',20),('industry',30)):
+        if raw[field] is not None and (type(raw[field]) is not str or len(raw[field])>limit):
+            raise ValueError('REFERENCE_FIELD_INVALID')
+    return dict(ts_code=raw['ts_code'],reason='VERIFIED_LEGACY_RETIRED_BEFORE_SCOPE',delist_date='2006-10-20')
+
 def _reference(raw,acquired):
     if not isinstance(raw,dict) or set(raw)!=set(FIELDS):raise ValueError('REFERENCE_FIELDS_INVALID')
     row=dict(raw);code=row['ts_code']
@@ -67,6 +89,10 @@ def freeze_market(day,source_rows,source_manifest_sha256,acquired_at):
     if not isinstance(source_rows,list):raise ValueError('REFERENCE_ROWS_INVALID')
     members=[];seen=set()
     for raw in source_rows:
+        excluded=excluded_legacy_reference(raw,acquired)
+        if excluded is not None:
+            if raw['ts_code'] in seen:raise ValueError('REFERENCE_DUPLICATE')
+            seen.add(raw['ts_code']);continue
         row=_reference(raw,acquired)
         if row['ts_code'] in seen:raise ValueError('REFERENCE_DUPLICATE')
         seen.add(row['ts_code'])
