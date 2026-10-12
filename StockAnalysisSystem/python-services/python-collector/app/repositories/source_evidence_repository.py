@@ -37,7 +37,7 @@ class SourceEvidenceRepository:
     def register(self, ref: dict) -> dict:
         return self.register_many([ref])[0]
 
-    def register_many(self, refs: list[dict]) -> list[dict]:
+    def register_many(self, refs: list[dict], *, owner_guard=None) -> list[dict]:
         payloads={}
         for ref in refs:
             validate_ref(ref)
@@ -51,6 +51,7 @@ class SourceEvidenceRepository:
         columns=','.join(('evidence_id',)+FIELDS)
         params=','.join(':'+k for k in ('evidence_id',)+FIELDS)
         with transaction(self.session_factory) as session:
+            if owner_guard is not None:owner_guard(session)
             for offset in range(0,len(keys),500):
                 batch=keys[offset:offset+500]
                 stmt=text('SELECT * FROM market_source_evidence WHERE evidence_id IN :keys').bindparams(bindparam('keys',expanding=True))
