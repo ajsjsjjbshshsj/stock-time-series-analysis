@@ -112,6 +112,42 @@ def test_new_period_service_seals_exclusion_audit_for_actual_registration(tmp_pa
         audit=tmp_path/'market_updates'/result['task_id']/'attempts/000001/source_exclusions.json'
         assert sealed(audit)==[]
 
+@pytest.mark.parametrize('register_at_verify',[False,True])
+def test_v2_verified_legacy_precision_keeps_old_rows_and_seals_audit(tmp_path,register_at_verify):
+    from app.nightly.universe import MarketUniverseProvider
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    from app.nightly.contracts import FIELDS
+    from app.nightly.service import sealed
+    class Client:
+        def stock_basic(self,**params):
+            records=[reference(),reference('600000.SH',exchange='SSE')]
+            return pd.DataFrame([r for r in records if r['exchange']==params['exchange'] and r['list_status']==params['list_status']],columns=FIELDS)
+    class Pacing:
+        def call(self,method,params):return method(**params)
+    with database() as factory:
+        service,_,market,calls,_=make(factory,tmp_path)
+        service.tasks=MarketUpdateRepository(factory,requirements_version='market-v2')
+        service.universe_provider=MarketUniverseProvider(lambda:Client(),lambda directory:Pacing(),clock=service.clock,schema_version=2)
+        old=market.tables['stock_daily'][0];old['amount']='90550.234375'
+        raw={field:(old[field] if field in DAILY[:2] else float(old[field])) for field in DAILY};raw.update(trade_date='20260928',amount=90550.232)
+        bundle=dict(kind='daily',provider='tushare.daily',start_date=DAY,end_date=DAY,expected_codes=['000001.SZ'],rows=[raw])
+        if register_at_verify:
+            stage=service._stage
+            def concurrent_registration(task,token,phase,progress=None):
+                if phase=='VERIFY':service.evidence_store.register_verified(bundle)
+                return stage(task,token,phase,progress)
+            service._stage=concurrent_registration
+        else:service.evidence_store.register_verified(bundle)
+        before=deepcopy(market.tables)
+        result=execute(service,service.tasks)
+        expected_count=0 if register_at_verify else 1
+        assert result['status']=='SUCCEEDED' and result['result']['legacy_float32_compatible_count']==expected_count
+        assert result['result']['inserted_this_attempt']==0 and market.tables==before
+        audit=sealed(tmp_path/'market_updates'/result['task_id']/'attempts/000001/precision_compatibility.json')
+        assert len(audit['rows'])==expected_count
+        if not register_at_verify:assert audit['rows'][0]['changed_fields']==['amount']
+        assert audit['source_manifest_sha256'] and len(audit['baseline_sha256'])==64
+
 @pytest.mark.parametrize('interruption',['pointer_write','bound_pointer_missing'])
 def test_reference_binding_recovers_original_source_without_poisoning_retry(tmp_path,monkeypatch,interruption):
     from app.nightly.universe import MarketUniverseProvider

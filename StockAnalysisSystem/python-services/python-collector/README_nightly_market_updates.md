@@ -20,6 +20,20 @@
 供应商可能同时返回新代码生效前的历史价格；只有明确核准的代码有效期外记录会审计排除，不改名复制到其它代码。
 其它未知股票、名单外行情或基本指标仍报错；原始响应始终保留。
 
+## 旧数据精度兼容
+
+新版 `market-v2` 在已核验来源上采用显式精度兼容：只有整条数值记录能严格重现
+“来源值转 IEEE binary32，再按实际 MySQL DECIMAL 精度存储”的结果，才接受旧值。
+不设置宽泛误差范围，不更新旧行情，不把量化后的值用于新增行。
+缺少完整 DECIMAL 类型声明、空值不一致、或无法重现的差异仍失败。
+旧冻结修复包及默认比较保持严格规则，序列化报告格式不变。
+
+结果中的 `legacy_float32_compatible_count` 是兼容旧值的记录数；每次运行封存
+`market_updates/TASK_ID/attempts/ATTEMPT/precision_compatibility.json` 及其哈希证明，
+绑定原始 SQL 基线、已核验来源清单、差异字段和比较哈希。
+旧 float32 已经丢失的信息无法恢复，同一 binary32 量化区间内的更小变化无法区分；
+可分辨且不满足上述严格重现条件的变化仍被拦截。
+
 ## 先准备数据库
 
 先通过数据库客户端显式执行 `../../infrastructure/mysql/migrations/V0.9_002_nightly_market_updates.sql`。
