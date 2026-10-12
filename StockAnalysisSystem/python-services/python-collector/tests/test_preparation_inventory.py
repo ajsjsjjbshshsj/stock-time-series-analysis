@@ -97,3 +97,24 @@ def test_frozen_repair_default_policy_keeps_original_conservative_replay():
     sources={method:evidence[method] for method in ('daily','daily_basic','adj_factor','suspend_d')}
     assert classify_sources(data,sources)['report']['source_issue_counts']['SOURCE_CONFLICT']==1
     assert classify_sources(data,sources,allow_verified_intraday=True)['report']['source_issue_counts']['SOURCE_CONFLICT']==0
+
+@pytest.mark.parametrize('intervals',[
+    ['09:30-11:30','13:00-15:00'],
+    ['09:30-10:30','10:30-11:30','13:00-14:00','14:00-15:00'],
+    ['09:30-10:45','10:30-13:45','13:30-15:00'],
+    ['09:30-13:30','13:00-15:00'],
+])
+def test_combined_stops_covering_both_sessions_are_not_intraday_exception(intervals):
+    pool,window,tables,evidence=intraday_fixture()
+    evidence['suspend_d']=[dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='S',suspend_timing=value) for value in intervals]
+    evidence['suspend_d'].append(dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='R',suspend_timing=None))
+    result=build(pool,window,tables,evidence)
+    assert not result['data_ready'] and result['issues']['SOURCE_CONFLICT']==1
+    assert result['attribution']['candidates']['stock_daily']==[]
+
+def test_multiple_intraday_stops_with_real_trading_gap_remain_eligible():
+    pool,window,tables,evidence=intraday_fixture()
+    evidence['suspend_d']=[dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='S',suspend_timing=value)
+        for value in ('09:30-11:20','13:00-15:00')]
+    evidence['suspend_d'].append(dict(ts_code='000001.SZ',trade_date='2026-09-28',suspend_type='R',suspend_timing=None))
+    assert build(pool,window,tables,evidence)['data_ready'] is True

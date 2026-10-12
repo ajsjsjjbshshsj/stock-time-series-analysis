@@ -32,6 +32,7 @@ def test_nightly_worker_explicit_defaults_and_environment(capsys,monkeypatch):
     ['nightly-retry'],['nightly-retry','--scheduler','--task-id','a'*32]])
 def test_invalid_nightly_arguments_fail_before_runtime_initialization(args,monkeypatch):
     module=cli();calls=[]
+    monkeypatch.setattr(module,'load_environment',lambda:None,raising=False)
     monkeypatch.setattr(module,'Runtime',lambda:calls.append('unexpected'))
     with pytest.raises(SystemExit) as caught:module.main(args)
     assert caught.value.code==2 and calls==[]
@@ -129,3 +130,39 @@ def test_market_repository_is_lazy_and_cached_without_sdk_or_sql():
     module=cli();runtime=module.Runtime.__new__(module.Runtime)
     runtime._market_tasks=None;runtime.db=SimpleNamespace(Session=lambda:pytest.fail('constructor must not query SQL'))
     one=runtime.market_tasks();assert runtime.market_tasks() is one
+
+def fake_runtime(module,monkeypatch,environment,events):
+    monkeypatch.setattr(module,'load_environment',environment,raising=False)
+    def construct():
+        events.append('runtime');environment() # Mimic Runtime's existing dotenv initialization.
+        names=('pools','tasks','service','evidence','calendar','pool_sources','market_tasks','market_service','scheduler')
+        obj=SimpleNamespace(**{name:None for name in names})
+        obj.worker=lambda **kwargs:events.append(kwargs) or SimpleNamespace(run_once=lambda:None)
+        obj.close=lambda:events.append('closed')
+        return obj
+    monkeypatch.setattr(module,'Runtime',construct)
+
+def test_project_dotenv_nightly_settings_are_loaded_before_resolving_worker_options(monkeypatch,capsys):
+    module=cli();events=[]
+    monkeypatch.delenv('NIGHTLY_UPDATE_AT',raising=False);monkeypatch.delenv('NIGHTLY_BOOTSTRAP_START',raising=False)
+    def environment():
+        monkeypatch.setenv('NIGHTLY_UPDATE_AT','21:00');monkeypatch.setenv('NIGHTLY_BOOTSTRAP_START','2023-01-01')
+    fake_runtime(module,monkeypatch,environment,events)
+    assert module.main(['worker','--nightly','--once'])==0
+    assert events[1]==dict(nightly=True,run_at='21:00',bootstrap_start='2023-01-01')
+    assert json.loads(capsys.readouterr().out)['status']=='IDLE'
+
+def test_invalid_project_dotenv_time_fails_before_runtime_db_or_sdk(monkeypatch):
+    module=cli();events=[]
+    monkeypatch.delenv('NIGHTLY_UPDATE_AT',raising=False);monkeypatch.delenv('NIGHTLY_BOOTSTRAP_START',raising=False)
+    fake_runtime(module,monkeypatch,lambda:monkeypatch.setenv('NIGHTLY_UPDATE_AT','16:00'),events)
+    with pytest.raises(SystemExit) as caught:module.main(['worker','--nightly','--once'])
+    assert caught.value.code==2 and events==[]
+
+def test_explicit_options_override_project_dotenv_nightly_settings(monkeypatch,capsys):
+    module=cli();events=[]
+    def environment():
+        monkeypatch.setenv('NIGHTLY_UPDATE_AT','21:00');monkeypatch.setenv('NIGHTLY_BOOTSTRAP_START','2023-01-01')
+    fake_runtime(module,monkeypatch,environment,events)
+    assert module.main(['worker','--nightly','--once','--nightly-at','20:00','--bootstrap-start','2026-09-28'])==0
+    assert events[1]==dict(nightly=True,run_at='20:00',bootstrap_start='2026-09-28')

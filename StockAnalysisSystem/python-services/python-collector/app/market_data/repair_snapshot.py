@@ -38,14 +38,24 @@ def equal_business(old,new,fields,types):
 def _precise_intraday_stops(events):
     stops=[event for event in events if event['suspend_type']=='S']
     if not stops:return False
+    intervals=[]
     for event in stops:
         value=event['suspend_timing']
         match=re.fullmatch(r'([0-9]{2}):([0-9]{2})-([0-9]{2}):([0-9]{2})',value) if isinstance(value,str) else None
         if match is None:return False
         sh,sm,eh,em=map(int,match.groups());start=(sh,sm);end=(eh,em)
-        if sm>=60 or em>=60 or not (9,30)<=start<end<=(15,0) or (start,end)==((9,30),(15,0)):
+        if sm>=60 or em>=60 or not (9,30)<=start<end<=(15,0):
             return False
-    return True
+        intervals.append((sh*60+sm,eh*60+em))
+    merged=[]
+    for start,end in sorted(intervals):
+        if merged and start<=merged[-1][1]:merged[-1]=(merged[-1][0],max(end,merged[-1][1]))
+        else:merged.append((start,end))
+    # Lunch is not a trading gap. Adjacent/overlapping stops may jointly cover
+    # both the morning and afternoon even if no individual stop lasts all day.
+    full=all(any(start<=first and end>=last for start,end in merged)
+        for first,last in ((9*60+30,11*60+30),(13*60,15*60)))
+    return not full
 
 
 def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_intraday=False) -> dict:

@@ -13,12 +13,16 @@ PROJECT=ROOT/'StockAnalysisSystem'
 ANALYSIS=PROJECT/'python-services/stock-analysis-app'
 sys.path.insert(0,str(SERVICE))
 
+def load_environment():
+    """Configuration loading has no database, SDK or HTTP initialization."""
+    from dotenv import load_dotenv
+    for path in (SERVICE/'.env',PROJECT/'.env'):
+        if path.is_file():load_dotenv(path);break
+
 
 class Runtime:
     def __init__(self):
-        from dotenv import load_dotenv
-        for path in (SERVICE/'.env',PROJECT/'.env'):
-            if path.is_file(): load_dotenv(path); break
+        load_environment()
         if str(ANALYSIS) not in sys.path: sys.path.append(str(ANALYSIS))
         from database.db_connector import DatabaseConnector
         from app.repositories.pool_repository import PoolRepository
@@ -151,6 +155,9 @@ def main(argv=None,dependencies=None):
     if args.command=='worker' and not args.nightly and (args.nightly_at is not None or args.bootstrap_start is not None):
         parser.error('--nightly-at/--bootstrap-start require --nightly')
     if args.command=='nightly-submit' or args.command=='worker' and args.nightly:
+        if dependencies is None:
+            try:load_environment()
+            except Exception:parser.error('Cannot load project configuration')
         from app.nightly.contracts import market_day,parse_run_at
         from app.preparation.contracts import TZ
         from datetime import datetime

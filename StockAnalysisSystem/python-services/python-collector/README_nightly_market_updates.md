@@ -19,6 +19,7 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --night
 
 该进程必须持续运行，才能在上海时区每晚 20:00 排队更新实际交易日。
 非交易日不创建行情任务。可以配置 `NIGHTLY_UPDATE_AT=20:00`，显式参数优先。
+优先读取 `python-collector/.env`，不存在时读取 `StockAnalysisSystem/.env`；进程环境优先于文件，显式命令参数优先于两者。夜间配置在初始化数据库和 SDK 前加载并校验。
 `--nightly-at` 和 `--bootstrap-start` 必须与 `--nightly` 一起使用。
 `COLLECTION_REQUEST_INTERVAL` 至少 0.5 秒；共享限频、配额冷却和请求锁继续生效。
 
