@@ -11,10 +11,15 @@ def _process(pid):
     if type(pid) is not int or pid<=0: return None
     try:
         if os.name=='nt':
+            # PS 5.1 exits 1 for a missing pid even with -ErrorAction SilentlyContinue, which
+            # conflated "confirmed absent" with "probe failed" and blocked stale-owner recovery.
+            # Explicit exit codes disambiguate: 10=absent (False), other nonzero=unknown (None).
             command=(f'$taskProcess=Get-Process -Id {pid} -ErrorAction SilentlyContinue; '
-                "if($null -ne $taskProcess){[PSCustomObject]@{pid=$taskProcess.Id; started_at=$taskProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress}")
+                "if($null -ne $taskProcess){[PSCustomObject]@{pid=$taskProcess.Id; started_at=$taskProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress; exit 0} "
+                'else {exit 10}')
             result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',command],
                 capture_output=True,text=True,timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode==10 and not result.stdout.strip(): return False
             if result.returncode: return None
             return json.loads(result.stdout) if result.stdout.strip() else False
         path=Path('/proc')/str(pid)
