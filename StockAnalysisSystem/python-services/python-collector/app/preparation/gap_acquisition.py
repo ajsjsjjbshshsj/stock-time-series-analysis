@@ -84,11 +84,11 @@ def verify_gap_shard(directory, request, *, snapshot):
     if parent is not None:
         original = _verify_pointer(parent)
         target = {tuple(key) for key in request['expected_keys']}
-        extracted = [row for row in original['rows'] if (row['ts_code'],
+        extracted = [row for row in original['raw_rows'] if (row['ts_code'],
             f"{row['trade_date'][:4]}-{row['trade_date'][4:6]}-{row['trade_date'][6:]}") in target]
         if extracted != body['rows']:
             raise ValueError('GAP_PARENT_EXTRACTION_INVALID')
-    return dict(body, rows=accepted, exclusions=exclusions, source_directory=str(root),
+    return dict(body, rows=accepted, raw_rows=body['rows'], exclusions=exclusions, source_directory=str(root),
         raw_sha256=digest(raw), manifest_sha256=digest(path), request_complete=True,
         data_ready=len(accepted) == len(request['expected_keys']))
 
@@ -126,10 +126,20 @@ def lookup_cached_gap(request, *, snapshot, source_store):
         if old['method'] != request['method'] or not old['start'] <= request['start'] <= request['end'] <= old['end']:
             continue
         # A proven query covers keys even if the provider returned no quote.
-        if not target <= {tuple(key) for key in old['expected_keys']}:
+        if old['mode']=='full_date':
+            parent_binding=read(Path(pointer['source_directory'])/'binding.json')
+            parent_snapshot=read(parent_binding['snapshot_ref']['path'])
+            if identity(parent_snapshot)!=parent_binding['snapshot_ref']['sha256']:
+                raise ValueError('GAP_PARENT_SNAPSHOT_HASH_INVALID')
+            from app.preparation.gap_plan import eligible_bits
+            valid=eligible_bits(parent_snapshot,codes=request['expected_codes'])
+            positions={day:i for i,day in enumerate(parent_snapshot['sessions'])}
+            if any(code not in valid or day not in positions or not valid[code] & (1 << positions[day]) for code,day in target):
+                continue
+        elif not target <= {tuple(key) for key in old['expected_keys']}:
             continue
         original = _verify_pointer(pointer)
-        rows = [row for row in original['rows'] if (row['ts_code'],
+        rows = [row for row in original['raw_rows'] if (row['ts_code'],
             f"{row['trade_date'][:4]}-{row['trade_date'][4:6]}-{row['trade_date'][6:]}") in target]
         _response(rows, request, snapshot)
         return dict(parent=pointer, rows=rows, acquired_at=original['acquired_at'])

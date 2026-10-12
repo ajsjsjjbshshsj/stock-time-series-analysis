@@ -110,7 +110,8 @@ def _make_request(method, mode, codes, expected_keys, snapshot, valid, index):
     present = snapshot['daily_bits' if method == 'daily' else 'basic_bits']
     for code, day in keys:
         if (code not in valid or day not in index or not valid[code] & (1 << index[day])
-                or int(present[code], 16) & (1 << index[day])):
+                or int(present[code], 16) & (1 << index[day])
+                or method=='daily' and int(snapshot.get('no_quote_bits',{}).get(code,'0'),16) & (1 << index[day])):
             raise ValueError('GAP_REQUEST_OUTSIDE_MISSING_KEYS')
     start, end = min(key[1] for key in keys), max(key[1] for key in keys)
     fields = list(DAILY if method == 'daily' else BASIC)
@@ -134,13 +135,17 @@ def _make_request(method, mode, codes, expected_keys, snapshot, valid, index):
 
 
 def _plan(snapshot, method, missing, valid):
+    missing = {code:bits for code,bits in missing.items() if bits}
     days = snapshot['sessions']
     index = {day: i for i, day in enumerate(days)}
     present = snapshot['daily_bits' if method == 'daily' else 'basic_bits']
     result = []
     # Full-date requests are exceptional: prove NO eligible stored keys exist.
+    relevant = 0
+    for bits in missing.values():relevant |= bits
     for i, day in enumerate(days):
         flag = 1 << i
+        if not relevant & flag:continue
         targets = [code for code in sorted(missing) if missing[code] & flag]
         if (targets and len(targets) < 6000
                 and not any(int(bits, 16) & flag for bits in present.values())):
@@ -169,13 +174,15 @@ def _plan(snapshot, method, missing, valid):
 def plan_daily(snapshot):
     validate_coverage(snapshot)
     valid = eligible_bits(snapshot)
-    missing = {code: bits & ~int(snapshot['daily_bits'][code], 16) for code, bits in valid.items()}
+    missing = {code: bits & ~int(snapshot['daily_bits'][code], 16)
+        & ~int(snapshot.get('no_quote_bits',{}).get(code,'0'),16) for code, bits in valid.items()}
     return _plan(snapshot, 'daily', missing, valid)
 
 
 def plan_basic(snapshot, new_daily_keys, *, include_existing=True):
     validate_coverage(snapshot)
-    valid = eligible_bits(snapshot)
+    new_daily_keys = list(new_daily_keys)
+    valid = eligible_bits(snapshot, codes=None if include_existing else {key[0] for key in new_daily_keys})
     actual = {code: int(snapshot['daily_bits'][code], 16) if include_existing else 0 for code in valid}
     index = {day: i for i, day in enumerate(snapshot['sessions'])}
     for code, day in new_daily_keys:

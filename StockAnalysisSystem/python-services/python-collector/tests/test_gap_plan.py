@@ -103,3 +103,23 @@ def test_mutated_snapshot_and_expanded_request_rejected():
     snapshot['daily_bits'][CODE] = '7'
     with pytest.raises(ValueError, match='HASH'):
         plan_daily(snapshot)
+
+
+def test_sparse_followup_does_not_traverse_unrelated_stock_session_matrix():
+    from datetime import date,timedelta
+    from app.preparation.gap_plan import plan_basic
+    from app.preparation.contracts import identity
+    days=[(date(2026,9,1)+timedelta(days=i)).isoformat() for i in range(30)]
+    snapshot=coverage_fixture(days,codes=tuple(f'{i:06d}.SZ' for i in range(1000)))
+    steps=[0]
+    class CountedSessions(list):
+        def __iter__(self):
+            for value in super().__iter__():
+                steps[0]+=1
+                yield value
+    snapshot['sessions']=CountedSessions(snapshot['sessions'])
+    snapshot['coverage_sha256']=identity({key:value for key,value in snapshot.items() if key!='coverage_sha256'})
+    steps[0]=0
+    result=plan_basic(snapshot,[('000001.SZ','2026-09-17')],include_existing=False)
+    assert result[0]['expected_keys']==[['000001.SZ','2026-09-17']]
+    assert steps[0]<=len(days)*10

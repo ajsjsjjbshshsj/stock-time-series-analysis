@@ -53,6 +53,10 @@ class GapBatchStore:
         validate_coverage(snapshot)
         body = dict(strategy='market-gap-v1', snapshot=snapshot, daily_plan=daily_plan,
                     basic_plan=plan_basic(snapshot, []))
+        index={day:set() for day in snapshot['sessions']}
+        for request in body['daily_plan']+body['basic_plan']:
+            for _,day in request['expected_keys']:index[day].add(request['id'])
+        body['request_days']={day:sorted(ids) for day,ids in index.items()}
         full = identity(body)
         root = self._path(full[:16])
         path = root/'binding.json'
@@ -94,8 +98,8 @@ class GapBatchStore:
     def store_followup_plan(self, batch, source_request_id, basic_plan):
         if type(source_request_id) is not str or re.fullmatch('[0-9a-f]{64}', source_request_id) is None:
             raise ValueError('GAP_FOLLOWUP_PARENT_INVALID')
-        current = self.load(batch['batch_id'])
-        if current['full_sha256'] != batch['full_sha256']:
+        current = self.check_version(batch['batch_id'])
+        if current['full_sha256'] != batch['full_sha256'] or Path(batch['path']).resolve()!=self._path(batch['full_sha256'][:16]):
             raise ValueError('GAP_BATCH_BINDING_CHANGED')
         body = dict(batch_sha256=batch['full_sha256'], source_request_id=source_request_id, requests=basic_plan)
         self.save(Path(batch['path'])/'followups'/(source_request_id+'.json'), body, immutable=True)

@@ -19,7 +19,7 @@ DAY = '2026-09-28'
 
 
 @contextmanager
-def fixture(tmp_path, *, complete=False, basic_missing=False, empty=False, codes=None):
+def fixture(tmp_path, *, complete=False, basic_missing=False, empty=False, codes=None, no_basic=False, suspended=False):
     from app.nightly.gap_store import GapBatchStore
     from app.repositories.gap_task_repository import GapTaskRepository
     from app.repositories.gap_coverage_repository import GapCoverageRepository
@@ -51,7 +51,8 @@ def fixture(tmp_path, *, complete=False, basic_missing=False, empty=False, codes
                 pe_ttm=None, pb=1., ps=1., total_mv=1000.) for code in codes_], columns=BASIC)
         def suspend_d(self, **params):
             calls.append(('suspend_d', params))
-            return pd.DataFrame([], columns=SUSPEND)
+            records = [dict(ts_code=params['ts_code'],trade_date=params['trade_date'],suspend_type='S',suspend_timing=None)] if suspended else []
+            return pd.DataFrame(records, columns=SUSPEND)
     with database() as factory:
         with factory.begin() as session:
             for table, fields in (('stock_daily', DAILY), ('stock_daily_basic', BASIC)):
@@ -64,7 +65,7 @@ def fixture(tmp_path, *, complete=False, basic_missing=False, empty=False, codes
                 if complete or basic_missing or code == '600000.SH':
                     values = dict(quote(code), trade_date=DAY)
                     session.execute(text('INSERT INTO stock_daily ('+','.join(values)+') VALUES ('+','.join(':'+f for f in values)+')'), values)
-                if complete or code == '600000.SH':
+                if (complete or code == '600000.SH') and not no_basic:
                     session.execute(text('INSERT INTO stock_daily_basic (ts_code,trade_date,pe) VALUES (:code,:day,NULL)'), dict(code=code, day=DAY))
         provider = MarketUniverseProvider(lambda: Client(), lambda root: Pacing(), clock=lambda: NOW, schema_version=2)
         provider.pinned_reference = provider.acquire_reference(tmp_path/'reference')
@@ -251,3 +252,86 @@ def test_checkpointed_raw_source_tamper_rejected_before_more_requests(tmp_path):
         result = service.execute(claimed, owner_token=OWNER['token'])
         assert result['status'] == 'FAILED'
         assert len(calls) == count
+
+
+def test_final_verify_detects_earlier_quote_changed_during_basic_request(tmp_path):
+    with fixture(tmp_path) as (factory, tasks, service, store, calls, lock), lock:
+        batch = service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc))
+        original = service.acquirer.collect
+        def collect(requests,*args,**kwargs):
+            if requests[0]['method']=='daily_basic':
+                with factory.begin() as session:
+                    session.execute(text("UPDATE stock_daily SET close=999 WHERE ts_code='000001.SZ'"))
+            return original(requests,*args,**kwargs)
+        service.acquirer.collect=collect
+        result=run(tasks,service,batch)
+        assert result['status']=='PARTIAL' and result['result']['data_ready'] is False
+        assert result['result']['conflicts'][0]['table']=='stock_daily'
+
+
+def test_final_verify_detects_earlier_basic_changed_during_later_request(tmp_path):
+    with fixture(tmp_path,basic_missing=True,codes=['000002.SZ']) as (factory,tasks,service,store,calls,lock), lock:
+        batch=service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc))
+        original=service.acquirer.collect
+        def collect(requests,*args,**kwargs):
+            request=requests[0]
+            if request['method']=='daily_basic' and request['params'].get('ts_code')=='000002.SZ':
+                with factory.begin() as session:
+                    session.execute(text("UPDATE stock_daily_basic SET pe=999 WHERE ts_code='000001.SZ'"))
+            return original(requests,*args,**kwargs)
+        service.acquirer.collect=collect
+        result=run(tasks,service,batch)
+        assert result['status']=='PARTIAL'
+        assert any(issue['table']=='stock_daily_basic' and issue['ts_code']=='000001.SZ' for issue in result['result']['conflicts'])
+
+
+def test_trusted_full_day_suspension_avoids_quote_rpc(tmp_path):
+    with fixture(tmp_path,empty=True) as (factory,tasks,service,store,calls,lock), lock:
+        evidence=service.acquirer.source_store
+        evidence.register_verified(dict(kind='suspend_d',provider='tushare.suspend_d',start_date=DAY,end_date=DAY,
+            expected_codes=['000001.SZ'],rows=[dict(ts_code='000001.SZ',trade_date='20260928',suspend_type='S',suspend_timing=None)]))
+        result=run(tasks,service,service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc)))
+        assert result['status']=='SUCCEEDED' and calls==[]
+        assert result['result']['verified_no_quote']==1 and result['result']['api_requests']==0
+
+
+def test_full_market_basic_response_reused_for_new_quote_followup(tmp_path):
+    with fixture(tmp_path,no_basic=True) as (factory,tasks,service,store,calls,lock), lock:
+        result=run(tasks,service,service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc)))
+        assert result['status']=='SUCCEEDED'
+        assert sum(method=='daily_basic' for method,params in calls)==1
+        assert result['result']['inserted']==3
+
+
+def test_checkpointed_suspension_raw_tamper_cannot_publish_success(tmp_path):
+    codes=[f'{i:06d}.SZ' for i in range(2,30)]
+    with fixture(tmp_path,codes=codes,empty=True,suspended=True) as (factory,tasks,service,store,calls,lock), lock:
+        batch=service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc))
+        run(tasks,service,batch)
+        from datetime import timedelta
+        now=datetime.fromtimestamp(NOW+2,timezone.utc)
+        service.clock=lambda:NOW+2
+        claimed=tasks.claim(OWNER,now=now.isoformat(),lease_until=(now+timedelta(seconds=120)).isoformat())
+        result=service.execute(claimed,owner_token=OWNER['token'])
+        assert result['status']=='WAITING_RETRY'
+        raw=next((Path(batch['path'])/'days'/DAY/'suspensions').glob('*/shards/*.parquet'))
+        raw.write_bytes(b'tampered')
+        now=datetime.fromtimestamp(NOW+4,timezone.utc);service.clock=lambda:NOW+4
+        claimed=tasks.claim(OWNER,now=now.isoformat(),lease_until=(now+timedelta(seconds=120)).isoformat())
+        result=service.execute(claimed,owner_token=OWNER['token'])
+        assert result['status']=='FAILED' and result['result']['data_ready'] is False
+
+
+def test_frozen_followup_reuse_does_not_reload_entire_batch_or_replan(tmp_path,monkeypatch):
+    import app.nightly.gap_service as gap_service
+    with fixture(tmp_path) as (factory,tasks,service,store,calls,lock), lock:
+        batch=service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc))
+        parent=batch['daily_plan'][0]
+        original=store.load
+        def prohibited(*args,**kwargs):raise AssertionError('FULL_BATCH_LOAD_PER_FOLLOWUP')
+        monkeypatch.setattr(store,'load',prohibited)
+        store.store_followup_plan(batch,parent['id'],[])
+        monkeypatch.setattr(store,'load',original)
+        shard=dict(rows=[quote()],request=parent)
+        monkeypatch.setattr(gap_service,'plan_basic',lambda *args,**kwargs:pytest.fail('FROZEN_FOLLOWUP_REPLANNED'))
+        assert service._followup(batch,parent,shard)['requests']==[]
