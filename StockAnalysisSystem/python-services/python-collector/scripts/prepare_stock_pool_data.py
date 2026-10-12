@@ -79,25 +79,30 @@ class Runtime:
 
     def market_tasks(self):
         if self._market_tasks is None:
-            from app.repositories.market_update_repository import MarketUpdateRepository
-            from app.nightly.contracts import SYMBOL_PERIOD_VERSION
-            self._market_tasks=MarketUpdateRepository(self.db.Session,requirements_version=SYMBOL_PERIOD_VERSION)
+            from app.repositories.gap_task_repository import GapTaskRepository
+            from app.nightly.gap_store import GapBatchStore
+            self._market_tasks=GapTaskRepository(self.db.Session,batch_store=GapBatchStore(self.data_root))
         return self._market_tasks
 
     def market_service(self):
         if self._market_service is None:
-            from app.nightly.service import MarketUpdateService
+            from app.nightly.gap_service import GapUpdateService
+            from app.nightly.gap_store import GapBatchStore
             from app.nightly.universe import MarketUniverseProvider
-            from app.nightly.acquisition import NativeDayAcquirer
+            from app.preparation.gap_acquisition import GapAcquirer
             from app.nightly.reference import SnapshotReferenceWriter
-            from app.repositories.preparation_import_repository import PreparationImportRepository
-            self._market_service=MarketUpdateService(self.market_tasks(),PreparationImportRepository(self.db.Session),
-                self.evidence,self.calendar,MarketUniverseProvider(self.client,self.acquirer.requests,schema_version=2),
-                NativeDayAcquirer(self.client,self.acquirer.requests),SnapshotReferenceWriter(self.db.Session),self.data_root)
+            from app.repositories.gap_coverage_repository import GapCoverageRepository
+            from app.repositories.gap_import_repository import GapImportRepository
+            self._market_service=GapUpdateService(self.market_tasks(),GapCoverageRepository(self.db.Session),
+                GapImportRepository(self.db.Session),self.calendar,
+                MarketUniverseProvider(self.client,self.acquirer.requests,schema_version=2),
+                GapAcquirer(self.client,self.acquirer.requests,source_store=self.evidence),
+                SnapshotReferenceWriter(self.db.Session),GapBatchStore(self.data_root),self.data_root)
         return self._market_service
 
     def scheduler(self,*,run_at='20:00',bootstrap_start=None):
         if self._scheduler is None:
+            self.market_service() # Bind the DB-first submission adapter first.
             from app.nightly.scheduler import NightlyScheduler
             self._scheduler=NightlyScheduler(self.market_tasks(),
                 lambda start,end,now:self.calendar.get(start,end,now,acquire=True),
@@ -151,8 +156,21 @@ def main(argv=None,dependencies=None):
     nightly_retry=commands.add_parser('nightly-retry')
     retry_group=nightly_retry.add_mutually_exclusive_group(required=True)
     retry_group.add_argument('--task-id');retry_group.add_argument('--scheduler',action='store_true')
+    backfill=commands.add_parser('market-backfill')
+    backfill.add_argument('--start',required=True);backfill.add_argument('--end',required=True)
+    backfill.add_argument('--dry-run',action='store_true')
     args=parser.parse_args(argv)
     run_at='20:00';bootstrap=None
+    if args.command=='market-backfill':
+        from datetime import datetime,time,timedelta
+        from app.preparation.contracts import TZ
+        from app.nightly.contracts import market_day
+        try:
+            first,last=market_day(args.start),market_day(args.end)
+            now=datetime.now(TZ)
+            cutoff=now.date() if now.time()>time(16) else now.date()-timedelta(days=1)
+            if first>last or last>cutoff:raise ValueError('GAP_RANGE_INVALID')
+        except (ValueError,TypeError):parser.error('Invalid completed SH/SZ A-share date range; start >=2023-01-01')
     if args.command=='worker' and not args.nightly and (args.nightly_at is not None or args.bootstrap_start is not None):
         parser.error('--nightly-at/--bootstrap-start require --nightly')
     if args.command=='nightly-submit' or args.command=='worker' and args.nightly:
@@ -204,6 +222,21 @@ def main(argv=None,dependencies=None):
             from datetime import datetime,timezone
             result=deps['tasks'].retry(args.task_id,now=datetime.now(timezone.utc).isoformat())
         elif command=='nightly-submit':result=deps['market_service']().submit(args.date,run_at=run_at)
+        elif command=='market-backfill':
+            from datetime import datetime,timezone
+            from app.preparation.contracts import TZ
+            service=deps['market_service']();now=datetime.now(timezone.utc)
+            if args.dry_run:
+                result=service.prepare_batch(args.start,args.end,now=now,acquire_reference=False,persist=False)
+            else:
+                with deps['worker']().maintenance_lock():
+                    batch=service.prepare_batch(args.start,args.end,now=now)
+                    tasks=[]
+                    for day in batch['snapshot']['sessions']:
+                        task=service.tasks.submit_bound(day,batch,scheduled_for=day+'T20:00:00+08:00',now=now.isoformat())
+                        tasks.append(task['task_id'])
+                    result=dict(status='QUEUED',batch_id=batch['batch_id'],batch_sha256=batch['full_sha256'],
+                        task_count=len(tasks),start=args.start,end=args.end,verification_mode='missing-only',model_ready=False)
         elif command=='nightly-status':
             if args.task_id is not None:result=deps['market_tasks']().get(args.task_id)
             else:

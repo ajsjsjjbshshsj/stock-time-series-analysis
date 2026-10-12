@@ -8,6 +8,12 @@ SCOPE='SH_SZ_A'
 VERSION='market-v1'
 SYMBOL_PERIOD_VERSION='market-v2'
 VERSIONS={VERSION:1,SYMBOL_PERIOD_VERSION:2}
+GAP_VERSION='market-gap-v1'
+
+def schema_for_version(version):
+    if version in VERSIONS:return VERSIONS[version]
+    if type(version) is str and re.fullmatch(r'market-gap-v1:[0-9a-f]{16}',version):return 2
+    raise ValueError('MARKET_VERSION_INVALID')
 START='2023-01-01'
 FIELDS=('ts_code','symbol','name','area','industry','market','exchange','curr_type',
         'list_status','list_date','delist_date')
@@ -28,7 +34,7 @@ def market_day(value):
 
 def market_identity(day,*,requirements_version=VERSION):
     market_day(day)
-    if requirements_version not in VERSIONS:raise ValueError('MARKET_VERSION_INVALID')
+    schema_for_version(requirements_version)
     return identity(dict(scope=SCOPE,trade_date=day,requirements_version=requirements_version))
 
 def is_a_share(code,exchange=None):
