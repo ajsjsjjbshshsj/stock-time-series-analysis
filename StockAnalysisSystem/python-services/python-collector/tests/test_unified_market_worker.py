@@ -15,7 +15,7 @@ def test_two_real_queues_round_robin_and_write_to_correct_repository(tmp_path):
         pools,p=setup(factory);market=store(factory)
         m=market.submit('2026-09-28',scheduled_for='2026-09-28T20:00:00+08:00',now='2026-10-11T09:00:00Z')
         original=pools.get(p['task_id'])['request']
-        second=pools.submit(dict(original,requested_end='2026-09-29',cutoff_date='2026-09-29'),now='2026-10-11T09:00:00Z')
+        second=pools.submit(dict(original,requested_end='2026-09-29',cutoff_date='2026-09-29'),now='2026-10-11T09:01:00Z')
         ps=Service(pools,tmp_path);ms=Service(market,tmp_path);ticks=[]
         worker=PreparationWorker(pools,ps,clock=NOW,before_poll=lambda:ticks.append(1),queues=[queues()('market',market,ms)])
         with worker.maintenance_lock():
