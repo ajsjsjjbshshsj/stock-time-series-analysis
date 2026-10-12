@@ -5,7 +5,7 @@ from functools import wraps
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.nightly.contracts import SCOPE,VERSION,VERSIONS,market_day,market_identity,parse_run_at,validate_market
+from app.nightly.contracts import SCOPE,VERSION,VERSIONS,market_day,market_identity,parse_run_at,validate_market,schema_for_version
 from app.preparation.contracts import identity,timestamp
 from ._preparation_sql import transaction,encode,stamp,utc,current_lock
 from .preparation_repository import ERRORS,PATCH_FIELDS
@@ -41,7 +41,7 @@ def _task(row):
     for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
     request=value['request']
     if (not isinstance(request,dict) or set(request)!={'scope','trade_date','requirements_version','scheduled_for'}
-            or request['scope']!=SCOPE or request['requirements_version'] not in VERSIONS
+            or request['scope']!=SCOPE or schema_for_version(request['requirements_version']) not in (1,2)
             or value['market_scope']!=SCOPE or value['requirements_version']!=request['requirements_version']
             or str(value['trade_date'])!=request['trade_date'] or value['identity']!=market_identity(request['trade_date'],requirements_version=request['requirements_version'])
             or value['request_sha256']!=identity(request) or value['status'] not in STATUSES
@@ -52,7 +52,7 @@ def _task(row):
         raise ValueError('MARKET_SCHEDULE_CHANGED')
     if value['universe'] is not None:
         validate_market(value['universe'])
-        if value['universe']['schema_version']!=VERSIONS[value['requirements_version']]:raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
+        if value['universe']['schema_version']!=schema_for_version(value['requirements_version']):raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
         if value['universe']['trade_date']!=value['trade_date'] or identity(value['universe'])!=value['universe_sha256']:
             raise ValueError('MARKET_UNIVERSE_CHANGED')
     elif value['universe_sha256'] is not None:raise ValueError('MARKET_UNIVERSE_CHANGED')
@@ -60,7 +60,7 @@ def _task(row):
 
 class MarketUpdateRepository:
     def __init__(self,session_factory,*,requirements_version=VERSION):
-        if requirements_version not in VERSIONS:raise ValueError('MARKET_VERSION_INVALID')
+        schema_for_version(requirements_version)
         self.session_factory=session_factory;self.requirements_version=requirements_version
 
     @staticmethod
@@ -148,7 +148,7 @@ class MarketUpdateRepository:
         validate_market(snapshot)
         with transaction(self.session_factory) as session:
             task=self.fence(task_id,owner_token,now=now,session=session)
-            if snapshot['schema_version']!=VERSIONS[task['requirements_version']]:raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
+            if snapshot['schema_version']!=schema_for_version(task['requirements_version']):raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
             if snapshot['trade_date']!=task['trade_date']:raise ValueError('MARKET_UNIVERSE_DATE_CHANGED')
             if task['universe'] is not None:
                 if task['universe']!=snapshot:raise ValueError('MARKET_UNIVERSE_CHANGED')

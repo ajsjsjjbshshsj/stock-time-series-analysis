@@ -16,12 +16,14 @@ def test_worker_default_stays_legacy_without_nightly(capsys,monkeypatch):
     assert module.main(['worker','--once'],dependencies={'worker':old_worker})==0
     assert calls==['legacy'] and json.loads(capsys.readouterr().out)['status']=='IDLE'
 
-def test_runtime_new_nightly_queue_uses_independent_period_version():
+def test_runtime_new_nightly_queue_rejects_unbound_gap_submission(tmp_path):
     module=cli()
     with database() as factory:
         runtime=module.Runtime.__new__(module.Runtime)
         runtime.db=SimpleNamespace(Session=factory);runtime._market_tasks=None
-        assert runtime.market_tasks().requirements_version=='market-v2'
+        runtime.data_root=tmp_path
+        with pytest.raises(ValueError,match='PREPARATION_REQUIRED'):
+            runtime.market_tasks().submit('2026-09-28',scheduled_for='2026-09-28T20:00:00+08:00',now='2026-10-12T02:00:00Z')
 
 def test_nightly_worker_explicit_defaults_and_environment(capsys,monkeypatch):
     module=cli();calls=[];monkeypatch.delenv('NIGHTLY_UPDATE_AT',raising=False)
@@ -133,9 +135,10 @@ def test_nightly_status_hides_private_upstream_exception(capsys):
     assert 'private-do-not-show' not in captured.out+captured.err
     assert json.loads(captured.out)['error_kind']=='PREPARATION_FAILED'
 
-def test_market_repository_is_lazy_and_cached_without_sdk_or_sql():
+def test_market_repository_is_lazy_and_cached_without_sdk_or_sql(tmp_path):
     module=cli();runtime=module.Runtime.__new__(module.Runtime)
     runtime._market_tasks=None;runtime.db=SimpleNamespace(Session=lambda:pytest.fail('constructor must not query SQL'))
+    runtime.data_root=tmp_path
     one=runtime.market_tasks();assert runtime.market_tasks() is one
 
 def fake_runtime(module,monkeypatch,environment,events):

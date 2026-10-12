@@ -12,6 +12,17 @@ from app.nightly.contracts import freeze_market
 def snapshot(day='2026-09-28'):
     return freeze_market(day,[reference()],'a'*64,'2026-10-11T20:00:00+08:00')
 
+
+def test_gap_version_parser_accepts_only_bounded_full_binding_prefix():
+    from app.nightly.contracts import schema_for_version
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    assert schema_for_version('market-gap-v1:'+'a'*16)==2
+    assert schema_for_version('market-v1')==1 and schema_for_version('market-v2')==2
+    with database() as factory:
+        for invalid in ('market-gap-v1','market-gap-v1:'+'a'*64,'market-gap-v1:'+'g'*16):
+            with pytest.raises(ValueError,match='VERSION'):
+                MarketUpdateRepository(factory,requirements_version=invalid)
+
 def test_policy_upgrade_preserves_old_tasks_and_isolates_new_queue():
     from app.repositories.market_update_repository import MarketUpdateRepository
     with database() as factory:

@@ -1,13 +1,22 @@
 """Pure, compact coverage and missing-only planning contracts."""
 from datetime import timedelta
+from bisect import bisect_left
 import re
 
 from app.preparation.contracts import identity, iso, timestamp
 from app.nightly.contracts import SCOPE, START, _reference, excluded_legacy_reference, is_a_share
-from app.nightly.symbol_periods import eligible_on
+from app.nightly.symbol_periods import eligible_on, period_for
 from app.market_data.repair_contract import DAILY, BASIC
 
 STRATEGY = 'market-gap-v1'
+
+
+def _member_bits(row, sessions):
+    period = period_for(row['ts_code'])
+    first = max(START, row['list_date'], period['valid_from'] or START)
+    last = min(value for value in (row['delist_date'], period['valid_until'], '9999-12-31') if value)
+    lower, upper = bisect_left(sessions, first), bisect_left(sessions, last)
+    return ((1 << max(0, upper-lower))-1) << lower
 
 
 def make_coverage_snapshot(members, calendar, start, end, daily_keys, basic_keys,
@@ -38,11 +47,11 @@ def make_coverage_snapshot(members, calendar, start, end, daily_keys, basic_keys
             raise ValueError('REFERENCE_DUPLICATE')
         seen.add(code)
         if (is_a_share(code, row['exchange']) and row['curr_type'] == 'CNY'
-                and any(eligible_on(code, day, list_date=row['list_date'],
-                                    delist_date=row['delist_date']) for day in sessions)):
+                and _member_bits(row, sessions)):
             normalized.append(row)
     normalized.sort(key=lambda row: row['ts_code'])
     roster = {row['ts_code']: row for row in normalized}
+    valid = {row['ts_code']: _member_bits(row, sessions) for row in normalized}
     index = {day: i for i, day in enumerate(sessions)}
     bitmaps = {}
     counts = {}
@@ -52,10 +61,9 @@ def make_coverage_snapshot(members, calendar, start, end, daily_keys, basic_keys
             day = iso(day).isoformat()
             if code not in roster or day not in index:
                 continue
-            member = roster[code]
-            if not eligible_on(code, day, list_date=member['list_date'], delist_date=member['delist_date']):
-                continue
             flag = 1 << index[day]
+            if not valid[code] & flag:
+                continue
             if bits[code] & flag:
                 raise ValueError('GAP_KEY_DUPLICATE')
             bits[code] |= flag
@@ -79,16 +87,16 @@ def validate_coverage(snapshot):
     return snapshot
 
 
-def eligible_bits(snapshot):
-    return {row['ts_code']: sum(1 << i for i, day in enumerate(snapshot['sessions'])
-        if eligible_on(row['ts_code'], day, list_date=row['list_date'], delist_date=row['delist_date']))
-        for row in snapshot['members']}
+def eligible_bits(snapshot, *, codes=None):
+    selected = set(codes) if codes is not None else None
+    return {row['ts_code']: _member_bits(row, snapshot['sessions'])
+        for row in snapshot['members'] if selected is None or row['ts_code'] in selected}
 
 
 def make_gap_request(method, mode, codes, expected_keys, *, snapshot):
     validate_coverage(snapshot)
     return _make_request(method, mode, codes, expected_keys, snapshot,
-        eligible_bits(snapshot), {day: i for i, day in enumerate(snapshot['sessions'])})
+        eligible_bits(snapshot, codes=codes), {day: i for i, day in enumerate(snapshot['sessions'])})
 
 
 def _make_request(method, mode, codes, expected_keys, snapshot, valid, index):
@@ -165,10 +173,10 @@ def plan_daily(snapshot):
     return _plan(snapshot, 'daily', missing, valid)
 
 
-def plan_basic(snapshot, new_daily_keys):
+def plan_basic(snapshot, new_daily_keys, *, include_existing=True):
     validate_coverage(snapshot)
     valid = eligible_bits(snapshot)
-    actual = {code: int(snapshot['daily_bits'][code], 16) for code in valid}
+    actual = {code: int(snapshot['daily_bits'][code], 16) if include_existing else 0 for code in valid}
     index = {day: i for i, day in enumerate(snapshot['sessions'])}
     for code, day in new_daily_keys:
         if code not in valid or day not in index or not valid[code] & (1 << index[day]):

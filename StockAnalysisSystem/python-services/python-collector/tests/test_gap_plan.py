@@ -85,6 +85,15 @@ def test_basic_requires_existing_or_actual_new_quotes():
     assert requests[0]['expected_keys'] == [[CODE, '2026-09-25']]
 
 
+def test_basic_followup_does_not_replan_existing_quote_gaps():
+    from app.preparation.gap_plan import plan_basic
+    snapshot = coverage_fixture(DAYS, codes=(CODE, OTHER),
+        daily_keys=[(CODE, DAYS[0])]+[(OTHER, day) for day in DAYS],
+        basic_keys=[(OTHER, day) for day in DAYS])
+    requests = plan_basic(snapshot, [(CODE, DAYS[1])], include_existing=False)
+    assert [key for request in requests for key in request['expected_keys']] == [[CODE, DAYS[1]]]
+
+
 def test_mutated_snapshot_and_expanded_request_rejected():
     import pytest
     from app.preparation.gap_plan import plan_daily, make_gap_request

@@ -57,5 +57,5 @@ class GapCoverageRepository:
             unique.extend(item['column_names'] for item in meta.get_unique_constraints(table))
             unique.extend(item['column_names'] for item in meta.get_indexes(table) if item.get('unique'))
             return dict(columns=[item['name'] for item in columns],
-                types={item['name']: str(item['type']).lower() for item in columns},
+                types={item['name']: str(item['type']).lower().replace(' ', '') for item in columns},
                 unique_keys=[value for value in unique if value])

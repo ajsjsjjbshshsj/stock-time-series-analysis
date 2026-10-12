@@ -99,7 +99,10 @@ def _verify_pointer(pointer):
     if (digest(root/'binding.json') != pointer['binding_sha256']
             or pointer['request'] not in binding['requests']):
         raise ValueError('GAP_PARENT_BINDING_HASH_INVALID')
-    result = verify_gap_shard(root, pointer['request'], snapshot=binding['snapshot'])
+    snapshot = read(binding['snapshot_ref']['path'])
+    if identity(snapshot) != binding['snapshot_ref']['sha256']:
+        raise ValueError('GAP_PARENT_SNAPSHOT_HASH_INVALID')
+    result = verify_gap_shard(root, pointer['request'], snapshot=snapshot)
     if (result['raw_sha256'] != pointer['raw_sha256']
             or result['manifest_sha256'] != pointer['manifest_sha256']):
         raise ValueError('GAP_PARENT_HASH_INVALID')
@@ -169,7 +172,16 @@ class GapAcquirer:
         root = Path(directory).resolve()
         root.mkdir(parents=True, exist_ok=True)
         (root/'shards').mkdir(exist_ok=True)
-        binding = dict(schema_version=1, requests=requests, snapshot=snapshot)
+        snapshot_root = Path(self.source_store.root).resolve()/'gap_snapshots'
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_root/(snapshot['coverage_sha256']+'.json')
+        if snapshot_path.exists():
+            if read(snapshot_path) != snapshot:
+                raise ValueError('GAP_SHARED_SNAPSHOT_CHANGED')
+        else:
+            write(snapshot_path, snapshot, exclusive=True)
+        binding = dict(schema_version=1, requests=requests,
+            snapshot_ref=dict(path=str(snapshot_path), sha256=identity(snapshot)))
         if (root/'binding.json').exists():
             if read(root/'binding.json') != binding:
                 raise ValueError('GAP_PLAN_CHANGED')

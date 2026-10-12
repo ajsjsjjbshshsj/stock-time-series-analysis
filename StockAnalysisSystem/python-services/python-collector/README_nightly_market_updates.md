@@ -1,7 +1,7 @@
 # 沪深 A 股夜间更新
 
 目标数据范围为沪深 A 股、2023-01-01 起，不包含北交所、B 股、指数或基金。
-维护日线、基本指标，以及可复用的复权因子和停牌来源证据；不会自动训练模型或计算特征。
+默认先扫描日线、基本指标主键，只补缺失股票日期；必要时复用或查询目标停牌证据。不会自动训练模型、计算特征或全量补复权因子。
 数据库存储全市场行情，用户选择股票池时复用其中对应股票的数据。
 
 ## 证券代码与日期边界
@@ -13,8 +13,8 @@
 代码边界来自[2025-028 公告](https://disc.static.szse.cn/download/disc/disk03/finalpage/2025-02-15/cedb693a-f5ee-4463-9682-ea33d406b569.PDF)。
 历史资料中未知行业、地区保持为空；历史上市状态不代表当前供应商状态，原始 Tushare 参考包不修改。
 
-新版入口使用 `market-v2`/名单格式 2，同日的新旧任务 ID 不同。
-旧 `market-v1` 任务和已绑定名单保留、可按 ID 查询，不由新 worker 执行；
+新版入口使用 `market-gap-v1:批次哈希前16位`/名单格式 2。同日任务还绑定完整覆盖快照和批次哈希，不复用另一覆盖快照的成功状态。
+旧 `market-v1`、`market-v2` 任务和已绑定名单保留、可按 ID 查询，不由新 worker 执行；
 对旧任务执行新版 `nightly-retry` 会明确拒绝，需重新提交日期生成新版任务。
 只有已核验参考资料证明代码不在有效期内的复权因子行可以排除，并保存来源哈希与排除审计。
 供应商可能同时返回新代码生效前的历史价格；只有明确核准的代码有效期外记录会审计排除，不改名复制到其它代码。
@@ -22,7 +22,7 @@
 
 ## 旧数据精度兼容
 
-新版 `market-v2` 在已核验来源上采用显式精度兼容：只有整条数值记录能严格重现
+旧审计策略 `market-v2` 在已核验来源上采用显式精度兼容：只有整条数值记录能严格重现
 “来源值转 IEEE binary32，再按实际 MySQL DECIMAL 精度存储”的结果，才接受旧值。
 不设置宽泛误差范围，不更新旧行情，不把量化后的值用于新增行。
 缺少完整 DECIMAL 类型声明、空值不一致、或无法重现的差异仍失败。
@@ -69,10 +69,11 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-status --task-id
 D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --task-id TASK_ID
 ```
 
-同一天的任务身份固定。普通提交不会重复创建 FAILED/PARTIAL/SUCCEEDED 任务。
-明确重试 FAILED/PARTIAL 会增加 attempt，保留名单和最初 SQL 基线。
+同一批次同一天的任务身份固定。显式重新提交日期会重新扫描数据库；覆盖改变会产生新绑定，不把旧成功当作新检查结果。
+明确重试 FAILED/PARTIAL 会增加 attempt，保留原名单、缺口清单及来源证明。
 额度/忙锁等待保留未来重试时间；断点恢复复用校验过的源文件和入库回执。
-已经入库但尚未保存回执的同值行会记为 `already_equal`，不是重复新增。
+已经入库但尚未保存回执的同值目标会记为 `already_present`，不是重复新增。竞争目标有差异时保留旧值并报告。
+每次认领最多处理 25 个未完成的来源请求，保存分片后以无错误的 WAITING_RETRY 让出任务；不会伪装成配额错误。
 
 控制器发生权限或证据错误后会阻塞日历刷新，不会每几秒重试接口。
 先停止 worker，再执行下列命令以取得同一根目录维护锁，仅清除控制器错误。
@@ -83,6 +84,24 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --schedule
 ```
 
 ## 重启补漏与历史范围
+
+先只读统计现有数据库的缺口，再明确排队历史补采，沿用同一个入口（不需要第二个采集脚本）：
+
+```powershell
+D:/Python/python.exe scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11 --dry-run
+D:/Python/python.exe scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11
+```
+
+dry-run 只读本地已核验资料、日历和数据库主键，缺少可信缓存时明确失败，不初始化行情 SDK或写任务。
+排队后由上述 nightly worker 执行；旧暂停批次与断点不会删除或重启。
+同股票连续缺失交易日合并（周末不拆分），已有中间日期与年份边界会截断区间。
+只缺指标不请求日线，合法 PE/PE_TTM 空值不产生缺口。仅整个目标日期该表没有记录时允许整日请求。
+空响应不会直接证明停牌；未知缺口保持 PARTIAL，不填零、不前向填充。
+原文件、原参数、哈希证明完整的来源才能复用，旧 SQL 合并输出不作为原始行情缓存。
+只插入冻结缺口，新增候选和回执恢复只核查目标键，不重新逐字段核对全部旧行情。
+
+结果 `verification_mode=missing-only`、`existing_data_revalidated=false`；`data_ready` 仅表示核心行情/指标覆盖，`model_ready=false`。
+计数包括已跳过键、计划缺口、合并分片、实际请求/缓存、新增行、已证实无报价和未解决键。
 
 ```powershell
 D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --bootstrap-start 2026-09-28
