@@ -13,6 +13,21 @@ class Pacing:
 
 def module():return importlib.import_module('app.nightly.universe')
 
+def test_independent_period_provider_adds_verified_historical_profile_not_prices(tmp_path):
+    calls=[];rows=[reference(),reference('600000.SH',exchange='SSE'),
+                  reference('302132.SZ',market='创业板',list_date='20100827')]
+    provider=module().MarketUniverseProvider(lambda:client(rows,calls),lambda directory:Pacing(),clock=lambda:NOW,schema_version=2)
+    before=provider.freeze('2023-01-03',tmp_path)
+    after=provider.freeze('2025-02-17',tmp_path)
+    assert before['codes']==['000001.SZ','300114.SZ','600000.SH']
+    assert after['codes']==['000001.SZ','302132.SZ','600000.SH']
+    old=next(r for r in before['members'] if r['ts_code']=='300114.SZ')
+    assert old['list_date']=='2010-08-27' and old['name']=='中航电测'
+    assert old['industry'] is None
+    # Supplemental historical metadata must not masquerade as a Tushare response.
+    assert all(r['ts_code']!='300114.SZ' for r in module().verify_reference(tmp_path)['rows'])
+    assert len(calls)==6
+
 def client(rows,calls):
     class Client:
         def stock_basic(self,**params):

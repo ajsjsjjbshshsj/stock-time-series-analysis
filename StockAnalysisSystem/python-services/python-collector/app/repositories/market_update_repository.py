@@ -5,7 +5,7 @@ from functools import wraps
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.nightly.contracts import SCOPE,VERSION,market_day,market_identity,parse_run_at,validate_market
+from app.nightly.contracts import SCOPE,VERSION,VERSIONS,market_day,market_identity,parse_run_at,validate_market
 from app.preparation.contracts import identity,timestamp
 from ._preparation_sql import transaction,encode,stamp,utc,current_lock
 from .preparation_repository import ERRORS,PATCH_FIELDS
@@ -41,9 +41,9 @@ def _task(row):
     for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
     request=value['request']
     if (not isinstance(request,dict) or set(request)!={'scope','trade_date','requirements_version','scheduled_for'}
-            or request['scope']!=SCOPE or request['requirements_version']!=VERSION
-            or value['market_scope']!=SCOPE or value['requirements_version']!=VERSION
-            or str(value['trade_date'])!=request['trade_date'] or value['identity']!=market_identity(request['trade_date'])
+            or request['scope']!=SCOPE or request['requirements_version'] not in VERSIONS
+            or value['market_scope']!=SCOPE or value['requirements_version']!=request['requirements_version']
+            or str(value['trade_date'])!=request['trade_date'] or value['identity']!=market_identity(request['trade_date'],requirements_version=request['requirements_version'])
             or value['request_sha256']!=identity(request) or value['status'] not in STATUSES
             or value['phase'] not in PHASES or type(value['attempt_no']) is not int or value['attempt_no']<1):
         raise ValueError('MARKET_TASK_IDENTITY_CHANGED')
@@ -52,13 +52,16 @@ def _task(row):
         raise ValueError('MARKET_SCHEDULE_CHANGED')
     if value['universe'] is not None:
         validate_market(value['universe'])
+        if value['universe']['schema_version']!=VERSIONS[value['requirements_version']]:raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
         if value['universe']['trade_date']!=value['trade_date'] or identity(value['universe'])!=value['universe_sha256']:
             raise ValueError('MARKET_UNIVERSE_CHANGED')
     elif value['universe_sha256'] is not None:raise ValueError('MARKET_UNIVERSE_CHANGED')
     return value
 
 class MarketUpdateRepository:
-    def __init__(self,session_factory):self.session_factory=session_factory
+    def __init__(self,session_factory,*,requirements_version=VERSION):
+        if requirements_version not in VERSIONS:raise ValueError('MARKET_VERSION_INVALID')
+        self.session_factory=session_factory;self.requirements_version=requirements_version
 
     @staticmethod
     def _get(session,task_id,*,lock=False):
@@ -75,8 +78,8 @@ class MarketUpdateRepository:
     def submit(self,day,*,scheduled_for,now):
         scheduled=_scheduled(day,scheduled_for);clock=stamp(now)
         if clock<stamp(scheduled):raise ValueError('MARKET_UPDATE_NOT_DUE')
-        request=dict(scope=SCOPE,trade_date=day,requirements_version=VERSION,scheduled_for=scheduled.isoformat())
-        key=market_identity(day)
+        request=dict(scope=SCOPE,trade_date=day,requirements_version=self.requirements_version,scheduled_for=scheduled.isoformat())
+        key=market_identity(day,requirements_version=self.requirements_version)
         with transaction(self.session_factory) as session:
             row=session.execute(text('SELECT task_id FROM market_update_run WHERE identity=:i'+current_lock(session)),dict(i=key)).first()
             if row:return self._get(session,row[0])
@@ -86,7 +89,7 @@ class MarketUpdateRepository:
                     session.execute(text('INSERT INTO market_update_run '
                         '(task_id,identity,trade_date,market_scope,requirements_version,request_json,request_sha256,attempt_no,not_before,status,phase,progress_json,created_at,updated_at) '
                         "VALUES (:id,:i,:day,:scope,:version,:request,:sha,1,:before,'QUEUED','QUEUED',:progress,:now,:now)"),
-                        dict(id=task_id,i=key,day=day,scope=SCOPE,version=VERSION,request=encode(request),sha=identity(request),before=stamp(scheduled),progress=encode({}),now=clock))
+                        dict(id=task_id,i=key,day=day,scope=SCOPE,version=self.requirements_version,request=encode(request),sha=identity(request),before=stamp(scheduled),progress=encode({}),now=clock))
             except IntegrityError as error:
                 duplicate=bool(error.orig.args and error.orig.args[0]==1062) or session.get_bind().dialect.name=='sqlite' and getattr(error.orig,'sqlite_errorcode',None) in (1555,2067)
                 if not duplicate:raise
@@ -100,7 +103,7 @@ class MarketUpdateRepository:
         if market_day(start)>market_day(end):raise ValueError('MARKET_RANGE_INVALID')
         with transaction(self.session_factory) as session:
             rows=session.execute(text('SELECT task_id,trade_date,status,error_kind,created_at,not_before,retry_not_before '
-                'FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),dict(scope=SCOPE,version=VERSION,start=start,end=end)).mappings().all()
+                'FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),dict(scope=SCOPE,version=self.requirements_version,start=start,end=end)).mappings().all()
             result=[]
             for row in rows:
                 item=dict(row,trade_date=str(row['trade_date']))
@@ -111,7 +114,7 @@ class MarketUpdateRepository:
     @_safe_database_boundary
     def earliest_date(self):
         with transaction(self.session_factory) as session:
-            value=session.execute(text('SELECT MIN(trade_date) FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version'),dict(scope=SCOPE,version=VERSION)).scalar()
+            value=session.execute(text('SELECT MIN(trade_date) FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version'),dict(scope=SCOPE,version=self.requirements_version)).scalar()
             return str(value) if value is not None else None
 
     @_safe_database_boundary
@@ -123,7 +126,7 @@ class MarketUpdateRepository:
         with transaction(self.session_factory) as session:
             row=session.execute(text("SELECT task_id FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status IN ('QUEUED','WAITING_RETRY') "
                 'AND not_before<=:now AND (retry_not_before IS NULL OR retry_not_before<=:now) '
-                'ORDER BY trade_date,created_at,task_id LIMIT 1'+current_lock(session)),dict(scope=SCOPE,version=VERSION,now=clock)).first()
+                'ORDER BY trade_date,created_at,task_id LIMIT 1'+current_lock(session)),dict(scope=SCOPE,version=self.requirements_version,now=clock)).first()
             if row is None:return None
             result=session.execute(text("UPDATE market_update_run SET status='RUNNING',owner_token=:token,owner_json=:owner,lease_until=:until,updated_at=:now "
                 "WHERE task_id=:id AND status IN ('QUEUED','WAITING_RETRY') AND not_before<=:now AND (retry_not_before IS NULL OR retry_not_before<=:now)"),
@@ -145,6 +148,7 @@ class MarketUpdateRepository:
         validate_market(snapshot)
         with transaction(self.session_factory) as session:
             task=self.fence(task_id,owner_token,now=now,session=session)
+            if snapshot['schema_version']!=VERSIONS[task['requirements_version']]:raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
             if snapshot['trade_date']!=task['trade_date']:raise ValueError('MARKET_UNIVERSE_DATE_CHANGED')
             if task['universe'] is not None:
                 if task['universe']!=snapshot:raise ValueError('MARKET_UNIVERSE_CHANGED')
@@ -188,7 +192,7 @@ class MarketUpdateRepository:
     @_safe_database_boundary
     def expired(self,*,now):
         with transaction(self.session_factory) as session:
-            return [_task(row) for row in session.execute(text("SELECT * FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status='RUNNING' AND lease_until<=:now"),dict(scope=SCOPE,version=VERSION,now=stamp(now))).mappings().all()]
+            return [_task(row) for row in session.execute(text("SELECT * FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status='RUNNING' AND lease_until<=:now"),dict(scope=SCOPE,version=self.requirements_version,now=stamp(now))).mappings().all()]
 
     @_safe_database_boundary
     def recover(self,task_id,old_owner_token,*,now):
@@ -201,6 +205,7 @@ class MarketUpdateRepository:
     def retry(self,task_id,*,now):
         with transaction(self.session_factory) as session:
             task=self._get(session,task_id,lock=True)
+            if task['requirements_version']!=self.requirements_version:raise ValueError('MARKET_RETRY_VERSION_MISMATCH')
             if task['status'] not in {'FAILED','PARTIAL'}:raise ValueError('ONLY_FAILED_OR_PARTIAL_CAN_RETRY')
             session.execute(text("UPDATE market_update_run SET status='QUEUED',phase='QUEUED',attempt_no=attempt_no+1,retry_not_before=NULL,error_kind=NULL,updated_at=:now WHERE task_id=:id"),
                 dict(now=stamp(now),id=task_id))
@@ -209,5 +214,5 @@ class MarketUpdateRepository:
     @_safe_database_boundary
     def next_retry(self):
         with transaction(self.session_factory) as session:
-            value=session.execute(text("SELECT MIN(CASE WHEN retry_not_before>not_before THEN retry_not_before ELSE not_before END) FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status IN ('QUEUED','WAITING_RETRY')"),dict(scope=SCOPE,version=VERSION)).scalar()
+            value=session.execute(text("SELECT MIN(CASE WHEN retry_not_before>not_before THEN retry_not_before ELSE not_before END) FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status IN ('QUEUED','WAITING_RETRY')"),dict(scope=SCOPE,version=self.requirements_version)).scalar()
             return utc(value) if value is not None else None

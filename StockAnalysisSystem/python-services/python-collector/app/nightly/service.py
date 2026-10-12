@@ -63,6 +63,33 @@ class MarketUpdateService:
         window=dict(start=day,end=day,requested_start=day,requested_end=day,empty=False,cutoff_reason=None)
         return build_stock_inventory(universe,window,baseline,evidence)
 
+    def _reference_source(self,folder,attempt,snapshot=None):
+        """Persist matching provenance before binding; never reseal a mismatch."""
+        from .universe import verify_reference
+        path=folder/'reference_source.json'
+        if path.exists():
+            reference=sealed(path)
+            if set(reference)!={'source_directory','manifest_sha256'}:raise ValueError('REFERENCE_BINDING_CHANGED')
+            bundle=verify_reference(reference['source_directory'])
+            if bundle['manifest_sha256']!=reference['manifest_sha256']:raise ValueError('REFERENCE_SOURCE_IDENTITY_INVALID')
+        elif snapshot is not None:
+            # Recover only an original, completed source matching the bound
+            # immutable snapshot. Do not call the SDK under a new attempt.
+            candidates=[p.parent for p in sorted((folder/'attempts').glob('*/reference/complete.json'))]
+            pinned=getattr(self.universe_provider,'pinned_reference',None)
+            if pinned is not None:candidates.append(Path(pinned['source_directory']))
+            bundle=None
+            for directory in candidates:
+                candidate=verify_reference(directory)
+                if candidate['manifest_sha256']==snapshot['source_manifest_sha256']:
+                    bundle=candidate;break
+            if bundle is None:raise ValueError('MATCHING_REFERENCE_SOURCE_REQUIRED')
+        else:bundle=self.universe_provider.source_reference(attempt/'reference')
+        if snapshot is not None and (bundle['manifest_sha256']!=snapshot['source_manifest_sha256'] or bundle['acquired_at']!=snapshot['acquired_at']):
+            raise ValueError('REFERENCE_SOURCE_IDENTITY_INVALID')
+        sealed(path,dict(source_directory=bundle['source_directory'],manifest_sha256=bundle['manifest_sha256']))
+        return bundle
+
     def execute(self,task,*,owner_token):
         task=self.tasks.fence(task['task_id'],owner_token,now=self._now())
         try:return self._execute(task,owner_token)
@@ -92,14 +119,24 @@ class MarketUpdateService:
         attempt=folder/'attempts'/f"{task['attempt_no']:06d}";attempt.mkdir(parents=True,exist_ok=True)
         self._stage(task,token,'REFERENCE')
         snapshot=task['universe']
+        reference_directory=None
         if snapshot is None:
             self.universe_provider.on_progress=lambda done,total:self._stage(task,token,'REFERENCE',dict(completed_requests=done,total_requests=total))
-            snapshot=self.universe_provider.freeze(day,attempt/'reference')
+            if task['requirements_version']=='market-v2':
+                from .contracts import freeze_market
+                from .symbol_periods import reference_rows
+                bundle=self._reference_source(folder,attempt)
+                reference_directory=bundle['source_directory']
+                snapshot=freeze_market(day,reference_rows(bundle['rows']),bundle['manifest_sha256'],bundle['acquired_at'],schema_version=2)
+            else:snapshot=self.universe_provider.freeze(day,attempt/'reference')
             validate_market(snapshot)
             if datetime.fromisoformat(snapshot['acquired_at']).timestamp()>self.clock():
                 raise ValueError('REFERENCE_ACQUIRED_IN_FUTURE')
             task=self.tasks.bind_universe(task['task_id'],token,snapshot,now=self._now())
         validate_market(snapshot);sealed(folder/'universe.json',snapshot)
+        if snapshot['schema_version']==2:
+            bundle=self._reference_source(folder,attempt,snapshot)
+            reference_directory=bundle['source_directory']
         self._stage(task,token,'INVENTORY')
         current=canonical(self.market.capture(snapshot['codes'],day,day))
         listed={r['ts_code']:str(r['list_date']) for r in current['stock_basic'] if r.get('list_date')}
@@ -130,7 +167,9 @@ class MarketUpdateService:
         self._stage(task,token,'ACQUIRE')
         self.acquirer.on_progress=lambda done,total:self._stage(task,token,'ACQUIRE',dict(completed_requests=done,total_requests=total))
         acquired=self.acquirer.collect(day,methods,attempt/'native')
-        register_day_evidence(self.evidence_store,snapshot,acquired['shards'],owner_guard=guard)
+        register_day_evidence(self.evidence_store,snapshot,acquired['shards'],owner_guard=guard,
+            reference_directory=reference_directory,
+            exclusion_sink=(lambda rows:sealed(attempt/'source_exclusions.json',rows)) if snapshot['schema_version']==2 else None)
         inventory=self._inventory(snapshot,baseline,calendar)
         supplement_path=attempt/'supplement_plan.json'
         supplement=sealed(supplement_path) if supplement_path.exists() else sealed(supplement_path,supplemental_requests(inventory))
@@ -138,7 +177,9 @@ class MarketUpdateService:
             if r['day']!=day or not set(r['query_codes'])<=set(snapshot['codes']):raise ValueError('SUPPLEMENT_OUTSIDE_UNIVERSE')
             self._stage(task,token,'ACQUIRE',dict(completed_supplement=index,total_supplement=len(supplement['requests'])))
             extra=self.acquirer.collect(day,[r['method']],attempt/'supplement'/f'{index:04d}',query_codes=r['query_codes'])
-            register_day_evidence(self.evidence_store,snapshot,extra['shards'],owner_guard=guard)
+            register_day_evidence(self.evidence_store,snapshot,extra['shards'],owner_guard=guard,
+                reference_directory=reference_directory,
+                exclusion_sink=(lambda rows:sealed(attempt/'supplement'/f'{index:04d}'/'source_exclusions.json',rows)) if snapshot['schema_version']==2 else None)
         self._stage(task,token,'ASSEMBLE')
         inventory=self._inventory(snapshot,baseline,calendar)
         self._stage(task,token,'IMPORT');self.market.owner_guard=guard

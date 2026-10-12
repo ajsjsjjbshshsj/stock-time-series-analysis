@@ -6,6 +6,8 @@ from app.preparation.contracts import TZ,iso,identity,timestamp
 
 SCOPE='SH_SZ_A'
 VERSION='market-v1'
+SYMBOL_PERIOD_VERSION='market-v2'
+VERSIONS={VERSION:1,SYMBOL_PERIOD_VERSION:2}
 START='2023-01-01'
 FIELDS=('ts_code','symbol','name','area','industry','market','exchange','curr_type',
         'list_status','list_date','delist_date')
@@ -24,9 +26,10 @@ def market_day(value):
     if day<iso(START):raise ValueError('NIGHTLY_SCOPE_INVALID')
     return day
 
-def market_identity(day):
+def market_identity(day,*,requirements_version=VERSION):
     market_day(day)
-    return identity(dict(scope=SCOPE,trade_date=day,requirements_version=VERSION))
+    if requirements_version not in VERSIONS:raise ValueError('MARKET_VERSION_INVALID')
+    return identity(dict(scope=SCOPE,trade_date=day,requirements_version=requirements_version))
 
 def is_a_share(code,exchange=None):
     if type(code) is not str:return False
@@ -82,7 +85,8 @@ def _reference(raw,acquired):
         raise ValueError('REFERENCE_LIFECYCLE_INVALID')
     return row
 
-def freeze_market(day,source_rows,source_manifest_sha256,acquired_at):
+def freeze_market(day,source_rows,source_manifest_sha256,acquired_at,*,schema_version=1):
+    if type(schema_version) is not int or schema_version not in (1,2):raise ValueError('MARKET_VERSION_INVALID')
     target=market_day(day);acquired=timestamp(acquired_at)
     if target>acquired.date() or type(source_manifest_sha256) is not str or re.fullmatch('[0-9a-f]{64}',source_manifest_sha256) is None:
         raise ValueError('REFERENCE_SOURCE_IDENTITY_INVALID')
@@ -100,19 +104,23 @@ def freeze_market(day,source_rows,source_manifest_sha256,acquired_at):
                 and row['market'] in ('主板','创业板','科创板','CDR')
                 and iso(row['list_date'])<=target
                 and (row['delist_date'] is None or target<iso(row['delist_date']))):
+            if schema_version==2:
+                # Lazy import keeps the independent policy helper free of cycles.
+                from .symbol_periods import eligible_on
+                if not eligible_on(row['ts_code'],day,list_date=row['list_date'],delist_date=row['delist_date']):continue
             members.append(row)
     members.sort(key=lambda row:row['ts_code'])
     if not members:raise ValueError('EMPTY_MARKET_UNIVERSE')
-    return dict(schema_version=1,scope=SCOPE,trade_date=day,acquired_at=acquired.isoformat(),
-        reference_kind='current_stock_basic_with_listing_boundaries',source_manifest_sha256=source_manifest_sha256,
+    return dict(schema_version=schema_version,scope=SCOPE,trade_date=day,acquired_at=acquired.isoformat(),
+        reference_kind=('current_stock_basic_with_listing_boundaries' if schema_version==1 else 'independent_symbol_periods_v1'),source_manifest_sha256=source_manifest_sha256,
         members=members,codes=[row['ts_code'] for row in members],stock_count=len(members),member_sha256=identity(members))
 
 def validate_market(snapshot):
     if (not isinstance(snapshot,dict) or set(snapshot)!=SNAPSHOT_FIELDS
-            or type(snapshot['schema_version']) is not int or snapshot['schema_version']!=1
+            or type(snapshot['schema_version']) is not int or snapshot['schema_version'] not in (1,2)
             or type(snapshot['stock_count']) is not int or snapshot['stock_count']<=0):
         raise ValueError('MARKET_SNAPSHOT_FIELDS_INVALID')
-    expected=freeze_market(snapshot['trade_date'],snapshot['members'],snapshot['source_manifest_sha256'],snapshot['acquired_at'])
+    expected=freeze_market(snapshot['trade_date'],snapshot['members'],snapshot['source_manifest_sha256'],snapshot['acquired_at'],schema_version=snapshot['schema_version'])
     if expected!=snapshot:raise ValueError('MARKET_SNAPSHOT_HASH_OR_IDENTITY_INVALID')
     return snapshot
 
