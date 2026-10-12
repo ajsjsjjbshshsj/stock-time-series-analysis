@@ -60,9 +60,11 @@ def verify_reference(directory):
     return dict(source_directory=str(root),manifest_sha256=digest(manifest),acquired_at=acquired,rows=rows,excluded_references=exclusions)
 
 class MarketUniverseProvider:
-    def __init__(self,client_factory,requests_factory,*,clock=time.time,pinned_reference=None):
+    def __init__(self,client_factory,requests_factory,*,clock=time.time,pinned_reference=None,schema_version=1):
+        if type(schema_version) is not int or schema_version not in (1,2):raise ValueError('MARKET_VERSION_INVALID')
         self.client_factory=client_factory;self.requests_factory=requests_factory;self.clock=clock
         self.pinned_reference=pinned_reference;self.on_progress=None
+        self.schema_version=schema_version
 
     def acquire_reference(self,directory):
         root=Path(directory).resolve();root.mkdir(parents=True,exist_ok=True)
@@ -100,10 +102,19 @@ class MarketUniverseProvider:
         if self.on_progress is not None:self.on_progress(len(PARTITIONS),len(PARTITIONS))
         return verify_reference(root)
 
-    def freeze(self,day,directory):
-        if market_day(day)>datetime.fromtimestamp(self.clock(),TZ).date():raise ValueError('MARKET_DAY_IN_FUTURE')
+    def source_reference(self,directory):
+        """Revalidate original provenance, including when shared across a batch."""
         if self.pinned_reference is not None:
             bundle=verify_reference(self.pinned_reference['source_directory'])
             if bundle!=self.pinned_reference:raise ValueError('PINNED_REFERENCE_CHANGED')
         else:bundle=self.acquire_reference(directory)
-        return freeze_market(day,bundle['rows'],bundle['manifest_sha256'],bundle['acquired_at'])
+        return bundle
+
+    def freeze(self,day,directory):
+        if market_day(day)>datetime.fromtimestamp(self.clock(),TZ).date():raise ValueError('MARKET_DAY_IN_FUTURE')
+        bundle=self.source_reference(directory)
+        rows=bundle['rows']
+        if self.schema_version==2:
+            from .symbol_periods import reference_rows
+            rows=reference_rows(rows)
+        return freeze_market(day,rows,bundle['manifest_sha256'],bundle['acquired_at'],schema_version=self.schema_version)

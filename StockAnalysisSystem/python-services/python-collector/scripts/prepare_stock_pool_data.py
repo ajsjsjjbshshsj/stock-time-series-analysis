@@ -80,7 +80,8 @@ class Runtime:
     def market_tasks(self):
         if self._market_tasks is None:
             from app.repositories.market_update_repository import MarketUpdateRepository
-            self._market_tasks=MarketUpdateRepository(self.db.Session)
+            from app.nightly.contracts import SYMBOL_PERIOD_VERSION
+            self._market_tasks=MarketUpdateRepository(self.db.Session,requirements_version=SYMBOL_PERIOD_VERSION)
         return self._market_tasks
 
     def market_service(self):
@@ -91,7 +92,7 @@ class Runtime:
             from app.nightly.reference import SnapshotReferenceWriter
             from app.repositories.preparation_import_repository import PreparationImportRepository
             self._market_service=MarketUpdateService(self.market_tasks(),PreparationImportRepository(self.db.Session),
-                self.evidence,self.calendar,MarketUniverseProvider(self.client,self.acquirer.requests),
+                self.evidence,self.calendar,MarketUniverseProvider(self.client,self.acquirer.requests,schema_version=2),
                 NativeDayAcquirer(self.client,self.acquirer.requests),SnapshotReferenceWriter(self.db.Session),self.data_root)
         return self._market_service
 

@@ -12,6 +12,36 @@ from app.nightly.contracts import freeze_market
 def snapshot(day='2026-09-28'):
     return freeze_market(day,[reference()],'a'*64,'2026-10-11T20:00:00+08:00')
 
+def test_policy_upgrade_preserves_old_tasks_and_isolates_new_queue():
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    with database() as factory:
+        old=store(factory); first=submit(old)
+        new=MarketUpdateRepository(factory,requirements_version='market-v2')
+        second=submit(new)
+        assert first['task_id']!=second['task_id']
+        assert new.get(first['task_id'])==first
+        assert claim(new)['task_id']==second['task_id']
+        value=freeze_market('2026-09-28',[reference()],'a'*64,'2026-10-11T20:00:00+08:00',schema_version=2)
+        assert new.bind_universe(second['task_id'],OWNER['token'],value,now=NOW)['universe']==value
+        assert old.get(first['task_id'])==first
+
+def test_new_job_cannot_bind_old_policy_snapshot():
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    with database() as factory:
+        repo=MarketUpdateRepository(factory,requirements_version='market-v2')
+        submit(repo); task=claim(repo)
+        with pytest.raises(ValueError,match='VERSION'):repo.bind_universe(task['task_id'],OWNER['token'],snapshot(),now=NOW)
+
+def test_cross_version_retry_rejected_without_mutating_legacy_task():
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    with database() as factory:
+        old=store(factory);submit(old);task=claim(old)
+        old.update(task['task_id'],OWNER['token'],dict(status='FAILED',error_kind='SOURCE_CONFLICT',updated_at=NOW))
+        before=old.get(task['task_id'])
+        new=MarketUpdateRepository(factory,requirements_version='market-v2')
+        with pytest.raises(ValueError,match='VERSION'):new.retry(task['task_id'],now=NOW)
+        assert new.get(task['task_id'])==before
+
 def test_duplicate_submission_preserves_identity_and_original_schedule():
     with database() as factory:
         repo=store(factory);first=submit(repo)

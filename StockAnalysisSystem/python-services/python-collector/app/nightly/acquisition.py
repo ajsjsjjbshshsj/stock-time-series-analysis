@@ -141,12 +141,51 @@ class NativeDayAcquirer:
         if self.on_progress is not None:self.on_progress(len(requests),len(requests))
         return dict(complete=True,shards=shards)
 
-def register_day_evidence(store,snapshot,shards,*,owner_guard=None):
-    validate_market(snapshot);day=snapshot['trade_date'];target=set(snapshot['codes']);refs=[]
+def day_exclusions(snapshot,shards,*,reference_directory=None):
+    """Audit verified inactive factors or explicitly expired code periods.
+
+    Some supplier responses repeat pre-effective prices under a current code.
+    Exclude that code's invalid period only, never relabel those prices. Other
+    out-of-roster daily/basic rows remain errors, including ordinary delistings.
+    """
+    validate_market(snapshot);day=snapshot['trade_date'];target=set(snapshot['codes'])
+    known=None;excluded=[]
     for shard in shards:
         body=verified_shard(shard['source_directory'],shard['request'])
         if body!=shard or body['request']['day']!=day:raise ValueError('NATIVE_REGISTRY_BINDING_CHANGED')
-        if any(is_a_share(row['ts_code']) and row['ts_code'] not in target for row in body['rows']):raise PreparationFailure('SOURCE_CONFLICT')
+        outsiders=sorted({row['ts_code'] for row in body['rows'] if is_a_share(row['ts_code']) and row['ts_code'] not in target})
+        if not outsiders:continue
+        if snapshot['schema_version']!=2 or reference_directory is None:
+            raise PreparationFailure('SOURCE_CONFLICT')
+        if known is None:
+            from .universe import verify_reference
+            from .contracts import _reference,excluded_legacy_reference
+            from .symbol_periods import reference_rows
+            bundle=verify_reference(reference_directory)
+            if bundle['manifest_sha256']!=snapshot['source_manifest_sha256']:raise ValueError('REFERENCE_SOURCE_IDENTITY_INVALID')
+            acquired=timestamp(bundle['acquired_at'])
+            known={row['ts_code']:_reference(row,acquired) for row in reference_rows(bundle['rows'])
+                   if excluded_legacy_reference(row,acquired) is None}
+        from .symbol_periods import eligible_on,period_for
+        for code in outsiders:
+            row=known.get(code)
+            if row is None or eligible_on(code,day,list_date=row['list_date'],delist_date=row['delist_date']):
+                raise PreparationFailure('SOURCE_CONFLICT')
+            period=period_for(code)
+            outside_explicit_period=(period['valid_from'] is not None and day<period['valid_from']
+                or period['valid_until'] is not None and day>=period['valid_until'])
+            if body['method']!='adj_factor' and not outside_explicit_period:raise PreparationFailure('SOURCE_CONFLICT')
+            excluded.append(dict(method=body['method'],ts_code=code,reason='KNOWN_OUTSIDE_SYMBOL_PERIOD',raw_sha256=body['raw_sha256']))
+    return excluded
+
+
+def register_day_evidence(store,snapshot,shards,*,owner_guard=None,reference_directory=None,exclusion_sink=None):
+    validate_market(snapshot);day=snapshot['trade_date'];target=set(snapshot['codes']);refs=[]
+    exclusions=day_exclusions(snapshot,shards,reference_directory=reference_directory)
+    if exclusion_sink is not None:exclusion_sink(exclusions)
+    for shard in shards:
+        body=verified_shard(shard['source_directory'],shard['request'])
+        if body!=shard or body['request']['day']!=day:raise ValueError('NATIVE_REGISTRY_BINDING_CHANGED')
         codes=sorted(target & set(body['request']['query_codes'])) if body['request']['query_codes'] is not None else snapshot['codes']
         if not codes:raise ValueError('SOURCE_QUERY_OUTSIDE_UNIVERSE')
         rows=[row for row in body['rows'] if row['ts_code'] in target]

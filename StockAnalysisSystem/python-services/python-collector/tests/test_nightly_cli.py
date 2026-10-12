@@ -16,6 +16,13 @@ def test_worker_default_stays_legacy_without_nightly(capsys,monkeypatch):
     assert module.main(['worker','--once'],dependencies={'worker':old_worker})==0
     assert calls==['legacy'] and json.loads(capsys.readouterr().out)['status']=='IDLE'
 
+def test_runtime_new_nightly_queue_uses_independent_period_version():
+    module=cli()
+    with database() as factory:
+        runtime=module.Runtime.__new__(module.Runtime)
+        runtime.db=SimpleNamespace(Session=factory);runtime._market_tasks=None
+        assert runtime.market_tasks().requirements_version=='market-v2'
+
 def test_nightly_worker_explicit_defaults_and_environment(capsys,monkeypatch):
     module=cli();calls=[];monkeypatch.delenv('NIGHTLY_UPDATE_AT',raising=False)
     def worker(**kwargs):calls.append(kwargs);return SimpleNamespace(run_once=lambda:None)

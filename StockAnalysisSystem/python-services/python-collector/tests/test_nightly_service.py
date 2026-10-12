@@ -91,6 +91,68 @@ def test_complete_day_reuses_inventory_without_source_requests(tmp_path):
         assert result['result']['inserted_this_attempt']==0 and result['result']['model_ready'] is False
         assert calls==[] and market.writes==0
 
+def test_new_period_service_seals_exclusion_audit_for_actual_registration(tmp_path):
+    from app.nightly.universe import MarketUniverseProvider
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    from app.nightly.contracts import FIELDS
+    from app.nightly.service import sealed
+    class Client:
+        def stock_basic(self,**params):
+            records=[reference(),reference('600000.SH',exchange='SSE')]
+            return pd.DataFrame([r for r in records if r['exchange']==params['exchange'] and r['list_status']==params['list_status']],columns=FIELDS)
+    class Pacing:
+        def call(self,method,params):return method(**params)
+    with database() as factory:
+        service,_,market,calls,_=make(factory,tmp_path,empty=True)
+        service.tasks=MarketUpdateRepository(factory,requirements_version='market-v2')
+        service.universe_provider=MarketUniverseProvider(lambda:Client(),lambda directory:Pacing(),clock=service.clock,schema_version=2)
+        result=execute(service,service.tasks)
+        assert result['status']=='SUCCEEDED'
+        assert result['universe']['schema_version']==2
+        audit=tmp_path/'market_updates'/result['task_id']/'attempts/000001/source_exclusions.json'
+        assert sealed(audit)==[]
+
+@pytest.mark.parametrize('interruption',['pointer_write','bound_pointer_missing'])
+def test_reference_binding_recovers_original_source_without_poisoning_retry(tmp_path,monkeypatch,interruption):
+    from app.nightly.universe import MarketUniverseProvider
+    from app.repositories.market_update_repository import MarketUpdateRepository
+    from app.nightly.contracts import FIELDS
+    import app.nightly.service as implementation
+    calls=[]
+    class Client:
+        def stock_basic(self,**params):
+            calls.append(1);records=[reference(),reference('600000.SH',exchange='SSE')]
+            return pd.DataFrame([r for r in records if r['exchange']==params['exchange'] and r['list_status']==params['list_status']],columns=FIELDS)
+    class Pacing:
+        def call(self,method,params):return method(**params)
+    with database() as factory:
+        service,_,market,_,_=make(factory,tmp_path)
+        service.tasks=MarketUpdateRepository(factory,requirements_version='market-v2')
+        service.universe_provider=MarketUniverseProvider(lambda:Client(),lambda directory:Pacing(),clock=service.clock,schema_version=2)
+        original=implementation.sealed
+        def interrupted(path,value=None):
+            if path.name=='reference_source.json':raise OSError('simulated interrupted pointer')
+            return original(path,value)
+        if interruption=='pointer_write':monkeypatch.setattr(implementation,'sealed',interrupted)
+        else:
+            # Simulate an already-bound legacy failure with its original source
+            # present, but the source pointer missing. Do not delete any file.
+            service.submit(DAY);claimed=claim(service.tasks)
+            directory=tmp_path/'market_updates'/claimed['task_id']/'attempts/000001/reference'
+            value=service.universe_provider.freeze(DAY,directory)
+            service.tasks.bind_universe(claimed['task_id'],OWNER['token'],value,now=NOW)
+            service.tasks.update(claimed['task_id'],OWNER['token'],dict(status='FAILED',error_kind='SCHEMA',updated_at=NOW))
+        first=execute(service,service.tasks) if interruption=='pointer_write' else service.tasks.get(claimed['task_id'])
+        assert first['status']=='FAILED'
+        if interruption=='pointer_write':assert first['universe'] is None
+        monkeypatch.setattr(implementation,'sealed',original)
+        service.tasks.retry(first['task_id'],now=NOW)
+        service.clock=lambda:datetime.fromisoformat(NOW).timestamp()+60
+        service.universe_provider.clock=service.clock
+        repeated=service.execute(claim(service.tasks),owner_token=OWNER['token'])
+        assert repeated['status']=='SUCCEEDED'
+        if interruption=='bound_pointer_missing':assert len(calls)==6
+
 def test_empty_sql_fetches_bulk_quote_and_basic_then_inserts_only_missing_rows(tmp_path):
     with database() as factory:
         service,tasks,market,calls,_=make(factory,tmp_path,empty=True)
