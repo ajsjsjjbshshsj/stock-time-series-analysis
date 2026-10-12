@@ -1,15 +1,17 @@
 """Offline source attribution and immutable repair packages; no SDK/SQL calls."""
 from collections import Counter
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 import re
 import shutil
+import struct
+import math
 
 import pandas as pd
 
 from app.market_data.forward_snapshot import read, write, digest
-from app.market_data.repair_contract import load_baseline, plan_requests, iso, DAILY, BASIC, FACTOR, SUSPEND
+from app.market_data.repair_contract import load_baseline, plan_requests, iso, DAILY, BASIC, FACTOR, SUSPEND,identity
 from app.market_data.repair_acquisition import verify_acquisition
 
 
@@ -35,6 +37,28 @@ def equal_business(old,new,fields,types):
     return all(sql_value(old.get(f),types.get(f,''))==sql_value(new.get(f),types.get(f,'')) for f in fields)
 
 
+def _legacy_float32_row(raw,fields,types):
+    """Reproduce binary32 then actual DECIMAL storage; never use a tolerance.
+
+    Only a complete declared DECIMAL schema permits this opt-in legacy path.
+    The projected row is comparison evidence, never an insert/update candidate.
+    """
+    if any(re.fullmatch(r'decimal\([0-9]+,[0-9]+\)',types.get(f,'').lower()) is None for f in fields[2:]):return None
+    projected={f:raw[f] for f in fields[:2]}
+    try:
+        for field in fields[2:]:
+            value=raw[field]
+            if value is None:projected[field]=None;continue
+            if isinstance(value,bool):return None
+            number=struct.unpack('!f',struct.pack('!f',float(value)))[0]
+            if not math.isfinite(number):return None
+            # Preserve the exact binary32 value. str(float) is only a shortest
+            # round-trip representation and can omit integer digits at 1e17.
+            projected[field]=sql_value(Decimal.from_float(number),types[field])
+    except (InvalidOperation,OverflowError,ValueError,TypeError,struct.error):return None
+    return projected
+
+
 def _precise_intraday_stops(events):
     stops=[event for event in events if event['suspend_type']=='S']
     if not stops:return False
@@ -58,10 +82,11 @@ def _precise_intraday_stops(events):
     return not full
 
 
-def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_intraday=False) -> dict:
+def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_intraday=False,allow_verified_legacy_float32=False) -> dict:
     # Frozen repair packages replay their original conservative attribution.
     # Current stock inventories explicitly opt in to verified intraday quotes.
     if type(allow_verified_intraday) is not bool:raise ValueError('INVALID_INTRADAY_POLICY')
+    if type(allow_verified_legacy_float32) is not bool:raise ValueError('INVALID_LEGACY_PRECISION_POLICY')
     t=data['tables']; codes=data['pool']['codes']; listed={r['ts_code']:r['list_date'] for r in t['stock_basic']}
     dates=sorted(r['cal_date'] for r in data['calendar']['rows'] if r['is_open']==1 and t['start']<=r['cal_date']<=t['end'])
     normalized={}
@@ -76,7 +101,7 @@ def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_i
                 raise ValueError('Source code outside pool')
             if r['trade_date'] not in dates or r['trade_date']<listed[r['ts_code']]: raise ValueError('Source outside listing/calendar')
             normalized[method].append(r)
-    conflicts=[]; candidates={}; combined={}; origins={}
+    conflicts=[]; candidates={}; combined={}; origins={};legacy_compatible=[]
     for table,method,fields in [('stock_daily','daily',DAILY),('stock_daily_basic','daily_basic',BASIC)]:
         old={key(r):dict(r) for r in t[table]}; merged=dict(old); origin={k:'DATABASE_ROW' for k in old}; new=[]
         seen=set(); types=t['schema'][table]['types']
@@ -87,7 +112,17 @@ def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_i
             candidate={f:sql_value(raw[f],types.get(f,'')) for f in fields}
             if method=='daily_basic': candidate['source']='TUSHARE'
             if k in old:
-                if not equal_business(old[k],candidate,fields,types):
+                compatible=equal_business(old[k],candidate,fields,types)
+                if not compatible and allow_verified_legacy_float32:
+                    projected=_legacy_float32_row(raw,fields,types)
+                    if projected is not None and equal_business(old[k],projected,fields,types):
+                        compatible=True
+                        legacy_compatible.append(dict(table=table,ts_code=k[0],trade_date=k[1],
+                            changed_fields=sorted(f for f in fields[2:] if not equal_business(old[k],candidate,[f],types)),
+                            original_business_sha256=identity({f:sql_value(old[k].get(f),types.get(f,'')) for f in fields}),
+                            source_business_sha256=identity({f:candidate[f] for f in fields}),
+                            float32_business_sha256=identity(projected)))
+                if not compatible:
                     conflicts.append(dict(table=table,ts_code=k[0],trade_date=k[1],old=old[k],candidate=candidate))
                     origin[k]='SOURCE_CONFLICT'
                 else: origin[k]='PROVIDER_VERIFIED_EXISTING'
@@ -135,9 +170,13 @@ def classify_sources(data: dict,sources: dict[str,list[dict]],*,allow_verified_i
         acquisition_complete=True,source_issue_counts=issues,status_counts=dict(counts),model_ready=False,
         daily_rows=len(daily),basic_rows=len(basic),factor_rows=len(factor),
         insert_candidates={table:len(rows) for table,rows in candidates.items()})
-    return dict(daily=combined['daily'],basic=combined['daily_basic'],factors=[factor[k] for k in sorted(factor)],
+    result=dict(daily=combined['daily'],basic=combined['daily_basic'],factors=[factor[k] for k in sorted(factor)],
         suspensions=sorted(normalized['suspend_d'],key=lambda r:(*key(r),r['suspend_type'],r['suspend_timing'] or '')),
         status=statuses,conflicts=conflicts,candidates=candidates,report=report)
+    if allow_verified_legacy_float32:
+        result['legacy_float32_compatible']=legacy_compatible
+        report['legacy_float32_compatible_count']=len(legacy_compatible)
+    return result
 
 
 def _sources(base,acq):

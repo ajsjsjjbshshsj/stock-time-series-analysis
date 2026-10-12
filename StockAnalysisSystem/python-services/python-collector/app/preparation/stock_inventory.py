@@ -36,7 +36,8 @@ def _existing_invalid(table, row):
         return True
 
 
-def build_stock_inventory(pool: dict, window: dict, tables: dict, evidence: dict) -> dict:
+def build_stock_inventory(pool: dict, window: dict, tables: dict, evidence: dict,*,allow_verified_legacy_float32=False) -> dict:
+    if type(allow_verified_legacy_float32) is not bool:raise ValueError('INVALID_LEGACY_PRECISION_POLICY')
     start, end = iso(window['start']), iso(window['end'])
     tables = canonical(tables)
     missing_reference = sorted(set(pool['codes'])-{r['ts_code'] for r in tables['stock_basic'] if r.get('list_date')})
@@ -83,7 +84,8 @@ def build_stock_inventory(pool: dict, window: dict, tables: dict, evidence: dict
             row['trade_date'] = f'{day[:4]}-{day[4:6]}-{day[6:]}' if len(day)==8 else day
             if row['ts_code'] in listed and row['trade_date'] in dates and row['trade_date']>=listed[row['ts_code']]:
                 sources[method].append(row)
-    result = classify_sources(dict(pool=pool,calendar=calendar,tables=tables),sources,allow_verified_intraday=True)
+    result = classify_sources(dict(pool=pool,calendar=calendar,tables=tables),sources,allow_verified_intraday=True,
+                              allow_verified_legacy_float32=allow_verified_legacy_float32)
     issues = dict(result['report']['source_issue_counts'],INVALID_EXISTING_DATA=len(invalid_keys))
     queried = {tuple(k) for k in evidence.get('queried_suspensions',[])}
     statuses = result['status']

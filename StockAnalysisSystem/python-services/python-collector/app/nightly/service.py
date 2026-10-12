@@ -54,14 +54,20 @@ class MarketUpdateService:
         if progress is not None:patch['progress']=progress
         if not self.tasks.update(task['task_id'],token,patch):raise RuntimeError('OWNER_EXPIRED_OR_CHANGED')
 
-    def _inventory(self,snapshot,baseline,calendar):
-        day=snapshot['trade_date'];refs=[]
-        for method in ('daily','daily_basic','adj_factor','suspend_d'):
-            refs.extend(self.evidence_store.repository.list(method,snapshot['codes'],day,day))
+    def _inventory(self,snapshot,baseline,calendar,*,references=None):
+        day=snapshot['trade_date'];refs=[] if references is None else references
+        if references is None:
+            for method in ('daily','daily_basic','adj_factor','suspend_d'):
+                refs.extend(self.evidence_store.repository.list(method,snapshot['codes'],day,day))
         evidence=self.evidence_store.load(refs,codes=snapshot['codes'],start=day,end=day);evidence['calendar']=calendar
         universe=dict(pool_version='market_'+snapshot['member_sha256'][:32],codes=snapshot['codes'],stock_count=snapshot['stock_count'])
         window=dict(start=day,end=day,requested_start=day,requested_end=day,empty=False,cutoff_reason=None)
-        return build_stock_inventory(universe,window,baseline,evidence)
+        inventory=build_stock_inventory(universe,window,baseline,evidence,
+            allow_verified_legacy_float32=snapshot['schema_version']==2)
+        if snapshot['schema_version']==2:
+            inventory['legacy_precision_source_manifest_sha256']=sorted({ref['manifest_sha256'] for ref in refs})
+            inventory['verified_evidence_refs']=refs
+        return inventory
 
     def _reference_source(self,folder,attempt,snapshot=None):
         """Persist matching provenance before binding; never reseal a mismatch."""
@@ -182,6 +188,11 @@ class MarketUpdateService:
                 exclusion_sink=(lambda rows:sealed(attempt/'supplement'/f'{index:04d}'/'source_exclusions.json',rows)) if snapshot['schema_version']==2 else None)
         self._stage(task,token,'ASSEMBLE')
         inventory=self._inventory(snapshot,baseline,calendar)
+        if snapshot['schema_version']==2:
+            sealed(attempt/'precision_compatibility.json',dict(schema_version=1,policy='EXACT_BINARY32_THEN_DECIMAL',
+                baseline_sha256=digest(folder/'initial_baseline.json'),
+                source_manifest_sha256=inventory['legacy_precision_source_manifest_sha256'],
+                rows=inventory['attribution']['legacy_float32_compatible']))
         self._stage(task,token,'IMPORT');self.market.owner_guard=guard
         try:
             result=insert_candidates(self.market,baseline,inventory['attribution']['candidates'],FileReceiptStore(attempt),lambda progress:self._stage(task,token,'IMPORT',progress))
@@ -191,7 +202,10 @@ class MarketUpdateService:
         current=canonical(self.market.capture(snapshot['codes'],day,day))
         try:MarketRepairRepository._assert_original(initial,current)
         except ValueError:raise PreparationFailure('ORIGINAL_CHANGED') from None
-        after=self._inventory(snapshot,current,calendar)
+        # Same immutable sources as the sealed comparison audit. A concurrent
+        # registry addition belongs to the next inventory, not this decision.
+        after=self._inventory(snapshot,current,calendar,
+            references=inventory['verified_evidence_refs']) if snapshot['schema_version']==2 else self._inventory(snapshot,current,calendar)
         inserted=0
         for previous in (folder/'attempts').iterdir():
             if re.fullmatch('[0-9]{6}',previous.name) and (previous/'import_receipts.json').exists():
@@ -201,6 +215,7 @@ class MarketUpdateService:
             data_ready=after['data_ready'],source_complete=acquired['complete'],db_import_complete=True,original_rows_unchanged=True,
             inserted_this_attempt=result['inserted'],inserted=inserted,already_equal=result['already_equal'],attempt_no=task['attempt_no'],
             supplement_budget_exhausted=supplement['exhausted'],model_ready=False)
+        if snapshot['schema_version']==2:summary['legacy_float32_compatible_count']=len(after['attribution']['legacy_float32_compatible'])
         status='SUCCEEDED' if summary['data_ready'] else 'PARTIAL'
         if not self.tasks.update(task['task_id'],token,dict(status=status,result=summary,error_kind=None,updated_at=self._now())):
             raise RuntimeError('OWNER_EXPIRED_OR_CHANGED')
