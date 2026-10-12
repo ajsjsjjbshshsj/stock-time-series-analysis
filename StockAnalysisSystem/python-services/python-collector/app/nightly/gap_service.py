@@ -132,6 +132,7 @@ class GapUpdateService:
     def _verify_no_quote(self,state,folder,daily_missing):
         keys={tuple(key) for key in state['verified_no_quote']}
         if not keys<=daily_missing:raise ValueError('NO_QUOTE_OUTSIDE_TARGET')
+        native_sources={}
         for code,day in sorted(keys):
             proof=state['no_quote_sources'].get(code)
             if proof is None:raise ValueError('NO_QUOTE_PROOF_REQUIRED')
@@ -139,12 +140,18 @@ class GapUpdateService:
                 found=cached_no_quote(self.acquirer.source_store,[(code,day)],references=proof['references'])
                 if (code,day) not in found:raise ValueError('NO_QUOTE_REGISTRY_PROOF_CHANGED')
             elif proof['source_kind']=='native':
-                root=folder/'suspensions'/code
+                query_codes=proof.get('query_codes',[code])
+                if query_codes is not None and query_codes!=[code]:raise ValueError('NO_QUOTE_QUERY_SCOPE_INVALID')
+                root=folder/'suspensions'/('market' if query_codes is None else code)
                 if Path(proof['directory']).resolve()!=root.resolve():raise ValueError('NO_QUOTE_SOURCE_OUTSIDE_ROOT')
                 def forbidden(*args):raise ValueError('NO_QUOTE_COMPLETION_PROOF_REQUIRED')
-                shard=NativeDayAcquirer(forbidden,forbidden,clock=self.clock).collect(day,['suspend_d'],root,query_codes=[code])['shards'][0]
+                source_key=(str(root),day)
+                if source_key not in native_sources:
+                    native_sources[source_key]=NativeDayAcquirer(forbidden,forbidden,clock=self.clock).collect(day,['suspend_d'],root,query_codes=query_codes)['shards'][0]
+                shard=native_sources[source_key]
+                events=[row for row in shard['rows'] if row['ts_code']==code]
                 if (shard['raw_sha256']!=proof['raw_sha256'] or shard['manifest_sha256']!=proof['manifest_sha256']
-                        or not shard['rows'] or not all(row['suspend_type']=='S' and row['suspend_timing'] is None for row in shard['rows'])):
+                        or not events or not all(row['suspend_type']=='S' and row['suspend_timing'] is None for row in events)):
                     raise ValueError('NO_QUOTE_NATIVE_PROOF_CHANGED')
             else:raise ValueError('NO_QUOTE_PROOF_KIND_INVALID')
         return keys
@@ -260,31 +267,35 @@ class GapUpdateService:
             # excuse them. Use exact single-code/single-day suspension evidence.
             unresolved = {tuple(key) for key in state['unresolved_keys']}
             noquote = {tuple(key) for key in state['verified_no_quote']}
-            for code, date in sorted(unresolved-noquote):
-                root = folder/'suspensions'/code
+            cached=cached_no_quote(self.acquirer.source_store,unresolved-noquote)
+            for (code,date),proof in cached.items():
+                noquote.add((code,date));state['no_quote_sources'][code]=proof
+                state['cache_hits']+=1
+            remaining=unresolved-noquote
+            if remaining:
+                # One supported single-day status query, no OHLC/old-price data.
+                # Retain the full raw response but grant exemptions ONLY to the
+                # owned missing keys. Never assume comma-code support or use an
+                # empty range as a blanket suspension proof.
+                root = folder/'suspensions'/'market'
                 native = NativeDayAcquirer(self.acquirer.client_factory, self.acquirer.requests_factory, clock=self.clock)
                 if not (root/'complete.json').exists() and budget >= 25:return self._yield(task, token, state, state_path)
-                # Reuse registered evidence first, which revalidates its hashes.
-                store = self.acquirer.source_store
-                refs = store.repository.list('suspend_d', [code], date, date)
-                evidence = store.load(refs, codes=[code], start=date, end=date) if refs else None
-                events = None
-                if evidence is not None and (code, date) in evidence['queried_suspensions']:
-                    events = evidence['suspend_d']; state['cache_hits'] += 1
-                    proof=dict(source_kind='registry',references=refs)
-                if events is None:
-                    existed = (root/'complete.json').exists()
-                    acquired = native.collect(date, ['suspend_d'], root, query_codes=[code])
-                    events = acquired['shards'][0]['rows']
-                    shard=acquired['shards'][0]
-                    proof=dict(source_kind='native',directory=str(root),raw_sha256=shard['raw_sha256'],manifest_sha256=shard['manifest_sha256'])
-                    budget += int(not existed); state['api_requests'] += int(not existed)
-                if events and all(row['suspend_type'] == 'S' and row['suspend_timing'] is None for row in events):
-                    noquote.add((code, date))
-                    state['no_quote_sources'][code]=proof
-                state['verified_no_quote'] = [list(key) for key in sorted(noquote)]
-                self.tasks.fence(task['task_id'], token, now=self._now().isoformat())
-                self.batch_store.save(state_path, state)
+                existed = (root/'complete.json').exists()
+                acquired = native.collect(day, ['suspend_d'], root)
+                shard=acquired['shards'][0]
+                proof=dict(source_kind='native',directory=str(root),query_codes=None,
+                    raw_sha256=shard['raw_sha256'],manifest_sha256=shard['manifest_sha256'])
+                budget += int(not existed);state['api_requests'] += int(not existed)
+                from collections import defaultdict
+                events=defaultdict(list)
+                for row in shard['rows']:
+                    if (row['ts_code'],day) in remaining:events[row['ts_code']].append(row)
+                for code,rows in events.items():
+                    if rows and all(row['suspend_type']=='S' and row['suspend_timing'] is None for row in rows):
+                        noquote.add((code,day));state['no_quote_sources'][code]=proof
+            state['verified_no_quote'] = [list(key) for key in sorted(noquote)]
+            self.tasks.fence(task['task_id'], token, now=self._now().isoformat())
+            self.batch_store.save(state_path, state)
         finally:
             self.imports.owner_guard = None
         self._stage(task, token, 'VERIFY')

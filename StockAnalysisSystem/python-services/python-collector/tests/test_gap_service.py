@@ -51,7 +51,8 @@ def fixture(tmp_path, *, complete=False, basic_missing=False, empty=False, codes
                 pe_ttm=None, pb=1., ps=1., total_mv=1000.) for code in codes_], columns=BASIC)
         def suspend_d(self, **params):
             calls.append(('suspend_d', params))
-            records = [dict(ts_code=params['ts_code'],trade_date=params['trade_date'],suspend_type='S',suspend_timing=None)] if suspended else []
+            queried=[params['ts_code']] if params.get('ts_code') else [row['ts_code'] for row in roster]
+            records = [dict(ts_code=code,trade_date=params['trade_date'],suspend_type='S',suspend_timing=None) for code in queried] if suspended else []
             return pd.DataFrame(records, columns=SUSPEND)
     with database() as factory:
         with factory.begin() as session:
@@ -307,6 +308,14 @@ def test_checkpointed_suspension_raw_tamper_cannot_publish_success(tmp_path):
     codes=[f'{i:06d}.SZ' for i in range(2,30)]
     with fixture(tmp_path,codes=codes,empty=True,suspended=True) as (factory,tasks,service,store,calls,lock), lock:
         batch=service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc))
+        from app.preparation.service import PreparationFailure
+        saved=store.save;interrupted=[False]
+        def checkpoint(path,body,**kwargs):
+            saved(path,body,**kwargs)
+            if body.get('verified_no_quote') and not interrupted[0]:
+                interrupted[0]=True
+                raise PreparationFailure('MINUTE_QUOTA',retry_not_before=NOW+3)
+        store.save=checkpoint
         run(tasks,service,batch)
         from datetime import timedelta
         now=datetime.fromtimestamp(NOW+2,timezone.utc)
@@ -320,6 +329,17 @@ def test_checkpointed_suspension_raw_tamper_cannot_publish_success(tmp_path):
         claimed=tasks.claim(OWNER,now=now.isoformat(),lease_until=(now+timedelta(seconds=120)).isoformat())
         result=service.execute(claimed,owner_token=OWNER['token'])
         assert result['status']=='FAILED' and result['result']['data_ready'] is False
+
+
+def test_many_unknown_quotes_share_one_target_filtered_suspension_day_request(tmp_path):
+    with fixture(tmp_path,codes=[f'{i:06d}.SZ' for i in range(2,11)],empty=True,suspended=True) as (factory,tasks,service,store,calls,lock), lock:
+        result=run(tasks,service,service.prepare_batch(DAY,DAY,now=datetime.fromtimestamp(NOW,timezone.utc)))
+        assert result['status']=='SUCCEEDED' and result['result']['verified_no_quote']==10
+        suspension=[params for method,params in calls if method=='suspend_d']
+        assert suspension==[dict(trade_date='20260928',fields=','.join(SUSPEND))]
+        # The wire response includes the already quoted OTHER, but it must not
+        # be promoted into a target exemption or touch its existing price.
+        assert result['result']['inserted']==0
 
 
 def test_frozen_followup_reuse_does_not_reload_entire_batch_or_replan(tmp_path,monkeypatch):
