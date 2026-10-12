@@ -1,5 +1,7 @@
 # 沪深 A 股夜间更新
 
+首次安装及跨电脑恢复先阅读 [可迁移指南](../../docs/PORTABLE_SETUP.md)。下列 `python` 使用已激活环境，不依赖原开发者路径；启动普通服务不会自动开启夜间 worker。新引用使用 `runtime://`，旧绝对引用通过显式根映射读取，禁止修改哈希绑定原文件。
+
 目标数据范围为沪深 A 股、2023-01-01 起，不包含北交所、B 股、指数或基金。
 默认先扫描日线、基本指标主键，只补缺失股票日期；必要时复用或查询目标停牌证据。不会自动训练模型、计算特征或全量补复权因子。
 数据库存储全市场行情，用户选择股票池时复用其中对应股票的数据。
@@ -44,7 +46,7 @@
 默认旧 worker 不启用夜间更新，不需要新增任务表。
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --nightly-at 20:00
+python scripts/prepare_stock_pool_data.py worker --nightly --nightly-at 20:00
 ```
 
 该进程必须持续运行，才能在上海时区每晚 20:00 排队更新实际交易日。
@@ -56,17 +58,17 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --night
 ## 手动排队、查询与恢复
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-submit --date 2026-09-30
-D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --once
-D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-status
+python scripts/prepare_stock_pool_data.py nightly-submit --date 2026-09-30
+python scripts/prepare_stock_pool_data.py worker --nightly --once
+python scripts/prepare_stock_pool_data.py nightly-status
 ```
 
 `--once` 只处理一个可运行任务，可能是此前股票池队列中的任务。
 必须比较输出 `task_id`，再查询实际提交的任务；将下例 `TASK_ID` 替换为输出的真实 ID。
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-status --task-id TASK_ID
-D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --task-id TASK_ID
+python scripts/prepare_stock_pool_data.py nightly-status --task-id TASK_ID
+python scripts/prepare_stock_pool_data.py nightly-retry --task-id TASK_ID
 ```
 
 同一批次同一天的任务身份固定。显式重新提交日期会重新扫描数据库；覆盖改变会产生新绑定，不把旧成功当作新检查结果。
@@ -80,7 +82,7 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --task-id 
 不会重置共享配额、删除陌生进程的锁、或覆盖损坏控制文件。
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --scheduler
+python scripts/prepare_stock_pool_data.py nightly-retry --scheduler
 ```
 
 ## 重启补漏与历史范围
@@ -88,8 +90,8 @@ D:/Python/python.exe scripts/prepare_stock_pool_data.py nightly-retry --schedule
 先只读统计现有数据库的缺口，再明确排队历史补采，沿用同一个入口（不需要第二个采集脚本）：
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11 --dry-run
-D:/Python/python.exe scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11
+python scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11 --dry-run
+python scripts/prepare_stock_pool_data.py market-backfill --start 2023-01-01 --end 2026-10-11
 ```
 
 dry-run 只读本地已核验资料、日历和数据库主键，缺少可信缓存时明确失败，不初始化行情 SDK或写任务。
@@ -108,7 +110,7 @@ dry-run 只读本地已核验资料、日历和数据库主键，缺少可信缓
 计数包括已跳过键、计划缺口、合并分片、实际请求/缓存、新增行、已证实无报价和未解决键。
 
 ```powershell
-D:/Python/python.exe scripts/prepare_stock_pool_data.py worker --nightly --bootstrap-start 2026-09-28
+python scripts/prepare_stock_pool_data.py worker --nightly --bootstrap-start 2026-09-28
 ```
 
 没有控制文件、没有已有任务且没有指定起点时，仅从最近已到期的实际交易日开始。
