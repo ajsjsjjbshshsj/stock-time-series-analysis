@@ -32,14 +32,14 @@ rows为该范围每个日历日完整且升序的{cal_date:ISO日期,is_open:整
 在stock-analysis-app目录，使用实际可信日历路径替换下面的路径：
 
 ```powershell
-D:/Python/python.exe main.py predict --pipeline ranking --backtest --skip_update --calendar PATH_TO_TRUSTED_CALENDAR.json --top_n 10 --train_window 365 --rebalance_days 5
+python main.py predict --pipeline ranking --backtest --skip_update --calendar PATH_TO_TRUSTED_CALENDAR.json --top_n 10 --train_window 365 --rebalance_days 5
 ```
 
 该入口在各预定信号日进行LightGBM滚动训练来验证策略，不加载/覆盖生产latest，不联网。
 这不是仅预测的冻结模型入口；真实运行可能耗时，需要完整特征和足够成熟历史。
 
 ```powershell
-D:/Python/python.exe main.py train --pipeline ranking --skip_update --calendar PATH_TO_TRUSTED_CALENDAR.json --top_n 10
+python main.py train --pipeline ranking --skip_update --calendar PATH_TO_TRUSTED_CALENDAR.json --top_n 10
 ```
 
 该入口主动训练并保存新模型，再预测最新无标签日；旧同名产物不会覆盖。不是本轮自动执行的操作。
@@ -49,7 +49,9 @@ D:/Python/python.exe main.py train --pipeline ranking --skip_update --calendar P
 单股验证函数run_backtest(df,stock_code='000001.SZ',calendar=...)须显式指定原请求股票，分别返回技术信号与日期约束XGBoost回测、训练证据和data_selection。
 旧匿名数组训练入口保留兼容但没有自动增加因果证据，不应替代train_dated进行策略验收。
 单股概率回测仅二分类概率可用，回归收益不是概率。旧LSTM选项没有train_lstm实现，
-现在明确拒绝，不默默换模型；完整LSTM训练/日期序列适配需单独完成。
+已从 CLI 的可选训练模型中移除；旧 API/工件仍明确拒绝，不默默换模型。完整 LSTM 训练/日期序列适配需单独完成。
+
+兼容 Streamlit 的模型回测按钮也使用这套规则：显式上传上述 rows 格式可信日历，使用净化的 train_dated 训练和未见日期账本，显示目标日/实际截止/已见标签日期；不自动保存旧模型、不触发采集。它使用单股因果特征子集，不等同于 V0.7 固定回归发布协议。主可视化入口仍是 Vue。
 
 Transformer继续使用README_transformer_portfolio_backtest.md的已验收独立入口，
 固定模型/scaler/费用/规则及冻结来源保持不变；迟到诊断不会改标成及时盲测。

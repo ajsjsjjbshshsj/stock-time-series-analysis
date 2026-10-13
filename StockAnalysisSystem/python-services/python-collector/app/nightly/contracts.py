@@ -1,5 +1,5 @@
 """Pure market scope, immutable daily cohort and Shanghai due-time contracts."""
-from datetime import date,datetime,time,timedelta
+from datetime import datetime, time, timedelta
 import re
 
 from app.preparation.contracts import TZ,iso,identity,timestamp

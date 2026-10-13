@@ -1,17 +1,10 @@
 /**
  * 系统总览接口层。
  * 真实端点（部分已存在）：
- * - getHealth → GET /actuator/health（Java consumer，已存在）
- * - 其余为设计约定，后端暂未提供
+ * 下列接口为设计约定，后端暂未提供；健康检查统一使用 api/consumer。
  */
 import { request } from './client'
 import { getServices as mockServices, getKpis as mockKpis } from '../mock/system'
-import { getHealth as mockHealth } from '../mock/consumer'
-
-/** GET /actuator/health */
-export function getHealth() {
-  return request(() => mockHealth(), '/actuator/health')
-}
 
 /** GET /api/system/services（设计约定） */
 export function getServices() {

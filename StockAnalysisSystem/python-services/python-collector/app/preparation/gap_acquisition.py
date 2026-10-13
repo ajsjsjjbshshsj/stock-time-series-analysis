@@ -1,7 +1,6 @@
 """Sealed missing-range responses with original-query cache provenance."""
 from datetime import datetime
 from pathlib import Path
-import re
 import time
 import pandas as pd
 

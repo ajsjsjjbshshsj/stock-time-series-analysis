@@ -3,7 +3,6 @@ package com.stock.consumer.daily;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.stock.common.model.StockDailyEvent;
 import org.springframework.stereotype.Component;
@@ -18,8 +17,7 @@ public final class StockDailyEventDeserializer {
         this.objectMapper = objectMapper.copy()
                 .registerModule(new JavaTimeModule())
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .disable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                .disable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE);
     }
 
     public StockDailyEvent deserialize(String payload) throws JsonProcessingException {
