@@ -1,7 +1,5 @@
 """Audited offline price-driven portfolio replay; no training or provider requests."""
 import argparse
-import hashlib
-import json
 import math
 from numbers import Real
 import os
@@ -20,7 +18,8 @@ from analysis.portfolio_backtest import POLICIES, SCENARIOS, make_schedule, run_
 from analysis.transformer_multiseed import SEEDS, MODES, MONTHS, aggregate_seeds, validate_identities
 from analysis.transformer_experiment import sha256, write_json
 from analysis.transformer_portfolio_signals import infer_month
-from scripts.run_transformer_fixed_features import bind_output, check_old_artifacts, read_json
+from analysis.artifact_audit import digest_json, read_json, model_output_paths
+from scripts.run_transformer_fixed_features import bind_output, check_old_artifacts
 from scripts.run_transformer_multiseed import source_inputs, validate_record, fold_folder, prepare_fold
 
 START, END = '2026-06-01', '2026-08-31'
@@ -35,11 +34,6 @@ LIMITATIONS = [
 ]
 
 
-def digest_json(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                     allow_nan=False).encode('utf-8')).hexdigest()
-
-
 def parameters(initial_capital):
     if (not isinstance(initial_capital, Real) or isinstance(initial_capital, bool)
             or not np.isfinite(initial_capital) or initial_capital <= 0):
@@ -50,11 +44,8 @@ def parameters(initial_capital):
 
 
 def validate_paths(source, output):
-    source, output = Path(source).resolve(), Path(output).resolve()
-    if (output.parent != APP/'models/transformer' or not output.name.startswith('portfolio_backtest_')
-            or source.is_relative_to(output) or output.is_relative_to(source)):
-        raise ValueError('Output must be separate models/transformer/portfolio_backtest_*')
-    return source, output
+    return model_output_paths(APP, source, output, 'portfolio_backtest_',
+        'Output must be separate models/transformer/portfolio_backtest_*')
 
 
 def load_experiment(source, initial_capital):

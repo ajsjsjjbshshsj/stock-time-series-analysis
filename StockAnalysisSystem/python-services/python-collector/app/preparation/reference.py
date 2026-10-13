@@ -3,14 +3,12 @@ from pathlib import Path
 from datetime import datetime
 
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 
 from app.market_data.forward_snapshot import write,digest,read
 from .contracts import CODE,identity,iso
 from .acquisition import source_failure
 from .service import PreparationFailure
-
-FIELDS=('ts_code','symbol','name','area','industry','list_date')
+from app.repositories.stock_reference import FIELDS, insert_missing_reference, ReferenceInsertConflict
 
 
 class ReferenceLoader:
@@ -60,20 +58,12 @@ class ReferenceLoader:
         with self.session_factory.begin() as session:
             if self.owner_guard is not None: self.owner_guard(session)
             for code in sorted(needed):
-                suffix=' FOR UPDATE' if session.get_bind().dialect.name=='mysql' else ''
-                old=session.execute(text('SELECT list_date FROM stock_basic WHERE ts_code=:c'+suffix),dict(c=code)).first()
-                if old:
-                    if old[0] is None: raise PreparationFailure('INVALID_EXISTING_DATA')
-                    continue
                 try:
-                    with session.begin_nested():
-                        session.execute(text('INSERT INTO stock_basic (ts_code,symbol,name,area,industry,list_date) '
-                            'VALUES (:ts_code,:symbol,:name,:area,:industry,:list_date)'),available[code])
-                except IntegrityError as error:
-                    duplicate=(error.orig.args and error.orig.args[0]==1062) or session.get_bind().dialect.name=='sqlite' and getattr(error.orig,'sqlite_errorcode',None)==2067
-                    if not duplicate: raise
-                    old=session.execute(text('SELECT list_date FROM stock_basic WHERE ts_code=:c'+suffix),dict(c=code)).first()
-                    if old is None or old[0] is None: raise PreparationFailure('SOURCE_CONFLICT') from None
+                    old=insert_missing_reference(session,available[code])
+                except ReferenceInsertConflict:
+                    raise PreparationFailure('SOURCE_CONFLICT') from None
+                if old is not None:
+                    if old[0] is None: raise PreparationFailure('INVALID_EXISTING_DATA')
 
     @staticmethod
     def _validate(rows):

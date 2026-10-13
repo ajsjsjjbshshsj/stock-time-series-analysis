@@ -1,19 +1,11 @@
 """Offline controlled evaluation, deliberately separate from API model registry."""
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from analysis.transformer_scoring import adjust_scores, score_policy, POLICIES
-
-
-def sha256(path):
-    digest=hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda:stream.read(1024*1024),b''):
-            digest.update(chunk)
-    return digest.hexdigest()
+from analysis.artifact_audit import sha256
 
 
 def write_json(path,value):

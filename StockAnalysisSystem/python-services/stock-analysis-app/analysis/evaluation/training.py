@@ -15,21 +15,7 @@ from analysis.forecast.contracts import FEATURE_NAMES, FEATURE_VERSION, TARGET
 from analysis.forecast.training import PARAMS
 from .protocol import build_folds
 from .contracts import METHODS, validate_report
-
-
-def metrics(actual, predicted):
-    actual, predicted = np.asarray(actual, dtype=float), np.asarray(predicted, dtype=float)
-    if (actual.ndim != 1 or actual.size == 0 or actual.shape != predicted.shape
-            or not np.isfinite(actual).all() or not np.isfinite(predicted).all()):
-        raise ValueError('Metrics require nonempty finite paired observations')
-    residual = actual-predicted
-    constant = actual.size < 2 or np.all(actual == actual[0])
-    denominator = 0. if constant else float(np.sum((actual-np.mean(actual))**2))
-    result = dict(rmse=float(np.sqrt(np.mean(residual**2))), mae=float(np.mean(abs(residual))),
-        r2=float(1-np.sum(residual**2)/denominator) if denominator else None)
-    if any(v is not None and not np.isfinite(v) for v in result.values()):
-        raise ValueError('Nonfinite metrics')
-    return result
+from analysis.regression_metrics import metrics
 
 
 def _day(value):

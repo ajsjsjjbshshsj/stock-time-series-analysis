@@ -16,6 +16,7 @@ os.environ.setdefault('OMP_NUM_THREADS','8')
 import pandas as pd
 from analysis.transformer_experiment import sha256,load_source
 from analysis.transformer_features import load_model_preprocessing
+from analysis.artifact_audit import snapshot_hashes, check_hashes
 from analysis.transformer_forward_contracts import (TZ,market_frame,frame_hash,validate_calendar,select_signal_date,
     session_dates,validate_history,forward_model_panel,iso_day)
 from analysis.transformer_forward_inference import score_session
@@ -113,19 +114,15 @@ def collect(stage,request,output):
 
 
 def _old_hashes(output):
-    root=APP/'models'
-    return {p.relative_to(root).as_posix():sha256(p) for p in sorted(root.rglob('*'))
-            if p.is_file() and not p.is_relative_to(output)}
+    return snapshot_hashes(APP/'models', excluded_root=output)
 
 
 def _check_old(output):
     hashes=read(output/'old_artifact_hashes_before.json')
-    root=(APP/'models').resolve()
-    for name,digest in hashes.items():
-        path=(root/name).resolve()
-        if not path.is_relative_to(root) or not path.is_file() or sha256(path)!=digest:
-            raise ValueError('Old model/cache evidence changed or escaped its root')
-    return len(hashes)
+    try:
+        return check_hashes(APP/'models', hashes)
+    except ValueError as error:
+        raise ValueError('Old model/cache evidence changed or escaped its root') from error
 
 
 def _store(output,frozen,initialize=False):
