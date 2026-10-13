@@ -21,7 +21,7 @@
 
       <div class="sidebar-footer">
         python-collector · java kafka-consumer<br />
-        stock-analysis-app · Flink · v0.6
+        stock-analysis-app · Flink · v0.8
       </div>
     </aside>
 
