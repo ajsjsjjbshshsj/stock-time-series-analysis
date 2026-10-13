@@ -35,6 +35,9 @@
     <template v-else-if="name === 'alert'">
       <path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
     </template>
+    <template v-else-if="name === 'search'">
+      <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" />
+    </template>
   </svg>
 </template>
 
