@@ -68,8 +68,12 @@ const router = useRouter()
 const theme = useThemeStore()
 
 const navRoutes = computed(() => router.getRoutes().filter((r) => r.meta?.title))
-const sourceLabel = computed(() => dataSource.value === 'hybrid' && route.name === 'monitor'
-  ? '监控接口数据' : dataSource.value === 'hybrid' && route.name === 'analysis' ? '真实行情 · 概览与预测已接入' : '演示数据 · 非真实行情')
+const sourceLabel = computed(() => {
+  if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'
+  if (route.name === 'monitor') return '监控接口数据'
+  if (route.name === 'analysis') return '真实行情 · 概览与预测已接入'
+  return '接入模式 · 本页仍为演示数据'
+})
 
 // 顶栏时钟
 const clock = ref('')
