@@ -4,11 +4,7 @@
     <div class="analysis-head">
       <div class="field stock-select">
         <label for="stock-code">{{ live ? '股票（真实 stock_basic 股票池）' : '股票（mock 股票池 · seeded 随机游走 260 交易日）' }}</label>
-        <select id="stock-code" v-model="tsCode" :disabled="loading || !pool.length">
-          <option v-for="s in pool" :key="s.ts_code" :value="s.ts_code">
-            {{ s.ts_code }} · {{ s.name }} · {{ s.industry }}
-          </option>
-        </select>
+        <StockSearch id="stock-code" v-model="tsCode" :stocks="pool" :disabled="loading || !pool.length" />
       </div>
       <div v-if="current" class="stock-meta muted">
         {{ current.area }} · 上市 {{ current.list_date }}
@@ -36,6 +32,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { dataSource } from '../api/client.js'
 import { getStockPool } from '../api/analysis.js'
+import StockSearch from '../components/StockSearch.vue'
 import AnalysisOverview from './analysis/AnalysisOverview.vue'
 import AnalysisBasic from './analysis/AnalysisBasic.vue'
 import AnalysisTechnical from './analysis/AnalysisTechnical.vue'
@@ -102,8 +99,10 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
   flex-wrap: wrap;
 }
 
-.stock-select select {
-  min-width: 280px;
+.stock-select {
+  min-width: 320px;
+  flex: 1 1 320px;
+  max-width: 460px;
 }
 
 .stock-meta {
