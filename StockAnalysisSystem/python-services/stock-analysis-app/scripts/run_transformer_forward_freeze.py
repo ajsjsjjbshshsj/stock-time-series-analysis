@@ -16,6 +16,7 @@ import pandas as pd
 import torch
 
 from analysis.training_control import EarlyStopping
+from analysis.artifact_audit import model_output_paths, snapshot_hashes, check_hashes, read_json
 from analysis.transformer_experiment import sha256, write_json
 from analysis.transformer_features import (feature_columns, load_feature_cache, load_model_preprocessing,
                                           normalize_panel)
@@ -23,16 +24,12 @@ from analysis.transformer_forward_freeze import (CUTOFF, VAL_START, SEEDS, MODES
     frozen_rules, training_boundaries, validate_model_set, validate_panel)
 from analysis.transformer_forward_diagnostic import latest_scores, validate_diagnostic
 from analysis.transformer_trainer import compute_and_save_features, run_transformer_training
-from scripts.run_transformer_fixed_features import read_json
 from scripts.run_transformer_portfolio_backtest import load_experiment, digest_json
 
 
 def validate_paths(source, output):
-    source, output = Path(source).resolve(), Path(output).resolve()
-    if (output.parent != APP/'models/transformer' or not output.name.startswith('forward_freeze_')
-            or source.is_relative_to(output) or output.is_relative_to(source)):
-        raise ValueError('Output must be a separate models/transformer/forward_freeze_* directory')
-    return source, output
+    return model_output_paths(APP, source, output, 'forward_freeze_',
+        'Output must be a separate models/transformer/forward_freeze_* directory')
 
 
 def source_inputs(source):
@@ -65,18 +62,12 @@ def artifact_hashes(folder):
 
 
 def _old_hashes(output):
-    root = APP/'models'
-    return {str(p.relative_to(root)): sha256(p) for p in sorted(root.rglob('*'))
-            if p.is_file() and not p.is_relative_to(output)}
+    return snapshot_hashes(APP/'models', excluded_root=output)
 
 
 def _check_old(output):
     previous = read_json(output/'old_artifact_hashes_before.json')
-    for name, digest in previous.items():
-        path = APP/'models'/name
-        if not path.is_file() or sha256(path) != digest:
-            raise ValueError(f'Old artifact changed: {name}')
-    return len(previous)
+    return check_hashes(APP/'models', previous)
 
 
 def _bind(output, binding):

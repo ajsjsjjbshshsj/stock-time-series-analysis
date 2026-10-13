@@ -77,7 +77,7 @@
 
     <!-- 校验模拟器 -->
     <section v-if="isDemo" class="section">
-      <h2>事件校验模拟器 <span class="muted cmd-hint">前端复刻 StockDailyEventValidator 规则</span></h2>
+      <h2>事件校验模拟器 <span class="muted cmd-hint">仅演示；生产判定以 Java 严格校验为准</span></h2>
       <div class="grid validator-grid">
         <div class="card">
           <div class="card-title">事件 Payload</div>
@@ -116,7 +116,7 @@
           <template v-else>
             <div class="result-banner" :class="result.valid ? 'ok' : 'bad'">
               <Icon :name="result.valid ? 'check' : 'alert'" style="width:16px;height:16px" />
-              <b>{{ result.valid ? 'VALID — 事件将正常入库' : `REJECTED — ${result.errorType}` }}</b>
+              <b>{{ result.valid ? 'DEMO VALID — 不代表已入库或通过生产校验' : `DEMO REJECTED — ${result.errorType}` }}</b>
             </div>
             <div v-if="result.violations.length" class="violations">
               <div v-for="(v, i) in result.violations" :key="i" class="violation">

@@ -189,3 +189,9 @@ python -m pytest tests/ -v
 - V0.2.0 — 采集服务独立化
 - V0.3 — 采集链路 Kafka 消息化
 - V0.4 — 统一 Tushare/AkShare 数据入口、daily-basic 与成分股快照
+
+## 代码维护边界
+
+夜间更新和历史补采的生产入口统一使用 `app/nightly/gap_service.py` 的数据库优先缺口队列。已移除退役的 `MarketUpdateService` 和仅供其使用的全日证据注册/补充请求规划逻辑；原任务存储仓库、符号有效期规则与 `NativeDayAcquirer` 仍被现行队列使用，不删除旧任务记录或原始来源证据。
+
+任务额度等待状态集中在 `app/market_data/retry_policy.py`，不与网络重试策略混用。基础信息的重复键恢复和只插入 SQL 集中在 `app/repositories/stock_reference.py`；两个调用方继续各自验证 IPO、来源、所有权和外层事务，不覆盖已有名称、行业或上市日期。

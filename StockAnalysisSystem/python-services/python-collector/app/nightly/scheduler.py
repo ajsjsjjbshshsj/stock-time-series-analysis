@@ -12,10 +12,10 @@ from app.preparation.service import PreparationFailure
 from app.preparation.worker import require_root_lock
 from app.repositories.preparation_repository import ERRORS
 from app.market_data.forward_snapshot import read
+from app.market_data.retry_policy import RETRYABLE_TASK_ERRORS as WAIT
 from .contracts import SCOPE,START,market_day,parse_run_at,due_days,is_a_share
 
 FIELDS={'scope','start_date','run_at','blocked_error','retry_not_before','last_scan_at'}
-WAIT={'MINUTE_QUOTA','HOURLY_QUOTA','QUOTA_COOLDOWN','REQUEST_STATE_BUSY'}
 
 class NightlyScheduler:
     def __init__(self,tasks,calendar_provider,data_root,*,clock=time.time,run_at='20:00',bootstrap_start=None):

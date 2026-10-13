@@ -1,6 +1,5 @@
 """Offline score ablation and fixed-feature CUDA comparison; no provider imports."""
 import argparse
-import json
 import os
 from pathlib import Path
 import sys
@@ -16,6 +15,7 @@ import pandas as pd
 from analysis.transformer_experiment import load_source, sha256, write_json, evaluate_month, summarize, split_month
 from analysis.transformer_features import feature_columns, load_model_preprocessing
 from analysis.transformer_scoring import POLICIES, score_policy
+from analysis.artifact_audit import read_json, model_output_paths, snapshot_hashes, check_hashes
 from data_processor.adjusted_market_panel import build_model_panel
 from scripts.run_transformer_adjusted_experiment import (
     experiment_config, validate_fold_identity, validate_fold_metrics,
@@ -47,15 +47,8 @@ def validate_identities(records, months):
 
 
 def validate_paths(source, output):
-    source, output = Path(source).resolve(), Path(output).resolve()
-    if (output.parent != APP/'models/transformer' or not output.name.startswith('fixed_features_')
-            or source.is_relative_to(output) or output.is_relative_to(source)):
-        raise ValueError('Output must be a separate models/transformer/fixed_features_* directory')
-    return source, output
-
-
-def read_json(path):
-    return json.loads(Path(path).read_text(encoding='utf-8'))
+    return model_output_paths(APP, source, output, 'fixed_features_',
+        'Output must be a separate models/transformer/fixed_features_* directory')
 
 
 def source_data(source):
@@ -97,9 +90,7 @@ def bind_output(output, binding, initialize=False):
         if output.exists() and any(output.iterdir()):
             raise ValueError('Preserve unidentified partial output; use a fresh directory')
         output.mkdir(parents=True, exist_ok=True)
-        hashes = {str(path.relative_to(APP/'models')): sha256(path)
-                  for path in (APP/'models').rglob('*')
-                  if path.is_file() and not path.is_relative_to(output)}
+        hashes = snapshot_hashes(APP/'models', excluded_root=output)
         write_json(output/'old_artifact_hashes_before.json', hashes)
         write_json(identity, binding)
     else:
@@ -108,11 +99,10 @@ def bind_output(output, binding, initialize=False):
 
 def check_old_artifacts(output):
     hashes = read_json(output/'old_artifact_hashes_before.json')
-    changed = [name for name, digest in hashes.items()
-               if not (APP/'models'/name).is_file() or sha256(APP/'models'/name) != digest]
-    if changed:
-        raise ValueError(f'Original artifacts changed: {changed}')
-    return len(hashes)
+    try:
+        return check_hashes(APP/'models', hashes)
+    except ValueError as error:
+        raise ValueError(f'Original artifacts changed: {error}') from error
 
 
 def validate_scored_record(record, rows, panel):

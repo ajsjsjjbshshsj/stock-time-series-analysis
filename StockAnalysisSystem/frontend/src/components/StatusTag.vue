@@ -26,6 +26,13 @@ const MAP = {
   FAILED: ['critical', 'FAILED'],
   DOWN: ['critical', 'DOWN'],
   CRITICAL: ['critical', 'CRITICAL'],
+  VALIDATION: ['warning', 'VALIDATION'],
+  DESERIALIZATION: ['serious', 'DESERIALIZATION'],
+  JSON_PARSE: ['serious', 'JSON_PARSE'],
+  KEY_MISMATCH: ['warning', 'KEY_MISMATCH'],
+  UNSUPPORTED_SCHEMA: ['serious', 'SCHEMA'],
+  DEAD_LETTER_PUBLISH: ['critical', 'DLT_FAIL'],
+  // Historical demo aliases retained for old stored/displayed errors.
   VALIDATION_FAILURE: ['warning', 'VALIDATION'],
   JSON_PARSE_FAILURE: ['serious', 'JSON_PARSE'],
   UNSUPPORTED_SCHEMA_VERSION: ['serious', 'SCHEMA'],

@@ -2,10 +2,8 @@ from pathlib import Path
 import sys,json
 from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from datetime import datetime
 import pytest
 from test_prepare_stock_pool_data import cli
-from test_nightly_service import make
 from nightly_store_support import database
 
 def test_worker_default_stays_legacy_without_nightly(capsys,monkeypatch):
@@ -46,24 +44,7 @@ def test_invalid_nightly_arguments_fail_before_runtime_initialization(args,monke
     with pytest.raises(SystemExit) as caught:module.main(args)
     assert caught.value.code==2 and calls==[]
 
-def test_nightly_submit_and_status_use_actual_emitted_task_id_without_sdk(tmp_path,capsys):
-    module=cli()
-    with database() as factory:
-        service,tasks,market,calls,_=make(factory,tmp_path)
-        deps=dict(market_service=lambda:service,market_tasks=lambda:tasks)
-        assert module.main(['nightly-submit','--date','2026-09-28'],dependencies=deps)==0
-        result=json.loads(capsys.readouterr().out);task_id=result['task_id']
-        assert result['status']=='QUEUED' and calls==[] and market.writes==0
-        assert module.main(['nightly-status','--task-id',task_id],dependencies=deps)==0
-        assert json.loads(capsys.readouterr().out)['task_id']==task_id and calls==[]
 
-def test_nightly_submit_before_20_is_rejected_without_market_calls(tmp_path,capsys):
-    with database() as factory:
-        service,tasks,market,calls,_=make(factory,tmp_path)
-        service.clock=lambda:datetime.fromisoformat('2026-09-28T11:00:00Z').timestamp()
-        assert cli().main(['nightly-submit','--date','2026-09-28'],dependencies=dict(market_service=lambda:service))!=0
-        assert tasks.earliest_date() is None and calls==[] and market.writes==0
-        assert 'token' not in capsys.readouterr().out.lower()
 
 def test_nightly_public_universe_is_summary_not_full_members(capsys):
     task=dict(task_id='a'*32,status='SUCCEEDED',owner_token='private',owner={'token':'private'},
@@ -108,16 +89,6 @@ def test_runtime_reuses_and_closes_only_owned_http_session(monkeypatch):
     assert runtime.client() is client and runtime.client() is client
     runtime.close();assert events==['session-create','db-close','session-close']
 
-def test_nightly_retry_real_partial_task_preserves_identity_and_increases_attempt(tmp_path,capsys):
-    from test_nightly_service import execute
-    with database() as factory:
-        service,tasks,market,calls,_=make(factory,tmp_path,conflict=True)
-        previous=execute(service,tasks);assert previous['status']=='PARTIAL'
-        calls.clear()
-        assert cli().main(['nightly-retry','--task-id',previous['task_id']],dependencies=dict(market_tasks=lambda:tasks))==0
-        value=json.loads(capsys.readouterr().out)
-        assert value['task_id']==previous['task_id'] and value['status']=='QUEUED' and value['attempt_no']==2
-        assert calls==[] and market.writes==0
 
 def test_nightly_status_control_and_run_summary_only_needs_read_dependencies(capsys):
     queries=[]

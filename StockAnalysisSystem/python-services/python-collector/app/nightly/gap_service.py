@@ -16,6 +16,7 @@ from app.nightly.universe import verify_reference
 from app.nightly.acquisition import NativeDayAcquirer
 from app.repositories.preparation_repository import ERRORS
 from app.runtime_paths import resolve_reference,persist_reference
+from app.market_data.retry_policy import RETRYABLE_TASK_ERRORS
 
 
 class GapUpdateService:
@@ -192,7 +193,7 @@ class GapUpdateService:
         except RuntimeError as error:
             if str(error).startswith('OWNER'):raise
             kind, deadline = (str(error) if str(error) in ERRORS else 'STORAGE_UNAVAILABLE'), None
-        waiting = kind in {'MINUTE_QUOTA', 'HOURLY_QUOTA', 'QUOTA_COOLDOWN', 'REQUEST_STATE_BUSY'}
+        waiting = kind in RETRYABLE_TASK_ERRORS
         patch = dict(status='WAITING_RETRY' if waiting else 'FAILED', error_kind=kind,
             updated_at=self._now().isoformat(), result=dict(data_ready=False, model_ready=False,
                 verification_mode='missing-only', existing_data_revalidated=False))

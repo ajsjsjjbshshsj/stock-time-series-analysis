@@ -43,7 +43,7 @@ export function getConsumeTrend() {
   return request(() => mock.getConsumeTrend(), '/api/consumer/trend')
 }
 
-/** POST /api/consumer/validate — 事件协议校验（设计约定；mock 端前端复刻 StockDailyEventValidator） */
+/** POST /api/consumer/validate — 演示校验（设计约定；不是 Java 生产校验接口） */
 export function validateEvent(payloadText, kafkaKey, eventType = 'daily') {
   return request(
     () => mock.validateEvent(payloadText, kafkaKey, eventType),

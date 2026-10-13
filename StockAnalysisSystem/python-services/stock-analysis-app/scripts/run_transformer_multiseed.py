@@ -16,9 +16,10 @@ from analysis.transformer_multiseed import (
 from analysis.transformer_experiment import sha256, write_json, evaluate_month, summarize, split_month
 from analysis.transformer_features import load_model_preprocessing
 from analysis.transformer_scoring import POLICIES
+from analysis.artifact_audit import model_output_paths, read_json
 from scripts.run_transformer_fixed_features import (
     fixed_config, validate_fixed_features, validate_scored_record, source_data,
-    bind_output, check_old_artifacts, read_json,
+    bind_output, check_old_artifacts,
     validate_identities as validate_source_identities,
 )
 from scripts.run_transformer_adjusted_experiment import validate_fold_identity
@@ -76,11 +77,8 @@ def prepare_fold(folder):
 
 
 def validate_paths(source, output):
-    source, output = Path(source).resolve(), Path(output).resolve()
-    if (output.parent != APP/'models/transformer' or not output.name.startswith('multiseed_')
-            or source.is_relative_to(output) or output.is_relative_to(source)):
-        raise ValueError('Output must be a separate models/transformer/multiseed_* directory')
-    return source, output
+    return model_output_paths(APP, source, output, 'multiseed_',
+        'Output must be a separate models/transformer/multiseed_* directory')
 
 
 def source_inputs(source):
