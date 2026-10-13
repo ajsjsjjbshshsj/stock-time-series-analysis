@@ -232,7 +232,7 @@ class StockPlotter:
             logger.info(f"图表保存到: {save_path}")
         plt.show()
 
-    def plot_drawdown(self, prices, title='回撤曲线', save_path=None):
+    def plot_drawdown(self, prices, title='回撤曲线', save_path=None, *, show=True):
         """
         绘制回撤曲线
 
@@ -272,7 +272,9 @@ class StockPlotter:
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             logger.info(f"图表保存到: {save_path}")
-        plt.show()
+        if show:
+            plt.show()
+        return fig
 
     def plot_rolling_volatility(self, df, windows=(20, 60, 120), title='滚动波动率', save_path=None):
         """

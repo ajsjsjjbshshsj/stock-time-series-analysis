@@ -1,4 +1,4 @@
-# StockAnalysisSystem V0.7
+# 股票时间序列分析系统
 
 首次安装或更换电脑请先阅读 [可迁移安装与完整恢复](docs/PORTABLE_SETUP.md)。`scripts/manage_project.py` 提供只读 `doctor`、显式空库 `init-db --empty-only` 和选定服务 `start`，不自动开启采集/训练。源码可放任意目录；数据库、模型和运行来源需单独交接。
 
@@ -200,7 +200,7 @@ powershell -ExecutionPolicy Bypass -File scripts\submit_v05_flink_job.ps1
 
 ```powershell
 cd python-services\python-collector
-D:\Python\python.exe -m app.main replay-daily-events --start 20260801 --end 20260828 --ts-code 000001.SZ --batch-size 5000
+python -m app.main replay-daily-events --start 20260801 --end 20260828 --ts-code 000001.SZ --batch-size 5000
 cd ..\..
 ```
 
@@ -217,9 +217,9 @@ docker compose -f infrastructure\docker-compose.yml exec -T kafka /opt/kafka/bin
 在另一个终端运行确定性 smoke test：
 
 ```powershell
-D:\Python\python.exe scripts\verify_v05_flink.py --scenario valid
-D:\Python\python.exe scripts\verify_v05_flink.py --scenario late
-D:\Python\python.exe scripts\verify_v05_flink.py --scenario invalid
+python scripts\verify_v05_flink.py --scenario valid
+python scripts\verify_v05_flink.py --scenario late
+python scripts\verify_v05_flink.py --scenario invalid
 ```
 
 完整 checkpoint/重启验收步骤见 [V0.5 测试用例](docs/V0.5_TEST_CASES.md)。
@@ -350,7 +350,7 @@ Flink 模块打包与 V0.5 smoke test：
 cd java-services
 mvn -q -pl flink-realtime-job -am package
 cd ..
-D:\Python\python.exe scripts\verify_v05_flink.py --scenario valid
+python scripts\verify_v05_flink.py --scenario valid
 ```
 
 Kafka 和 Java 启动后，在 `StockAnalysisSystem` 根目录执行冒烟测试：
@@ -367,9 +367,17 @@ python scripts\verify_v03_smoke.py --scenario all --count 20
 - 历史 daily-basic 未补齐：分析端仅对空值使用旧 `raw_panel.parquet` 换手率。
 - 外部接口失败：任务进入 `FAILED`，使用 `retry-failed` 恢复，不能写入模拟数据冒充成功。
 - 代码回滚：保留 `stock_daily_basic` 与 `stock_constituent`，它们不破坏旧分析表。
-- Flink 作业故障：V0.4 不依赖 Flink；取消 Flink 作业并保持 Kafka/MySQL/Java Consumer/Analysis App 运行。
+- Flink 作业故障：MySQL 与离线分析可以继续，但 ClickHouse 实时指标链路会停止更新。按 V0.6 指南保留 checkpoint/savepoint 并显式恢复；不要把历史 V0.4 的独立性说明当成当前完整链路仍健康，也不要删除 Topic 或卷。
 
 ## 文档
+
+- [任意目录安装与完整恢复](docs/PORTABLE_SETUP.md)
+- [V0.6 实时指标与 Market API](docs/V0.6_CLICKHOUSE_MARKET_API.md)
+- [V0.7 正式单股预测](docs/V0.7_SINGLE_STOCK_PREDICTION.md)
+- [V0.8 固定协议评估](docs/V0.8_EVALUATION_GUIDE.md)
+- [分析端当前命令与边界](python-services/stock-analysis-app/README.md)
+- [日期约束策略验证](python-services/stock-analysis-app/scripts/README_strategy_validation.md)
+- [Transformer 特征与缓存契约](docs/TRANSFORMER_FEATURE_PIPELINE.md)
 
 - [V0.3 消息协议](docs/V0.3_MESSAGE_SCHEMA.md)
 - [V0.3 测试用例](docs/V0.3_TEST_CASES.md)

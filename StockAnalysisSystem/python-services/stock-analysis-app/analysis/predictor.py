@@ -1,13 +1,11 @@
 """
-预测模型模块：LSTM和XGBoost（二分类：涨=1，跌=0）
-支持：单轮划分（train/val/test）与时序滚动交叉验证
+XGBoost 预测模型与兼容匿名数组训练入口。
+策略验证使用 train_dated 的日期绑定及净化切分；LSTM 训练未实现。
 """
 import os
-import pickle
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score
-from sklearn.preprocessing import MinMaxScaler
 from config.settings import MODEL_CONFIG
 from config.logging_config import get_logger
 logger = get_logger(__name__)
@@ -25,7 +23,7 @@ class StockPredictor:
         初始化预测器
 
         Args:
-            model_type: 模型类型 ('xgboost' 或 'lstm')
+            model_type: xgboost / xgboost_regression / xgboost_multiclass；旧 LSTM 工件不支持训练
         """
         self.model_type = model_type
         self.model = None
@@ -200,81 +198,8 @@ class StockPredictor:
         logger.info(f"数据集划分: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}")
         return X_train, X_val, X_test, y_train, y_val, y_test
 
-    def _time_series_cv_splits(self, X, y, n_splits=5, test_ratio=0.2):
-        """
-        生成时序滚动交叉验证的索引划分
 
-        每次划分取前面的数据作为训练+验证集，最新的一部分作为测试集，
-        逐步向前滚动。
 
-        Args:
-            X: 特征数据
-            y: 目标数据
-            n_splits: 折数
-            test_ratio: 测试集比例
-
-        Yields:
-            tuple: (train_indices, test_indices)
-        """
-        n = len(X)
-        test_size = int(n * test_ratio)
-
-        # 计算每次滚动的步长
-        step = (n - test_size) // n_splits
-
-        for i in range(n_splits):
-            test_start = (n - test_size) - (n_splits - 1 - i) * step
-            if test_start < 0:
-                continue
-
-            train_end = test_start
-            train_indices = np.arange(0, train_end)
-            test_indices = np.arange(train_end, train_end + test_size)
-
-            if len(train_indices) == 0:
-                continue
-
-            yield train_indices, test_indices
-
-    def _train_val_split_from_train(self, X_train, y_train, val_ratio=0.25):
-        """
-        从训练集中再划分出验证集（val_ratio 是相对于训练集的比例）
-
-        Args:
-            X_train: 训练集特征
-            y_train: 训练集目标
-            val_ratio: 验证集占训练集的比例
-
-        Returns:
-            tuple: (X_train_final, X_val, y_train_final, y_val)
-        """
-        n = len(X_train)
-        val_end = int(n * (1 - val_ratio))
-
-        X_train_final = X_train[:val_end]
-        X_val = X_train[val_end:]
-        y_train_final = y_train[:val_end]
-        y_val = y_train[val_end:]
-
-        return X_train_final, X_val, y_train_final, y_val
-
-    def _create_sequences(self, X, y, sequence_length):
-        """
-        构建时间序列样本（用于LSTM）
-
-        Args:
-            X: 特征数据
-            y: 目标数据
-            sequence_length: 序列长度
-
-        Returns:
-            tuple: (X_seq, y_seq)
-        """
-        X_seq, y_seq = [], []
-        for i in range(len(X) - sequence_length):
-            X_seq.append(X[i:i + sequence_length])
-            y_seq.append(y[i + sequence_length])
-        return np.array(X_seq), np.array(y_seq)
 
     # =========================================================================
     # 单轮训练方法（train/val/test 三分法）

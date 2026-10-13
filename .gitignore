@@ -18,3 +18,8 @@ StockAnalysisSystem/docs/superpowers/
 StockAnalysisSystem/python-services/stock-analysis-app/models/v07/
 StockAnalysisSystem/python-services/stock-analysis-app/reports/v08/
 StockAnalysisSystem/.runtime/
+
+# Local crash artifacts, desktop settings and private launch helpers.
+*.stackdump
+.ccgui/
+StockAnalysisSystem/scripts/runtime/

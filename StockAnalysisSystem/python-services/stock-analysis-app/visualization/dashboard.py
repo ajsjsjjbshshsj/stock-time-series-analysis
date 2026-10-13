@@ -18,8 +18,8 @@ from data_loader.collector import DataCollector
 from data_processor.cleaner import DataCleaner
 from data_processor.feature_engineer import FeatureEngineer
 from analysis.statistical import StatisticalAnalyzer
-from analysis.predictor import StockPredictor
 from analysis.backtester import Backtester
+from analysis.dashboard_backtest import run_dashboard_model_backtest
 from visualization.plotter import StockPlotter
 
 # A股配色：涨=红，跌=绿
@@ -754,6 +754,13 @@ def show_backtest(df, stock_code):
     commission = col2.number_input("佣金率", value=0.0003, step=0.0001, format="%.4f", key="backtest_commission")
 
     backtest_type = st.selectbox("回测类型", ["技术指标信号", "模型预测信号"])
+    calendar_file = None
+    if backtest_type == "模型预测信号":
+        st.caption("显式训练日期绑定的 XGBoost；只回测未参与训练/验证的数据，不保存或替换旧模型。")
+        calendar_file = st.file_uploader(
+            "可信交易日历 JSON（覆盖行情范围和当前日期）", type=['json'], key='backtest_calendar')
+        if calendar_file is None:
+            st.info("请提供由采集层取得的交易日历；不使用工作日猜测或自动联网补齐。")
 
     if st.button("开始回测", key="backtest_btn"):
         with st.spinner("正在回测..."):
@@ -778,16 +785,18 @@ def show_backtest(df, stock_code):
                     result = backtester.run_signal_backtest(df_signal, 'signal')
 
                 else:
-                    predictor = StockPredictor(model_type='xgboost')
-                    X, y, features = predictor.prepare_features(df)
-                    if X is None:
-                        st.error("特征准备失败")
+                    if calendar_file is None:
+                        st.error("模型回测需要可信交易日历，尚未开始训练。")
                         return
-                    result = predictor.train_xgboost(X, y, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
-                    if result is None:
-                        st.error("模型训练失败")
-                        return
-                    result = backtester.run_prediction_backtest(df, predictor)
+                    calendar = json.loads(calendar_file.getvalue().decode('utf-8-sig'))
+                    result = run_dashboard_model_backtest(
+                        df, stock_code, calendar=calendar, initial_capital=initial_capital,
+                        commission_rate=commission)
+                    selection = result['data_selection']
+                    st.caption(f"目标交易日：{selection['target_trade_date']}；实际截止：{selection['data_cutoff']}；"
+                               f"模型已见日期截至：{result['model_metadata']['seen_through']}")
+                    if selection['fallback_reason']:
+                        st.warning(f"数据截止回退原因：{selection['fallback_reason']}")
 
                 if result:
                     metrics = result['metrics']
@@ -826,12 +835,15 @@ def show_backtest(df, stock_code):
 
                     # 交易标记
                     if not trades_df.empty:
+                        return_at_date = equity_df.set_index('date')['cumulative_return']
                         buy_trades = trades_df[trades_df['action'] == 'BUY']
                         sell_trades = trades_df[trades_df['action'] == 'SELL']
 
                         if not buy_trades.empty:
                             fig.add_trace(go.Scatter(
-                                x=buy_trades['date'], y=buy_trades['price'],
+                                x=buy_trades['date'], y=buy_trades['date'].map(return_at_date),
+                                customdata=buy_trades['price'],
+                                hovertemplate='买入价 %{customdata:.2f}<br>累计收益 %{y:.2%}<extra></extra>',
                                 mode='markers', marker=dict(
                                     symbol='triangle-up', size=12, color=COLOR_DOWN,
                                     line=dict(width=1, color='white')
@@ -840,7 +852,9 @@ def show_backtest(df, stock_code):
 
                         if not sell_trades.empty:
                             fig.add_trace(go.Scatter(
-                                x=sell_trades['date'], y=sell_trades['price'],
+                                x=sell_trades['date'], y=sell_trades['date'].map(return_at_date),
+                                customdata=sell_trades['price'],
+                                hovertemplate='卖出价 %{customdata:.2f}<br>累计收益 %{y:.2%}<extra></extra>',
                                 mode='markers', marker=dict(
                                     symbol='triangle-down', size=12, color=COLOR_UP,
                                     line=dict(width=1, color='white')
@@ -866,7 +880,8 @@ def show_backtest(df, stock_code):
                     if not equity_df.empty:
                         st.subheader("回撤曲线 (Matplotlib)")
                         plotter = StockPlotter()
-                        fig_dd = plotter.plot_drawdown(equity_df.set_index('date')['equity'], title='策略回撤曲线')
+                        fig_dd = plotter.plot_drawdown(
+                            equity_df.set_index('date')['equity'], title='策略回撤曲线', show=False)
                         st.pyplot(fig_dd)
                         plt.close(fig_dd)
 
