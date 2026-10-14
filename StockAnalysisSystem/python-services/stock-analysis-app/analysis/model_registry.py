@@ -30,13 +30,14 @@ import os
 import json
 import pickle
 import numpy as np
+import pandas as pd
+from pathlib import Path
 from datetime import datetime
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
-os.makedirs(MODEL_DIR, exist_ok=True)
 
 # 模型版本
 MODEL_VERSION = "1.0.0"
@@ -103,6 +104,16 @@ def build_metadata(
     return metadata
 
 
+def _store_model_dir():
+    project=Path(__file__).resolve().parents[3]
+    configured=Path(os.getenv('TRADITIONAL_MODEL_ROOT','.runtime/traditional_models'))
+    root=(configured if configured.is_absolute() else project/configured).resolve()
+    legacy=Path(MODEL_DIR).resolve()
+    if root.is_relative_to(legacy) or legacy.is_relative_to(root):
+        raise ValueError('New feature-store model namespace overlaps legacy artifacts')
+    return os.fspath(root)
+
+
 def save_model(model_obj, metadata: dict, model_name: str = None) -> str:
     """
     保存模型和元数据到磁盘。
@@ -125,8 +136,14 @@ def save_model(model_obj, metadata: dict, model_name: str = None) -> str:
     model_file = f"{model_name}.pkl"
     meta_file = f"{model_name}.meta.json"
 
-    model_path = os.path.join(MODEL_DIR, model_file)
-    meta_path = os.path.join(MODEL_DIR, meta_file)
+    root=_store_model_dir() if metadata.get('storage_contract') else MODEL_DIR
+    if os.path.basename(model_name)!=model_name or model_name in ('.','..'):
+        raise ValueError('Invalid model artifact name')
+    os.makedirs(root,exist_ok=True)
+    model_path = os.path.join(root, model_file)
+    meta_path = os.path.join(root, meta_file)
+    if os.path.exists(model_path) or os.path.exists(meta_path):
+        raise ValueError('Refusing to overwrite existing model artifacts')
 
     # 保存模型
     with open(model_path, 'wb') as f:
@@ -194,16 +211,21 @@ def list_models(model_type: str = None) -> list:
         list[dict]: 元数据列表（按创建时间降序）
     """
     models = []
-    for f in os.listdir(MODEL_DIR):
+    roots=[r for r in dict.fromkeys([MODEL_DIR,_store_model_dir()]) if os.path.isdir(r)]
+    files=[(root,f) for root in roots for f in os.listdir(root)]
+    for root,f in files:
         if not f.endswith('.meta.json'):
             continue
         if model_type and model_type not in f:
             continue
 
-        meta_path = os.path.join(MODEL_DIR, f)
+        meta_path = os.path.join(root, f)
         try:
             with open(meta_path, 'r', encoding='utf-8') as fp:
                 meta = json.load(fp)
+                file=meta.get('model_file')
+                if isinstance(file,str) and os.path.basename(file)==file:
+                    meta['_artifact_path']=os.path.join(root,file)
                 models.append(meta)
         except Exception as e:
             logger.warning("读取元数据失败: %s - %s", f, e)
@@ -247,15 +269,14 @@ def _sanitize_metrics(metrics: dict) -> dict:
 def _find_latest_model(model_type: str = None) -> str:
     """查找最新的模型文件路径。"""
     pattern = f"{model_type}_" if model_type else ""
-    files = sorted([
-        f for f in os.listdir(MODEL_DIR)
-        if f.endswith('.pkl') and f.startswith(pattern)
-    ], reverse=True)
+    roots=[r for r in dict.fromkeys([MODEL_DIR,_store_model_dir()]) if os.path.isdir(r)]
+    files=sorted([os.path.join(r,f) for r in roots for f in os.listdir(r)
+                  if f.endswith('.pkl') and f.startswith(pattern)],key=os.path.basename,reverse=True)
 
     if not files:
         return None
 
-    return os.path.join(MODEL_DIR, files[0])
+    return files[0]
 
 
 def _log_metadata_summary(metadata: dict):

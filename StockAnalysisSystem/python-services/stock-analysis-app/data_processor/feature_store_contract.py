@@ -98,7 +98,8 @@ def _stored_number(value):
         return None
     if not math.isfinite(number):
         raise ValueError('Non-finite feature value')
-    return number
+    # MySQL numeric storage does not preserve a zero sign; normalize before hashing.
+    return 0.0 if number==0.0 else number
 
 
 def feature_records(frame, build_id, *, start_date=None, cutoff=None):
