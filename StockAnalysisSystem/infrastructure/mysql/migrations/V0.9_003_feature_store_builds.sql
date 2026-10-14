@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS stock_feature_build (
     columns_sha256 CHAR(64) NOT NULL,
     code_sha256 CHAR(64) NOT NULL,
     source_sha256 CHAR(64) NULL,
+    source_manifest JSON NOT NULL,
     output_sha256 CHAR(64) NULL,
     source_start DATE NOT NULL,
     source_cutoff DATE NOT NULL,

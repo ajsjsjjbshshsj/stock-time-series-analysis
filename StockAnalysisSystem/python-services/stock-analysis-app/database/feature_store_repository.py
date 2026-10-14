@@ -1,5 +1,6 @@
 """Explicit build repository using the configured DatabaseConnector only."""
 from pathlib import Path
+import json
 import re
 from sqlalchemy import inspect, text
 from sqlalchemy import types
@@ -23,7 +24,7 @@ class FeatureStoreRepository:
         columns={c['name']:c for c in schema.get_columns('stock_feature_build')}
         required={'build_id','storage_contract','algorithm_version','columns_sha256','code_sha256',
                   'source_sha256','output_sha256','source_start','source_cutoff','row_count',
-                  'stock_count','state','active_slot','created_at','verified_at','failure_code'}
+                  'stock_count','state','active_slot','created_at','verified_at','failure_code','source_manifest'}
         if set(columns)!=required or schema.get_pk_constraint('stock_feature_build')['constrained_columns']!=['build_id']:
             raise ValueError('Feature build metadata schema mismatch')
         definitions={
@@ -36,6 +37,7 @@ class FeatureStoreRepository:
             'state':(types.VARCHAR,16,False),'active_slot':(types.VARCHAR,32,True),
             'created_at':(types.DATETIME,None,False),'verified_at':(types.DATETIME,None,True),
             'failure_code':(types.VARCHAR,64,True),
+            'source_manifest':(types.JSON,None,False),
         }
         for name,(kind,length,nullable) in definitions.items():
             column=columns[name]
@@ -62,10 +64,11 @@ class FeatureStoreRepository:
         with self.db.engine.begin() as connection:
             connection.execute(text('''INSERT INTO stock_feature_build
                 (build_id,storage_contract,algorithm_version,columns_sha256,code_sha256,
-                 source_sha256,source_start,source_cutoff,row_count,stock_count,state)
-                VALUES (:build_id,:contract,:algorithm,:columns,:code,:source,:start,:cutoff,0,0,'BUILDING')'''),
+                 source_sha256,source_manifest,source_start,source_cutoff,row_count,stock_count,state)
+                VALUES (:build_id,:contract,:algorithm,:columns,:code,:source,:manifest,:start,:cutoff,0,0,'BUILDING')'''),
                 dict(build_id=build_id,contract=STORAGE_CONTRACT,algorithm=algorithm_version,
                      columns=columns_digest(),code=code_sha256,source=manifest['source_sha256'],
+                     manifest=json.dumps(manifest,ensure_ascii=False,allow_nan=False),
                      start=manifest['source_start'],cutoff=manifest['source_cutoff']))
         try:
             with self.db.engine.begin() as connection:
@@ -103,3 +106,19 @@ class FeatureStoreRepository:
         if code not in ('FEATURE_BUILD_FAILED','STAGING_DDL_FAILED'):raise ValueError('Unsafe build failure code')
         with self.db.engine.begin() as connection:
             connection.execute(text("UPDATE stock_feature_build SET state='FAILED',failure_code=:code WHERE build_id=:id AND state='BUILDING' AND active_slot IS NULL"),dict(code=code,id=build_id))
+
+    def publication_lock_name(self):
+        from database.feature_store_publication import lock_name
+        return lock_name(self.db)
+
+    def publish_build(self,build_id):
+        from database.feature_store_publication import publish
+        return publish(self.db,build_id)
+
+    def rollback_publication(self,build_id):
+        from database.feature_store_publication import publish
+        return publish(self.db,build_id,rollback=True)
+
+    def load_feature_snapshot(self,session,stock_codes=None,start_date=None,end_date=None,expected_keys=None):
+        from database.feature_store_reader import load_feature_snapshot
+        return load_feature_snapshot(session,stock_codes,start_date,end_date,expected_keys)

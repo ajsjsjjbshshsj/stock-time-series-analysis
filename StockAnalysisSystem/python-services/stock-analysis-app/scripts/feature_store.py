@@ -14,6 +14,9 @@ def main(argv=None):
     build.add_argument('--start-date',required=True)
     build.add_argument('--cutoff',required=True)
     build.add_argument('--output')
+    for command in ('publish','rollback'):
+        sub.add_parser(command).add_argument('--build-id',required=True)
+    sub.add_parser('inspect',help='Read active publication identity; no repair')
     args=parser.parse_args(argv)
     # Deliberately after argument parsing: --help is usable without credentials.
     from database.db_connector import DatabaseConnector
@@ -23,6 +26,17 @@ def main(argv=None):
         if args.command=='migrate':
             repository.migrate()
             print(json.dumps(dict(schema='stock_feature_build',installed=True)))
+            return 0
+        if args.command in ('publish','rollback'):
+            operation=repository.publish_build if args.command=='publish' else repository.rollback_publication
+            print(json.dumps(operation(args.build_id)));return 0
+        if args.command=='inspect':
+            from database.feature_store_reader import metadata_row,validate_metadata,validate_table
+            from data_processor.feature_store_contract import CANONICAL_TABLE
+            with db.engine.connect() as connection:
+                meta=metadata_row(connection);validate_metadata(meta)
+                validate_table(connection,CANONICAL_TABLE,meta['build_id'])
+                print(json.dumps({k:str(meta[k]) for k in ('build_id','state','source_start','source_cutoff','row_count','stock_count','storage_contract','algorithm_version')}))
             return 0
         from data_processor.feature_store_builder import snapshot_source,compute_build
         project=Path(__file__).resolve().parents[3]
