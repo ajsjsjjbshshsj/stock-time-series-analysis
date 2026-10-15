@@ -11,7 +11,7 @@ from app.preparation.contracts import TZ,identity,iso,timestamp
 from app.preparation.service import PreparationFailure
 from app.preparation.acquisition import LazyClient
 from app.market_data.checked_tushare_api import TushareRequestError,KINDS
-from .contracts import market_day,is_a_share,validate_market
+from .contracts import market_day,is_a_share
 
 FIELDS={'daily':DAILY,'daily_basic':BASIC,'adj_factor':FACTOR,'suspend_d':SUSPEND}
 CAPACITY={'daily':6000,'daily_basic':6000,'adj_factor':None,'suspend_d':5000}
@@ -140,66 +140,3 @@ class NativeDayAcquirer:
             write(complete,dict(manifest_sha256=digest(manifest)),exclusive=True)
         if self.on_progress is not None:self.on_progress(len(requests),len(requests))
         return dict(complete=True,shards=shards)
-
-def day_exclusions(snapshot,shards,*,reference_directory=None):
-    """Audit verified inactive factors or explicitly expired code periods.
-
-    Some supplier responses repeat pre-effective prices under a current code.
-    Exclude that code's invalid period only, never relabel those prices. Other
-    out-of-roster daily/basic rows remain errors, including ordinary delistings.
-    """
-    validate_market(snapshot);day=snapshot['trade_date'];target=set(snapshot['codes'])
-    known=None;excluded=[]
-    for shard in shards:
-        body=verified_shard(shard['source_directory'],shard['request'])
-        if body!=shard or body['request']['day']!=day:raise ValueError('NATIVE_REGISTRY_BINDING_CHANGED')
-        outsiders=sorted({row['ts_code'] for row in body['rows'] if is_a_share(row['ts_code']) and row['ts_code'] not in target})
-        if not outsiders:continue
-        if snapshot['schema_version']!=2 or reference_directory is None:
-            raise PreparationFailure('SOURCE_CONFLICT')
-        if known is None:
-            from .universe import verify_reference
-            from .contracts import _reference,excluded_legacy_reference
-            from .symbol_periods import reference_rows
-            bundle=verify_reference(reference_directory)
-            if bundle['manifest_sha256']!=snapshot['source_manifest_sha256']:raise ValueError('REFERENCE_SOURCE_IDENTITY_INVALID')
-            acquired=timestamp(bundle['acquired_at'])
-            known={row['ts_code']:_reference(row,acquired) for row in reference_rows(bundle['rows'])
-                   if excluded_legacy_reference(row,acquired) is None}
-        from .symbol_periods import eligible_on,period_for
-        for code in outsiders:
-            row=known.get(code)
-            if row is None or eligible_on(code,day,list_date=row['list_date'],delist_date=row['delist_date']):
-                raise PreparationFailure('SOURCE_CONFLICT')
-            period=period_for(code)
-            outside_explicit_period=(period['valid_from'] is not None and day<period['valid_from']
-                or period['valid_until'] is not None and day>=period['valid_until'])
-            if body['method']!='adj_factor' and not outside_explicit_period:raise PreparationFailure('SOURCE_CONFLICT')
-            excluded.append(dict(method=body['method'],ts_code=code,reason='KNOWN_OUTSIDE_SYMBOL_PERIOD',raw_sha256=body['raw_sha256']))
-    return excluded
-
-
-def register_day_evidence(store,snapshot,shards,*,owner_guard=None,reference_directory=None,exclusion_sink=None):
-    validate_market(snapshot);day=snapshot['trade_date'];target=set(snapshot['codes']);refs=[]
-    exclusions=day_exclusions(snapshot,shards,reference_directory=reference_directory)
-    if exclusion_sink is not None:exclusion_sink(exclusions)
-    for shard in shards:
-        body=verified_shard(shard['source_directory'],shard['request'])
-        if body!=shard or body['request']['day']!=day:raise ValueError('NATIVE_REGISTRY_BINDING_CHANGED')
-        codes=sorted(target & set(body['request']['query_codes'])) if body['request']['query_codes'] is not None else snapshot['codes']
-        if not codes:raise ValueError('SOURCE_QUERY_OUTSIDE_UNIVERSE')
-        rows=[row for row in body['rows'] if row['ts_code'] in target]
-        refs.extend(store.register_verified(dict(kind=body['method'],provider='tushare.'+body['method'],
-            start_date=day,end_date=day,expected_codes=codes,rows=rows),owner_guard=owner_guard))
-    return refs
-
-def supplemental_requests(inventory,max_requests=100):
-    if type(max_requests) is not int or not 0<=max_requests<=100:raise ValueError('SOURCE_BUDGET_INVALID')
-    requests=[];daily={}
-    for code,day in inventory.get('missing_daily',[]):daily.setdefault(day,set()).add(code)
-    for day in sorted(daily):
-        codes=sorted(daily[day])
-        for offset in range(0,len(codes),500):requests.append(dict(method='daily',day=day,query_codes=codes[offset:offset+500]))
-    for code,day in sorted({tuple(key) for key in inventory.get('missing_basic',[])}):
-        requests.append(dict(method='daily_basic',day=day,query_codes=[code]))
-    return dict(requests=requests[:max_requests],exhausted=len(requests)>max_requests,unplanned_requests=max(0,len(requests)-max_requests))

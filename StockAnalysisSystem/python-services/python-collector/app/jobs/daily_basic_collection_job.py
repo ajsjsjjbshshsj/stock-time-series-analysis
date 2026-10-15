@@ -1,6 +1,5 @@
 """每日估值指标的独立采集任务。"""
 
-from datetime import date
 import math
 from typing import Iterable, Optional
 

@@ -11,7 +11,6 @@ Transformer 工具函数
 from config.logging_config import get_logger
 logger = get_logger(__name__)
 
-import os
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -21,10 +20,6 @@ from tqdm import tqdm
 # 特征工程
 # ============================================================
 
-def _rolling_linear_regression(x, y):
-    x = np.vstack([np.ones(len(x)), x]).T
-    beta, res, _, _ = np.linalg.lstsq(x, y, rcond=None)
-    return beta[1], res[0] if len(res) > 0 else 0.0, np.sum((y - (x @ beta))**2)
 
 
 def engineer_features_39(df):

@@ -1,6 +1,7 @@
 """Preparation orchestration with fixed submission cutoff and fenced writes."""
 from datetime import datetime,time as walltime,timedelta,timezone
 from pathlib import Path
+from app.market_data.retry_policy import RETRYABLE_TASK_ERRORS
 import time
 from sqlalchemy.exc import SQLAlchemyError,IntegrityError
 
@@ -116,7 +117,7 @@ class DataPreparationService:
         except RuntimeError as error:
             if str(error).startswith('OWNER'): raise
             failure=PreparationFailure(str(error) if str(error) in ERRORS else 'STORAGE_UNAVAILABLE')
-        target='WAITING_RETRY' if failure.kind in {'MINUTE_QUOTA','HOURLY_QUOTA','QUOTA_COOLDOWN','REQUEST_STATE_BUSY'} else 'FAILED'
+        target='WAITING_RETRY' if failure.kind in RETRYABLE_TASK_ERRORS else 'FAILED'
         patch=dict(status=target,error_kind=failure.kind,updated_at=self._now(),result=dict(data_ready=False,error_kind=failure.kind))
         if target=='WAITING_RETRY':
             current=self.clock()

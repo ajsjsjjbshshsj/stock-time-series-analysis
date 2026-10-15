@@ -1,6 +1,5 @@
 """Bounded missing-key requests; never refetch complete shared-stock history."""
 from collections import defaultdict
-from datetime import date, timedelta
 
 from app.market_data.repair_contract import request
 from .contracts import iso

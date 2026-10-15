@@ -2,7 +2,7 @@
  * Mock：java kafka-consumer-service。
  * 对齐 ConsumerStatisticsSnapshot（10 字段）、ConsumerError（7 字段）、
  * topic 配置（stock.ods.daily.v1 / stock.ods.basic.v1 / stock.dead-letter.v1）
- * 与 StockDailyEventValidator 校验规则。
+ * 校验器仅作演示，不能替代 Java 严格解析、类型与时间校验。
  */
 import { mulberry32, hashSeed, STOCK_POOL, FIXED_TODAY } from './generator.js'
 
@@ -87,16 +87,16 @@ export function getTopics() {
 /* ── 最近错误（ConsumerError 7 字段；不含原始 payload） ──── */
 
 const ERROR_TEMPLATES = [
-  { errorType: 'VALIDATION_FAILURE', message: 'tradeDate must not be null', topic: 'stock.ods.daily.v1' },
-  { errorType: 'VALIDATION_FAILURE', message: 'kafkaKey must equal tsCode', topic: 'stock.ods.daily.v1' },
-  { errorType: 'VALIDATION_FAILURE', message: 'close must be greater than or equal to zero', topic: 'stock.ods.daily.v1' },
-  { errorType: 'VALIDATION_FAILURE', message: 'traceId must not be blank', topic: 'stock.ods.daily.v1' },
-  { errorType: 'JSON_PARSE_FAILURE', message: 'Unexpected character (\'o\' (code 111)): was expecting double-quote to start field name', topic: 'stock.ods.daily.v1' },
-  { errorType: 'JSON_PARSE_FAILURE', message: 'Unexpected end-of-input: expected close marker for Object', topic: 'stock.ods.basic.v1' },
-  { errorType: 'UNSUPPORTED_SCHEMA_VERSION', message: 'Unsupported schemaVersion 2, supported: 1', topic: 'stock.ods.daily.v1' },
-  { errorType: 'DEAD_LETTER_PUBLISH_FAILURE', message: 'Failed to publish to stock.dead-letter.v1: Broker not available', topic: 'stock.ods.daily.v1' },
-  { errorType: 'VALIDATION_FAILURE', message: 'volume must be greater than or equal to zero', topic: 'stock.ods.daily.v1' },
-  { errorType: 'VALIDATION_FAILURE', message: 'eventId must not be blank', topic: 'stock.ods.basic.v1' },
+  { errorType: 'VALIDATION', message: 'tradeDate must not be null', topic: 'stock.ods.daily.v1' },
+  { errorType: 'VALIDATION', message: 'kafkaKey must equal tsCode', topic: 'stock.ods.daily.v1' },
+  { errorType: 'VALIDATION', message: 'close must be greater than or equal to zero', topic: 'stock.ods.daily.v1' },
+  { errorType: 'VALIDATION', message: 'traceId must not be blank', topic: 'stock.ods.daily.v1' },
+  { errorType: 'DESERIALIZATION', message: 'Malformed JSON payload', topic: 'stock.ods.daily.v1' },
+  { errorType: 'DESERIALIZATION', message: 'Malformed JSON payload', topic: 'stock.ods.daily.v1' },
+  { errorType: 'UNSUPPORTED_SCHEMA', message: 'Unsupported schemaVersion 2, supported: 1', topic: 'stock.ods.daily.v1' },
+  { errorType: 'DEAD_LETTER_PUBLISH', message: 'Failed to publish to stock.dead-letter.v1: Broker not available', topic: 'stock.ods.daily.v1' },
+  { errorType: 'VALIDATION', message: 'volume must be greater than or equal to zero', topic: 'stock.ods.daily.v1' },
+  { errorType: 'VALIDATION', message: 'eventId must not be blank', topic: 'stock.ods.daily.v1' },
 ]
 
 let errors = null
@@ -137,7 +137,7 @@ export function getConsumeTrend() {
   return buckets
 }
 
-/* ── 事件校验模拟器（前端复刻 StockDailyEventValidator） ── */
+/* ── 事件校验演示（生产判定以 Java 公共校验为准） ── */
 
 const TEXT_FIELDS = ['eventId', 'traceId', 'tsCode', 'source']
 const VALUE_FIELDS = ['tradeDate', 'open', 'high', 'low', 'preClose', 'eventTime', 'ingestTime', 'schemaVersion']
@@ -149,25 +149,31 @@ export function validateEvent(payloadText, kafkaKey, eventType = 'daily') {
   try {
     event = JSON.parse(payloadText)
   } catch (e) {
-    return { valid: false, errorType: 'JSON_PARSE_FAILURE', violations: [e.message], unsupportedSchema: false }
+    return { valid: false, errorType: 'DESERIALIZATION', violations: [e.message], unsupportedSchema: false }
+  }
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) {
+    return { valid: false, errorType: 'DESERIALIZATION', violations: ['Event payload must be an object'], unsupportedSchema: false }
   }
   if (event.schemaVersion != null && event.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
     return {
       valid: false,
-      errorType: 'UNSUPPORTED_SCHEMA_VERSION',
+      errorType: 'UNSUPPORTED_SCHEMA',
       violations: [`Unsupported schemaVersion ${event.schemaVersion}, supported: ${SUPPORTED_SCHEMA_VERSION}`],
       unsupportedSchema: true,
     }
   }
   const violations = []
-  for (const f of TEXT_FIELDS) {
+  const basic = eventType === 'basic'
+  const textFields = basic ? [...TEXT_FIELDS, 'symbol', 'name'] : TEXT_FIELDS
+  const valueFields = basic ? ['eventTime', 'ingestTime', 'schemaVersion'] : VALUE_FIELDS
+  for (const f of textFields) {
     const v = event[f]
     if (v == null || (typeof v === 'string' && v.trim() === '')) violations.push(`${f} must not be blank`)
   }
-  for (const f of VALUE_FIELDS) {
+  for (const f of valueFields) {
     if (event[f] == null) violations.push(`${f} must not be null`)
   }
-  for (const f of NON_NEGATIVE) {
+  for (const f of basic ? [] : NON_NEGATIVE) {
     const v = event[f]
     if (v == null) violations.push(`${f} must not be null`)
     else if (typeof v === 'number' && v < 0) violations.push(`${f} must be greater than or equal to zero`)
@@ -177,7 +183,7 @@ export function validateEvent(payloadText, kafkaKey, eventType = 'daily') {
   }
   return {
     valid: violations.length === 0,
-    errorType: violations.length ? 'VALIDATION_FAILURE' : null,
+    errorType: violations.length ? 'VALIDATION' : null,
     violations,
     unsupportedSchema: false,
   }

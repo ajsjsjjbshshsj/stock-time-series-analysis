@@ -9,17 +9,11 @@ import xgboost as xgb
 from .samples import build_samples, FEATURE_VERSION
 from .contracts import TARGET, validate_payload
 from .continuity import require_prefix
+from analysis.regression_metrics import metrics
 
 PARAMS = dict(objective='reg:squarederror', n_estimators=80, max_depth=3,
               learning_rate=.05, subsample=1., colsample_bytree=1.,
               random_state=42, n_jobs=1, tree_method='hist', device='cpu')
-
-
-def metrics(actual, predicted):
-    residual = np.asarray(actual)-np.asarray(predicted)
-    denominator = float(np.sum((actual-np.mean(actual))**2))
-    return dict(rmse=float(np.sqrt(np.mean(residual**2))), mae=float(np.mean(abs(residual))),
-                r2=float(1-np.sum(residual**2)/denominator) if denominator else None)
 
 
 def _latest(model, samples):

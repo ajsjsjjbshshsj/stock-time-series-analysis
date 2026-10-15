@@ -22,6 +22,7 @@ os.environ.setdefault('OMP_NUM_THREADS','8')
 import pandas as pd
 from analysis.transformer_experiment import load_source,sha256,write_json,evaluate_month,summarize,split_month
 from data_processor.adjusted_market_panel import build_model_panel
+from analysis.artifact_audit import model_output_paths
 
 MONTHS=('2026-06','2026-07','2026-08','2026-09')
 MODES=('adjusted','unadjusted_control')
@@ -63,13 +64,8 @@ def validate_fold_metrics(record,rows,panel):
 
 
 def validate_paths(source,output):
-    source,output=Path(source).resolve(),Path(output).resolve()
-    allowed=APP/'models/transformer'
-    if output.parent!=allowed or not output.name.startswith('adjusted_experiment_'):
-        raise ValueError('Output must be a new models/transformer/adjusted_experiment_* directory')
-    if source.is_relative_to(output):
-        raise ValueError('Source must be outside the new output directory')
-    return source,output
+    return model_output_paths(APP, source, output, 'adjusted_experiment_',
+        'Output must be a new models/transformer/adjusted_experiment_* directory; source must be separate')
 
 
 def collect(source,output):

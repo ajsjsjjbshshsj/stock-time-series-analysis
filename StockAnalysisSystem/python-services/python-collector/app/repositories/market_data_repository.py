@@ -5,7 +5,7 @@
 """
 
 from datetime import date, datetime
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 from sqlalchemy import text
 

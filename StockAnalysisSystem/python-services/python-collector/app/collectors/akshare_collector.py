@@ -14,7 +14,6 @@ AkShare 特点：
     - 无 pre_close 字段，需从 close 和 pct_chg 反推
 """
 
-from datetime import datetime
 
 import akshare as ak
 import pandas as pd

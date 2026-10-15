@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 from datetime import datetime
-import json
 import numpy as np
 import pandas as pd
 from config.logging_config import get_logger
@@ -14,11 +13,13 @@ logger = get_logger(__name__)
 from data_loader.collector import DataCollector
 from data_processor.cleaner import DataCleaner
 from data_processor.feature_engineer import FeatureEngineer
+from data_processor.feature_schema import FEATURE_COL_MAP
 from database.db_connector import DatabaseConnector
 from database import repository
 from analysis.statistical import StatisticalAnalyzer
 from analysis.predictor import StockPredictor
 from analysis.backtester import Backtester
+from analysis.strategy_selection import load_strategy_calendar, select_strategy_snapshot
 from analysis.ranking_predictor import train_ranking_model, predict_top_n
 from analysis.ranking_backtester import run_walk_forward_backtest
 from visualization.plotter import StockPlotter
@@ -66,11 +67,11 @@ def build_transformer_config(args, sector_list=None, index_list=None):
 
 def run_data_collection(stock_codes=None, use_tushare=False, delay=0.5, start_date=None):
     """
-    执行数据采集流程：增量更新，只采集新数据并写入数据库。
+    读取 Collector 已落库数据并增量更新本地面板缓存，不调用外部行情 SDK。
 
     Args:
         stock_codes: 股票代码列表
-        use_tushare: 是否使用Tushare
+        use_tushare: 兼容旧参数，数据源由 python-collector 负责
         delay: 请求间隔秒数
         start_date: 起始日期，格式 YYYYMMDD
     """
@@ -196,8 +197,6 @@ def run_prediction(df, model_type='xgboost'):
         result = predictor.train_xgboost_regression(X, y, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
     elif model_type == 'xgboost_multiclass':
         result = predictor.train_xgboost_multiclass(X, y, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
-    elif model_type == 'lstm':
-        result = predictor.train_lstm(X, y, sequence_length=60, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2)
     else:
         logger.error(f"不支持的模型类型: {model_type}")
         return None
@@ -237,38 +236,6 @@ def run_prediction(df, model_type='xgboost'):
         logger.info("预测流程完成")
 
     return result
-
-
-def load_strategy_calendar(calendar):
-    """Explicit local trusted calendar; no network or weekday fallback."""
-    from analysis.strategy_dates import validate_session_calendar
-    if calendar is None:
-        raise ValueError('A trusted --calendar is required for strategy validation')
-    if not isinstance(calendar, dict):
-        with open(calendar, encoding='utf-8') as stream:
-            calendar = json.load(stream)
-    validate_session_calendar(calendar)
-    return calendar
-
-
-def select_strategy_snapshot(frame, calendar, request_time=None, *, stock_codes=None,
-                             required_columns=('open', 'high', 'low', 'close', 'vol', 'amount')):
-    from analysis.strategy_dates import select_data_cutoff, SHANGHAI
-    from analysis.ranking_accounting import validate_ranking_history
-    calendar = load_strategy_calendar(calendar)
-    if frame.empty or 'ts_code' not in frame:
-        raise ValueError('Dated stock pool required')
-    expected = stock_codes if stock_codes is not None else frame.attrs.get('requested_codes')
-    if not expected:
-        raise ValueError('Independent requested stock pool evidence required')
-    selected = select_data_cutoff(calendar, request_time or datetime.now(SHANGHAI), frame,
-                                  expected, required_columns=required_columns)
-    result = frame[pd.to_datetime(frame.trade_date) <= pd.Timestamp(selected['data_cutoff'])].copy()
-    result['trade_date'] = pd.to_datetime(result.trade_date)
-    validate_ranking_history(result, calendar)
-    logger.info('目标交易日=%s 实际截止=%s 回退原因=%s', selected['target_trade_date'],
-                selected['data_cutoff'], selected['fallback_reason'])
-    return result, selected
 
 
 def run_backtest(df, stock_code="unknown", *, calendar=None, request_time=None, model_type='xgboost'):
@@ -342,42 +309,8 @@ def save_data_to_db(stock_code, df_raw, df_processed, prediction_result=None, mo
 
             # 2. 保存技术指标 (stock_features)
             # feature_engineer v2.0 输出 snake_case，映射与 DB 列名 1:1 对齐
-            FEATURE_MAP = {
-                'ma5': 'ma5', 'ma10': 'ma10', 'ma20': 'ma20', 'ma60': 'ma60',
-                'ema5': 'ema5', 'ema10': 'ema10', 'ema20': 'ema20',
-                'ema26': 'ema26', 'ema60': 'ema60', 'ema120': 'ema120',
-                'macd_dif': 'macd_dif', 'macd_dea': 'macd_dea', 'macd_hist': 'macd_hist',
-                'rsi': 'rsi',
-                'bb_upper': 'bb_upper', 'bb_middle': 'bb_middle',
-                'bb_lower': 'bb_lower', 'bb_width': 'bb_width',
-                'kdj_k': 'kdj_k', 'kdj_d': 'kdj_d', 'kdj_j': 'kdj_j',
-                'vol_ma5': 'vol_ma5', 'vol_ma10': 'vol_ma10',
-                'volume_ratio': 'volume_ratio', 'mfi14': 'mfi14',
-                'return_1d': 'return_1d', 'return_5d': 'return_5d',
-                'return_10d': 'return_10d', 'log_return': 'log_return',
-                # [防泄漏] future_return / future_direction 不入库
-                # 仅作为训练标签，由 pipeline 在划分训练集时临时计算
-                'turnover_rate_5': 'turnover_rate_5',
-                'turnover_rate_60': 'turnover_rate_60',
-                'turnover_rate_120': 'turnover_rate_120',
-                'br': 'br', 'ar': 'ar',
-                'volatility_20d': 'volatility_20d', 'volatility_60d': 'volatility_60d',
-                'volatility_120d': 'volatility_120d',
-                'skewness_20d': 'skewness_20d', 'skewness_60d': 'skewness_60d',
-                'skewness_120d': 'skewness_120d',
-                'kurtosis_20d': 'kurtosis_20d', 'kurtosis_60d': 'kurtosis_60d',
-                'kurtosis_120d': 'kurtosis_120d',
-                'arron_up_25': 'arron_up_25', 'arron_down_25': 'arron_down_25',
-                'bear_power': 'bear_power', 'bull_power': 'bull_power',
-                'bias5': 'bias5', 'bias10': 'bias10', 'bias20': 'bias20', 'bias60': 'bias60',
-                'cci10': 'cci10', 'cci15': 'cci15', 'cci20': 'cci20', 'cci88': 'cci88',
-                'cr20': 'cr20', 'mass': 'mass',
-                'golden_cross': 'golden_cross', 'death_cross': 'death_cross',
-                'macd_golden_cross': 'macd_golden_cross',
-                'rsi_oversold': 'rsi_oversold', 'rsi_overbought': 'rsi_overbought',
-            }
 
-            available = {df_col: db_col for df_col, db_col in FEATURE_MAP.items()
+            available = {df_col: db_col for df_col, db_col in FEATURE_COL_MAP.items()
                          if df_col in df_processed.columns}
 
             feature_records = []
@@ -481,44 +414,6 @@ def run_ranking_backtest_pipeline(top_n=10, use_probe=True, forward_days=5,
     return result
 
 
-def run_probe_selection_only(top_n=10, forward_days=5, use_tushare=False, skip_update=False, delay=0.5, sectors=None, index_codes=None):
-    """
-    仅执行探针法特征筛选，不训练最终模型。
-    """
-    from data_processor.panel_builder import (
-        incremental_update,
-        prepare_panel_for_training,
-    )
-    from analysis.ranking_predictor import get_feature_columns
-
-    logger.info("=" * 60)
-    logger.info("探针法特征筛选")
-    logger.info("=" * 60)
-
-    # 1. 增量采集
-    panel_df = incremental_update(
-        use_tushare=use_tushare, delay=delay,
-        sectors=sectors, index_codes=index_codes, start_date=None
-    )
-    if panel_df.empty:
-        logger.error("无有效数据")
-        return None
-
-    # 2. 计算特征
-    featured_df = prepare_panel_for_training(panel_df, forward_days=forward_days, use_tushare=use_tushare)
-    if featured_df.empty:
-        logger.error("特征计算失败")
-        return None
-
-    # 3. 探针法筛选
-    feature_names = get_feature_columns(featured_df)
-    train_result = train_ranking_model(
-        featured_df,
-        feature_names=feature_names,
-        use_probe=True,
-        save_name="probe_only",
-    )
-    return train_result
 
 
 def run_clean(stock_code="000001", use_tushare=False):
@@ -783,7 +678,6 @@ def cmd_train(args, sector_list, index_list):
                 index_codes=index_list,
                 calendar=args.calendar,
             )
-        logger.info("排名管线训练完成")
 
     elif args.pipeline == 'transformer':
         # 原 transform_train 模式
@@ -914,8 +808,6 @@ def cmd_predict(args, sector_list, index_list):
                 train_result = predictor.train_xgboost_regression(X_all, y_all)
             elif args.model == 'xgboost_multiclass':
                 train_result = predictor.train_xgboost_multiclass(X_all, y_all)
-            elif args.model == 'lstm':
-                train_result = predictor.train_lstm(X_all, y_all, sequence_length=60)
             else:
                 logger.error(f"不支持的模型类型: {args.model}")
                 return
@@ -1076,11 +968,11 @@ def main():
     common.add_argument('--use_tushare', action='store_true',
                         help='兼容旧参数（已弃用，分析端统一读取 MySQL）')
     common.add_argument('--delay', type=float, default=0.5,
-                        help='数据采集请求间隔（秒）')
+                        help='兼容旧请求间隔参数（分析端不请求行情 API）')
     common.add_argument('--start_date', type=str, default=None,
-                        help='数据采集起始日期，格式 YYYYMMDD')
+                        help='面板读取起始日期，格式 YYYYMMDD')
     common.add_argument('--skip_update', action='store_true',
-                        help='跳过数据采集，直接从数据库读取已有数据')
+                        help='跳过本地增量面板更新，直接读取已有数据库数据')
     common.add_argument('--gpu', action='store_true',
                         help='使用 GPU (CUDA) 加速')
     common.add_argument('--n_workers', type=int, default=None,
@@ -1100,7 +992,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 子命令说明:
-  collect    数据采集（增量 / 全量）
+  collect    已落库数据读取与面板更新（不访问行情 SDK）
   clean      数据清洗
   feature    特征计算（传统 / Transformer）
   train      模型训练
@@ -1125,7 +1017,7 @@ def main():
 
     # ---- collect ----
     p_collect = subparsers.add_parser('collect', parents=[common],
-                                       help='数据采集')
+                                       help='读取已落库数据并更新本地面板')
     p_collect.add_argument('--full', action='store_true',
                            help='全量更新（采集 + 传统特征 + Transformer 特征）')
 
@@ -1154,7 +1046,7 @@ def main():
                          help='股票代码（传统管线）')
     p_train.add_argument('--model', type=str, default='xgboost',
                          choices=['xgboost', 'xgboost_regression',
-                                  'xgboost_multiclass', 'lstm'],
+                                  'xgboost_multiclass'],
                          help='预测模型类型')
     p_train.add_argument('--backtest', action='store_true',
                          help='训练后进行回测')
@@ -1195,7 +1087,7 @@ def main():
                            help='股票代码（传统管线单股预测；不指定则全市场批量排名）')
     p_predict.add_argument('--model', type=str, default='xgboost',
                            choices=['xgboost', 'xgboost_regression',
-                                    'xgboost_multiclass', 'lstm'],
+                                    'xgboost_multiclass'],
                            help='预测模型类型')
     p_predict.add_argument('--top_n', type=int, default=10,
                            help='排名选股数量')

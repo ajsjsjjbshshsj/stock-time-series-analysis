@@ -2,7 +2,6 @@
 from numbers import Real
 import math
 
-import numpy as np
 import pandas as pd
 
 from analysis.transformer_experiment import adjusted_head_scores, sha256
