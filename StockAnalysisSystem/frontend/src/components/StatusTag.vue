@@ -39,6 +39,9 @@ const MAP = {
   DEAD_LETTER_PUBLISH_FAILURE: ['critical', 'DLT_FAIL'],
   BUY: ['up', 'BUY'],
   SELL: ['down', 'SELL'],
+  // 冻结 Transformer 信号包发布分类（协议语义，见 transformer_forward_contracts.classify_publication）
+  PROSPECTIVE_CANDIDATE: ['accent', '前瞻候选'],
+  LATE_DIAGNOSTIC: ['warning', '迟到诊断'],
 }
 
 const tone = computed(() => (MAP[props.status] || ['muted', props.status])[0])

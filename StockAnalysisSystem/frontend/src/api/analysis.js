@@ -8,6 +8,7 @@ import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '
 import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
 import { normalizeModels, normalizePrediction, normalizeResults, finiteJson } from '../utils/prediction.js'
 import { normalizeEvaluations, normalizeEvaluation } from '../utils/evaluation.js'
+import { normalizeTransformerSignals } from '../utils/transformerSignals.js'
 
 const evaluationDemoUnavailable = () => { throw new Error('滚动评估仅提供真实离线发布报告，演示模式不可用') }
 const evaluationCode = code => { if (!/^[0-9]{6}\.(?:SZ|SH|BJ)$/.test(code)) throw new Error('股票代码无效') }
@@ -145,4 +146,25 @@ export function getTransformerPredictions(config) {
     '/api/analysis/transformer/predict',
     { method: 'POST', body: JSON.stringify(config) },
   )
+}
+
+/**
+ * GET /api/analysis/transformer/signals — 冻结模型封存信号包（只读呈现）。
+ * 绝不触发训练/推理；404 = 尚无已发布信号包（空态，返回 null，同 getEvaluation 约定）。
+ */
+export async function getTransformerSignals(date = '', options = {}) {
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('信号日期无效')
+  const live = dataSource.value === 'hybrid'
+  try {
+    const dto = await request(
+      () => mock.getTransformerSignals(date || '2026-10-08'),
+      `/api/analysis/transformer/signals${date ? `?date=${date}` : ''}`,
+      options,
+    )
+    return live ? normalizeTransformerSignals(dto) : dto
+  } catch (error) {
+    // 共享 client 把 HTTP 错误抛成这个固定文案；只有 404 是"暂无信号包"空态。
+    if (error.message === '接口返回 HTTP 404') return null
+    throw error
+  }
 }

@@ -43,7 +43,7 @@ def _metadata(payload):
             if k not in ('test_series', 'latest', 'feature_importance')}
 
 
-def create_app(repository=None, evaluation_repository=None):
+def create_app(repository=None, evaluation_repository=None, transformer_signals_root=None):
     @asynccontextmanager
     async def lifespan(app):
         if repository is None:
@@ -141,6 +141,8 @@ def create_app(repository=None, evaluation_repository=None):
 
     from api.evaluations import register_evaluation_routes
     register_evaluation_routes(app)
+    from api.transformer_signals import register_transformer_signal_routes
+    register_transformer_signal_routes(app, transformer_signals_root)
     return app
 
 

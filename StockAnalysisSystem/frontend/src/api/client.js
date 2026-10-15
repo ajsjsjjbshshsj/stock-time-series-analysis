@@ -22,7 +22,7 @@ export function createRequestClient({ mode = 'mock', base = '', fetchImpl = glob
     const pathname = path.split('?')[0]
     const evaluationList = pathname === '/api/analysis/evaluations'
     const evaluationDetail = /^\/api\/analysis\/evaluations\/[0-9]{6}\.(?:SZ|SH|BJ)\/eval_[0-9a-f]{32}$/.test(pathname)
-    const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || pathname === '/api/analysis/models' || /^\/api\/analysis\/(kline|indicators|prediction|results)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname) || /^\/api\/analysis\/models\/[A-Za-z0-9_-]+\/importance$/.test(pathname)
+    const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || pathname === '/api/analysis/models' || pathname === '/api/analysis/transformer/signals' || /^\/api\/analysis\/(kline|indicators|prediction|results)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname) || /^\/api\/analysis\/models\/[A-Za-z0-9_-]+\/importance$/.test(pathname)
     if (normalizeMode(selected) === 'mock' || !(live || evaluationList || evaluationDetail)) {
       if (mockDelayMs) await new Promise((resolve) => setTimeout(resolve, mockDelayMs))
       return mockProducer()
