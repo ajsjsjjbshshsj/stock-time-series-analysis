@@ -3,9 +3,14 @@ package com.stock.market.api;
 import java.time.LocalDate;
 
 public record QueryParameters(String code, int limit, LocalDate start, LocalDate end) {
-    public static QueryParameters series(String code, int limit, LocalDate start, LocalDate end) {
+    public static String code(String code) {
         if (code == null || !code.matches("[0-9]{6}\\.(SH|SZ|BJ)"))
             throw new IllegalArgumentException("Invalid stock code");
+        return code;
+    }
+
+    public static QueryParameters series(String code, int limit, LocalDate start, LocalDate end) {
+        code(code);
         bounds(limit, 2000);
         if (start != null && end != null && start.isAfter(end))
             throw new IllegalArgumentException("Invalid date range");
