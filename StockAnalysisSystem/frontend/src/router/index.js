@@ -26,6 +26,14 @@ const routes = [
     component: () => import('../views/AnalysisView.vue'),
     meta: { title: '分析建模', icon: 'trend' },
   },
+  {
+    // 用户端入口：无 meta.title → 不出现在调试端侧边栏；
+    // meta.userApp → App.vue 据此渲染独立全屏布局（无调试导航/数据模式切换）
+    path: '/user',
+    name: 'user',
+    component: () => import('../views/UserAppView.vue'),
+    meta: { userApp: true },
+  },
 ]
 
 export default createRouter({

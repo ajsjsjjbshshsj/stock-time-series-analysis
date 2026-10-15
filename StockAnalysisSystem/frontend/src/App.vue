@@ -1,5 +1,8 @@
 <template>
-  <div class="layout">
+  <!-- 用户端（/user）：独立全屏布局，不带调试侧边栏/顶栏 -->
+  <RouterView v-if="isUserApp" :key="dataSource + route.path" />
+
+  <div v-else class="layout">
     <aside class="sidebar">
       <div class="logo">
         <div class="logo-mark">S</div>
@@ -66,6 +69,9 @@ import { fmtTime } from './utils/format.js'
 const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
+
+// /user 路由（meta.userApp）走独立用户端布局，不渲染调试侧边栏与顶栏
+const isUserApp = computed(() => Boolean(route.meta?.userApp))
 
 const navRoutes = computed(() => router.getRoutes().filter((r) => r.meta?.title))
 const sourceLabel = computed(() => {
