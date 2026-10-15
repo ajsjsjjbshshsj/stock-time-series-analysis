@@ -52,6 +52,23 @@ public class MarketController {
         return Map.of("ts_code", tsCode, "indicators", indicators.query(p));
     }
 
+    /** 最新估值快照（stock_daily_basic 按 trade_date 取最近一行）。 */
+    @GetMapping("/daily-basic/{tsCode}")
+    public Map<String, Object> dailyBasic(@PathVariable String tsCode) {
+        QueryParameters.code(tsCode);
+        known(tsCode);
+        Map<String, Object> row = mysql.latestDailyBasic(tsCode);
+        if (row == null)
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Daily basic not found");
+        return row;
+    }
+
+    /** 市场概览：最新交易日的涨跌家数、行业平均涨跌幅与涨跌幅排行。 */
+    @GetMapping("/market/overview")
+    public Map<String, Object> marketOverview() {
+        return mysql.marketOverview();
+    }
+
     private void known(String code) {
         if (!mysql.exists(code))
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Stock not found");

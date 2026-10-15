@@ -48,3 +48,9 @@ export function fmtTime(iso) {
 }
 
 export const signClass = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : '')
+
+/** 交易日（YYYYMMDD 或 YYYY-MM-DD）→ MM-DD（坐标轴/角标短显示） */
+export function fmtMonthDay(d) {
+  if (typeof d !== 'string' || d.length < 8) return '—'
+  return d.includes('-') ? d.slice(5) : `${d.slice(4, 6)}-${d.slice(6, 8)}`
+}

@@ -35,16 +35,39 @@ export async function getStockPool(options = {}) {
   return normalizeStockPool(await request(() => STOCK_POOL.map(({ ts_code, symbol, name, area, industry, list_date }) => ({ ts_code, symbol, name, area, industry, list_date })), '/api/analysis/stocks', options))
 }
 
-/** GET /api/analysis/kline/:tsCode — 日线 OHLCV（stock_daily） */
+/* 模块级股票池缓存：live 模式 5000+ 行只拉一次，多组件（对比/市场概览）跨实例复用；失败清缓存可重试 */
+let poolPromise = null
+export function getStockPoolCached() {
+  if (!poolPromise) {
+    poolPromise = getStockPool().catch((e) => { poolPromise = null; throw e })
+  }
+  return poolPromise
+}
+
+/**
+ * GET /api/analysis/kline/:tsCode — 日线 OHLCV（stock_daily）。
+ * options.limit 仅 live 生效（后端上限 2000，用于周/月/年线聚合取长历史）；
+ * 演示模式固定 260 根日线，limit 被忽略。
+ */
 export async function getKline(tsCode, options = {}) {
   if (!STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
-  const data = await request(() => ({ ts_code: tsCode, bars: getBars(tsCode) }), `/api/analysis/kline/${tsCode}`, options)
+  const { limit, ...rest } = options
+  const suffix = Number.isInteger(limit) && limit > 0 ? `?limit=${limit}` : ''
+  const data = await request(() => ({ ts_code: tsCode, bars: getBars(tsCode) }), `/api/analysis/kline/${tsCode}${suffix}`, rest)
   return { ts_code: tsCode, bars: normalizeKline(data, tsCode) }
 }
 
-/** GET /api/analysis/daily-basic/:tsCode/:tradeDate — 估值与换手（stock_daily_basic） */
-export function getDailyBasicRow(tsCode, tradeDate = FIXED_TODAY) {
-  return request(() => getDailyBasic(tsCode, tradeDate), `/api/analysis/daily-basic/${tsCode}/${tradeDate}`)
+/**
+ * GET /api/analysis/daily-basic/:tsCode — 最新估值与换手（stock_daily_basic）。
+ * live 模式后端固定返回最近一个交易日的行；演示模式用 tradeDate（默认 FIXED_TODAY）生成。
+ */
+export function getDailyBasicRow(tsCode, tradeDate = FIXED_TODAY, options = {}) {
+  return request(() => getDailyBasic(tsCode, tradeDate), `/api/analysis/daily-basic/${tsCode}`, options)
+}
+
+/** GET /api/analysis/market/overview — 最新交易日市场聚合（涨跌家数/行业涨跌幅/排行榜） */
+export function getMarketOverview(options = {}) {
+  return request(() => mock.getMarketOverview(), '/api/analysis/market/overview', options)
 }
 
 /** GET /api/analysis/features/catalog — 特征目录（FEATURE_REGISTRY） */
