@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
       '^/api/analysis/evaluations/[0-9]{6}\\.(?:SZ|SH|BJ)/eval_[0-9a-f]{32}(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/models(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/models/[A-Za-z0-9_-]+/importance(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
+      '^/api/analysis/transformer/signals(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/(?:prediction|results)/[0-9]{6}\\.(?:SZ|SH|BJ)(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '/api/consumer': { target, changeOrigin: true },
       '/actuator/health': { target, changeOrigin: true },

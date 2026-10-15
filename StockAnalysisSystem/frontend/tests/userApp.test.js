@@ -70,3 +70,19 @@ test('debug AnalysisView keeps its nine tabs and search integration', async () =
     assert.match(view, new RegExp(comp))
   }
 })
+
+/* ── 5. 用户端第 4 tab：Transformer 冻结信号（只读呈现） ── */
+test('UserAppView adds the read-only transformer signals tab', async () => {
+  const view = await read('../src/views/UserAppView.vue')
+  assert.match(view, /import AnalysisTransformerSignals from '\.\/analysis\/AnalysisTransformerSignals\.vue'/)
+  assert.match(view, /key: 'transformer', label: 'Transformer 信号', comp: AnalysisTransformerSignals/)
+  // 原三个 tab 与后台端 9 tab 断言均不受影响（见上方两个测试）
+  const signals = await read('../src/views/analysis/AnalysisTransformerSignals.vue')
+  // 红线：只读呈现层绝不引用训练/触发计算端点
+  assert.match(signals, /getTransformerSignals/)
+  assert.doesNotMatch(signals, /getTransformerTraining|getTransformerPredictions|transformer\/train|transformer\/predict/)
+  // 协议诚实呈现：排序分≠收益率、迟到诊断警示、哈希链展示
+  assert.match(signals, /非收益率/)
+  assert.match(signals, /迟到诊断/)
+  assert.match(signals, /integrity/)
+})

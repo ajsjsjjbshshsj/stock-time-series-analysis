@@ -619,3 +619,105 @@ export function getTransformerPredictions(config = {}) {
     weight: +((adj[i] / wSum) * 100).toFixed(2),
   }))
 }
+
+/* ── Transformer 冻结信号包（演示态，只读呈现，绝不触发训练/推理） ── */
+
+/** 与真实冻结 binding（forward_signals_20261008/binding.json）一致的 20 只试点票 */
+export const TF_SIGNAL_UNIVERSE = [
+  '000001.SZ', '000002.SZ', '000006.SZ', '000009.SZ', '000011.SZ',
+  '000012.SZ', '000014.SZ', '000017.SZ', '000019.SZ', '000020.SZ',
+  '000021.SZ', '000025.SZ', '000026.SZ', '000027.SZ', '000028.SZ',
+  '000029.SZ', '000030.SZ', '000031.SZ', '000032.SZ', '000034.SZ',
+]
+
+/** 冻结协议身份：3 seed × 2 mode，平等保留，无收益事后筛选 */
+const TF_SIGNAL_MODELS = [
+  { seed: 42, mode: 'adjusted' }, { seed: 42, mode: 'unadjusted_control' },
+  { seed: 123, mode: 'adjusted' }, { seed: 123, mode: 'unadjusted_control' },
+  { seed: 2026, mode: 'adjusted' }, { seed: 2026, mode: 'unadjusted_control' },
+]
+
+function tfFakeSha(rnd) {
+  let out = ''
+  for (let i = 0; i < 64; i++) out += '0123456789abcdef'[Math.floor(rnd() * 16)]
+  return out
+}
+
+function tfPlusDays(isoDay, n) {
+  const d = new Date(isoDay + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+/** 与协议一致的排序口径：分数降序，tie-break ts_code 升序 */
+function tfRankSort(pairs) {
+  return [...pairs].sort((a, b) => b.v - a.v || (a.c < b.c ? -1 : 1))
+}
+
+/**
+ * 与 GET /api/analysis/transformer/signals 的 live schema 完全同形。
+ * 演示态固定 LATE_DIAGNOSTIC（published_at 晚于 deadline），让 UI 警示横幅在两种数据源下都可见。
+ * 分数是无量纲排序分（可为负），不是收益率。
+ */
+export function getTransformerSignals(date = '2026-10-08') {
+  const rnd = mulberry32(hashSeed('tfsig:' + date))
+  const models = TF_SIGNAL_MODELS.map((m) => ({
+    ...m,
+    date,
+    model_sha256: tfFakeSha(rnd),
+    scores: TF_SIGNAL_UNIVERSE.map(() => ({
+      raw: +((rnd() - 0.45) * 1.6).toFixed(6),
+      nonnegative_variance: +(rnd() * 1.2).toFixed(6),
+    })),
+  }))
+  const consensus = TF_SIGNAL_UNIVERSE.map((ts_code, i) => {
+    const scores = models.map((m) => ({
+      seed: m.seed, mode: m.mode,
+      raw: m.scores[i].raw, nonnegative_variance: m.scores[i].nonnegative_variance,
+    }))
+    return {
+      ts_code,
+      mean_raw: +(scores.reduce((a, s) => a + s.raw, 0) / scores.length).toFixed(6),
+      mean_nonnegative_variance: +(scores.reduce((a, s) => a + s.nonnegative_variance, 0) / scores.length).toFixed(6),
+      rank_raw: 0,
+      rank_nonnegative_variance: 0,
+      scores,
+    }
+  })
+  const assign = (pairs, rankKey) => {
+    tfRankSort(pairs).forEach(({ row }, i) => { row[rankKey] = i + 1 })
+  }
+  assign(consensus.map((row, i) => ({ c: row.ts_code, v: row.mean_raw, row })), 'rank_raw')
+  assign(consensus.map((row, i) => ({ c: row.ts_code, v: row.mean_nonnegative_variance, row })), 'rank_nonnegative_variance')
+  const entry = tfPlusDays(date, 1)
+  return {
+    signal_date: date,
+    status: 'LATE_DIAGNOSTIC',
+    prospective_eligible: false,
+    published_at: entry + 'T12:22:20+08:00',
+    deadline: entry + 'T09:00:00+08:00',
+    entry_date: entry,
+    exit_date: tfPlusDays(date, 7),
+    frozen_at: tfPlusDays(date, -3) + 'T15:54:01+08:00',
+    cutoff: tfPlusDays(date, -8),
+    store: 'forward_signals_demo',
+    available_dates: [date],
+    primary_policy: 'raw',
+    universe: [...TF_SIGNAL_UNIVERSE],
+    models: models.map((m) => ({
+      seed: m.seed, mode: m.mode, date: m.date, model_sha256: m.model_sha256,
+      top5: {
+        raw: tfRankSort(m.scores.map((s, i) => ({ c: TF_SIGNAL_UNIVERSE[i], v: s.raw }))).slice(0, 5).map((p) => p.c),
+        nonnegative_variance: tfRankSort(m.scores.map((s, i) => ({ c: TF_SIGNAL_UNIVERSE[i], v: s.nonnegative_variance }))).slice(0, 5).map((p) => p.c),
+      },
+    })),
+    consensus,
+    integrity: {
+      verified: true,
+      marker_sha256: tfFakeSha(rnd),
+      receipt_sha256: tfFakeSha(rnd),
+      binding_sha256: tfFakeSha(rnd),
+      payload_sha256: tfFakeSha(rnd),
+    },
+  }
+}
