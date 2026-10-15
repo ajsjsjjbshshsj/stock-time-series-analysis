@@ -686,7 +686,7 @@ def show_prediction(df, stock_code):
     )
 
     # 加载已训练模型
-    from analysis.model_registry import list_models, load_model
+    from analysis.model_registry import list_models, load_model,resolve_model_path
 
     available_models = list_models()
     if not available_models:
@@ -715,11 +715,29 @@ def show_prediction(df, stock_code):
     latest_meta = available_models[0]
     model_file = latest_meta.get('model_file')
     if model_file:
-        model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models', model_file)
+        model_path = resolve_model_path(latest_meta)
         if os.path.exists(model_path):
             st.subheader(f"最新模型预测: {latest_meta.get('model_name', '')}")
 
             model_bundle, metadata = load_model(model_path)
+            if (metadata or {}).get('storage_contract'):
+                contract=df.attrs.get('feature_store_contract') if df is not None else None
+                if not contract:
+                    st.info('新版模型需要经过校验的新版特征及原始历史；旧页面数据不能直接代入。')
+                    return
+                from analysis.feature_store_inputs import validate_model_inputs,inference_values
+                try:
+                    names=metadata['feature_names']
+                    validate_model_inputs(metadata,contract,names,contract['pool_identity'],raw_prices=df)
+                    values=inference_values(df,names,contract['source_cutoff'])
+                    scaler=model_bundle.get('scaler')
+                    inputs=scaler.transform(values) if scaler is not None else values
+                    output=df.loc[values.index,['ts_code','trade_date','close']].copy()
+                    output['prediction']=model_bundle['model'].predict(inputs)
+                    st.dataframe(output.reset_index(drop=True))
+                except ValueError:
+                    st.warning('模型与当前股票池、日期或特征契约不兼容，请使用对应的分析入口。')
+                return
             if model_bundle is not None:
                 model_obj = model_bundle.get('model')
                 feature_names = metadata.get('feature_names', []) if metadata else []

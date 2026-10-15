@@ -114,6 +114,17 @@ def _store_model_dir():
     return os.fspath(root)
 
 
+def resolve_model_path(metadata):
+    """Resolve a listed artifact in either controlled registry namespace."""
+    filename=metadata.get('model_file')
+    if not isinstance(filename,str) or os.path.basename(filename)!=filename or not filename.endswith('.pkl'):
+        raise ValueError('Invalid listed model filename')
+    candidate=Path(metadata.get('_artifact_path',Path(MODEL_DIR)/filename)).resolve()
+    allowed={(Path(root)/filename).resolve() for root in (MODEL_DIR,_store_model_dir())}
+    if candidate not in allowed:raise ValueError('Listed model escapes registry namespaces')
+    return os.fspath(candidate)
+
+
 def save_model(model_obj, metadata: dict, model_name: str = None) -> str:
     """
     保存模型和元数据到磁盘。

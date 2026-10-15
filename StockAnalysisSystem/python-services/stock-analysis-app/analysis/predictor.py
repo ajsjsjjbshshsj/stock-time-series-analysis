@@ -131,6 +131,8 @@ class StockPredictor:
         from analysis.pipeline import LABEL_COLUMNS, IDENTITY_COLUMNS
         names = feature_names or self.feature_names
         contract=df.attrs.get('feature_store_contract')
+        if (self.train_metadata or {}).get('storage_contract') and not contract:
+            raise ValueError('Model requires verified feature-store input contract')
         if contract:
             from analysis.feature_store_inputs import validate_model_inputs
             validate_model_inputs(self.train_metadata,contract,names,contract['pool_identity'],raw_prices=df)
@@ -146,9 +148,12 @@ class StockPredictor:
         result.loc[:, names] = values
         return result[np.isfinite(values.to_numpy(dtype=float)).all(axis=1)].sort_values('trade_date')
 
-    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2, allow_panel=False):
+    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2, allow_panel=False, calendar=None):
         """Date-bound alternative to legacy anonymous-array trainers; no save."""
         from analysis.strategy_samples import dated_samples, purged_splits
+        if df.attrs.get('feature_store_contract'):
+            from analysis.feature_store_inputs import validate_research_calendar
+            validate_research_calendar(df,calendar or df.attrs.get('strategy_calendar'))
         from xgboost import XGBClassifier, XGBRegressor
         if self.model_type not in ('xgboost', 'xgboost_regression'):
             raise ValueError('Unsupported dated trainer; legacy LSTM training is absent')

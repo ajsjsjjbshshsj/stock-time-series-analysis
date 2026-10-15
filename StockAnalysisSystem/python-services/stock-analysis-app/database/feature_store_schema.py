@@ -12,6 +12,7 @@ def table_ddl(table):
         '  trade_date DATE NOT NULL,\n'
         f'  {fields},\n'
         '  PRIMARY KEY (ts_code, trade_date),\n'
-        '  KEY idx_feature_date (trade_date)\n'
+        '  KEY idx_feature_date (trade_date),\n'
+        '  KEY idx_feature_build (build_id)\n'
         ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin'
     )

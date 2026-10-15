@@ -159,7 +159,7 @@ def run_analysis(df, stock_code="unknown"):
     logger.info("分析流程完成")
 
 
-def run_prediction(df, model_type='xgboost'):
+def run_prediction(df, model_type='xgboost', *, calendar=None):
     """
     执行预测流程
 
@@ -183,7 +183,7 @@ def run_prediction(df, model_type='xgboost'):
             raise ValueError('New feature-store research requires a supported dated trainer')
         from data_processor.feature_store_contract import FEATURE_COLUMNS
         from analysis.feature_store_inputs import inference_on_date
-        result=predictor.train_dated(df,feature_names=list(FEATURE_COLUMNS),horizon=1)
+        result=predictor.train_dated(df,feature_names=list(FEATURE_COLUMNS),horizon=1,calendar=calendar)
         result['model_path']=predictor.save_model(feature_names=list(FEATURE_COLUMNS))
         latest=inference_on_date(df,df.attrs['feature_store_contract']['source_cutoff'])
         usable=predictor.prepare_inference_frame(latest)
@@ -364,6 +364,7 @@ def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=F
     raw, selection = select_strategy_snapshot(raw, calendar, request_time, required_columns=required)
     featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
                                           n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
+    featured.attrs['strategy_calendar']=calendar
     from analysis.ranking_backtester import require_panel_coverage
     require_panel_coverage(featured, raw)
     result = train_ranking_model(featured, use_probe=use_probe, forward_days=forward_days, use_gpu=use_gpu)
@@ -590,7 +591,7 @@ def cmd_train(args, sector_list, index_list):
     if args.pipeline == 'traditional':
         # 原 demo 模式的训练部分：单股采集 → 处理 → 分析 → 训练
         logger.info("运行传统管线训练（单股 demo 流程）...")
-        init_database()
+        load_strategy_calendar(args.calendar)
 
         collector = DataCollector(use_tushare=args.use_tushare)
         end_date = datetime.now().strftime('%Y%m%d')
@@ -606,7 +607,7 @@ def cmd_train(args, sector_list, index_list):
         run_analysis(df_processed, args.stock)
         if args.backtest:
             return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
-        prediction_result = run_prediction(df_processed, args.model)
+        prediction_result = run_prediction(df_processed, args.model,calendar=load_strategy_calendar(args.calendar))
         save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
         logger.info("传统管线训练完成")
@@ -703,7 +704,7 @@ def cmd_predict(args, sector_list, index_list):
         load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
-        init_database()
+        load_strategy_calendar(args.calendar)
 
         if args.stock:
             # 单股预测（原 demo / predict / backtest 模式）
@@ -722,7 +723,7 @@ def cmd_predict(args, sector_list, index_list):
             run_analysis(df_processed, args.stock)
             if args.backtest:
                 return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
-            prediction_result = run_prediction(df_processed, args.model)
+            prediction_result = run_prediction(df_processed, args.model,calendar=load_strategy_calendar(args.calendar))
             save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
             logger.info("单股预测完成")
@@ -763,7 +764,8 @@ def cmd_predict(args, sector_list, index_list):
 
             if args.model not in ('xgboost','xgboost_regression'):
                 raise ValueError('New feature-store batch training requires a supported dated trainer')
-            train_result=predictor.train_dated(features_df,feature_names=available_features,horizon=1,allow_panel=True)
+            train_result=predictor.train_dated(features_df,feature_names=available_features,horizon=1,allow_panel=True,
+                                                calendar=load_strategy_calendar(args.calendar))
 
             if train_result is None:
                 logger.error("模型训练失败")
@@ -776,7 +778,8 @@ def cmd_predict(args, sector_list, index_list):
             logger.info(f"全市场预测排名 ({args.model})")
             logger.info(f"{'='*60}")
 
-            X_latest = latest[available_features].dropna()
+            from analysis.feature_store_inputs import inference_values
+            X_latest = inference_values(features_df,available_features,predictor_contract['source_cutoff'])
             if X_latest.empty:
                 logger.error("最新数据无有效特征")
                 return

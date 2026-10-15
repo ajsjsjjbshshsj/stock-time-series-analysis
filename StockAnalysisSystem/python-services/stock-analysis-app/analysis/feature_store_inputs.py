@@ -54,10 +54,15 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
             frame=frame.merge(extra,on=['ts_code','trade_date'],validate='one_to_one')
     frame['trade_date']=pd.to_datetime(frame.trade_date)
     contract=deepcopy(snapshot.metadata)
+    history=normalize_prices(getattr(snapshot,'source_history',snapshot.raw_prices))
+    history=history[history.trade_date<=raw.trade_date.max()].copy()
+    if set(history.ts_code)!=set(codes):raise ValueError('Missing feature dependency history')
     contract.update(pool_identity=identity,stock_codes=codes,pool_mapping_sha256=pool_identity(codes),
-                    source_prefix_start=str(raw.trade_date.min()),source_prefix_cutoff=str(raw.trade_date.max()),
-                    source_prefix_sha256=calculation_source_digest(raw))
+                    feature_history_start=snapshot.metadata['source_start'],
+                    source_prefix_start=str(history.trade_date.min()),source_prefix_cutoff=str(history.trade_date.max()),
+                    source_prefix_sha256=calculation_source_digest(history))
     frame.attrs['feature_store_contract']=contract
+    frame.attrs['feature_store_source_history']=history
     return frame,contract
 
 
@@ -77,6 +82,18 @@ def inference_on_date(frame,signal_date):
     return result
 
 
+def inference_values(frame,feature_names,signal_date):
+    from analysis.pipeline import sanitize_feature_columns
+    names=list(feature_names)
+    if not names or sanitize_feature_columns(names,frame.columns)!=names:
+        raise ValueError('Incomplete inference feature schema')
+    latest=inference_on_date(frame,signal_date)
+    values=latest[names].apply(pd.to_numeric,errors='raise')
+    if not np.isfinite(values.to_numpy(dtype=float)).all():
+        raise ValueError('Fixed pool includes immature or invalid features; members cannot be dropped')
+    return values
+
+
 def validate_model_inputs(model_metadata,feature_contract,feature_names,pool_identity,*,raw_prices=None):
     from analysis.pipeline import sanitize_feature_columns
     if not isinstance(model_metadata,dict) or not isinstance(feature_contract,dict) or feature_names is None:
@@ -84,7 +101,7 @@ def validate_model_inputs(model_metadata,feature_contract,feature_names,pool_ide
     names=list(feature_names)
     if not names or len(set(names))!=len(names) or sanitize_feature_columns(names)!=names:
         raise ValueError('Unsafe model feature order')
-    required=('storage_contract','algorithm_version','columns_sha256','code_sha256','pool_identity','pool_mapping_sha256')
+    required=('storage_contract','algorithm_version','columns_sha256','code_sha256','pool_identity','pool_mapping_sha256','feature_history_start')
     if (feature_contract.get('storage_contract')!=STORAGE_CONTRACT
             or any(not feature_contract.get(k) or model_metadata.get(k)!=feature_contract[k] for k in required)
             or model_metadata.get('feature_names')!=names or feature_contract.get('pool_identity')!=pool_identity
@@ -93,8 +110,22 @@ def validate_model_inputs(model_metadata,feature_contract,feature_names,pool_ide
     if model_metadata['source_sha256']!=feature_contract.get('source_sha256'):
         if raw_prices is None or not all(model_metadata.get(k) for k in ('source_prefix_start','source_prefix_cutoff','source_prefix_sha256')):
             raise ValueError('Model historical source prefix evidence required')
-        raw=normalize_prices(raw_prices)
+        raw=normalize_prices(raw_prices.attrs.get('feature_store_source_history',raw_prices))
+        supplied=normalize_prices(raw_prices)
+        matching=supplied[['ts_code','trade_date']].merge(raw,on=['ts_code','trade_date'],how='left',validate='one_to_one')
+        if not normalize_prices(matching).equals(supplied):
+            raise ValueError('Inference source differs from bound dependency history')
         prefix=raw[raw.trade_date.between(date_only(model_metadata['source_prefix_start']),date_only(model_metadata['source_prefix_cutoff']))]
         if prefix.empty or calculation_source_digest(prefix)!=model_metadata['source_prefix_sha256']:
             raise ValueError('Model historical source prefix changed')
     return True
+
+
+def validate_research_calendar(frame,calendar):
+    """Labels may not silently jump missing exchange sessions."""
+    from analysis.strategy_dates import validate_session_calendar
+    opened=validate_session_calendar(calendar)
+    for _,group in frame.groupby('ts_code'):
+        dates=sorted({str(date_only(d)) for d in group.trade_date})
+        if not dates or dates!=[d for d in opened if dates[0]<=d<=dates[-1]]:
+            raise ValueError('Research calendar/session coverage incomplete')

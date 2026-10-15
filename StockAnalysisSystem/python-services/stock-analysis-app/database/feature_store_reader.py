@@ -23,6 +23,7 @@ class FeatureSnapshot:
     frame: pd.DataFrame
     metadata: dict
     raw_prices: pd.DataFrame
+    source_history: pd.DataFrame
 
 
 def metadata_row(connection,build_id=None):
@@ -65,6 +66,8 @@ def validate_table(connection,table,build_id):
         raise FeatureStoreUnavailable('Feature table schema mismatch')
     identities=connection.execute(text(f'SELECT DISTINCT build_id FROM `{table}`')).scalars().all()
     if identities!=[build_id]:raise FeatureStoreUnavailable('Feature table publication identity mismatch')
+    if not any(index['column_names']==['build_id'] for index in schema.get_indexes(table)):
+        raise FeatureStoreUnavailable('Feature identity index missing')
 
 
 def stock_source(connection,code,meta):
@@ -92,10 +95,13 @@ def load_feature_snapshot(session,stock_codes=None,start_date=None,end_date=None
         codes=([s['ts_code'] for s in meta['source_manifest']['shards']] if stock_codes is None else list(stock_codes))
         if not codes or len(set(codes))!=len(codes):raise FeatureStoreUnavailable('Invalid requested feature pool')
         codes=sorted(validate_stock_code(c) for c in codes)
-        features=[];prices=[];evidence={};all_keys=set()
+        features=[];prices=[];histories=[];evidence={};all_keys=set()
         fields=','.join('`'+c+'`' for c in ('ts_code','trade_date',*FEATURE_COLUMNS))
         for code in codes:
             raw,proof=stock_source(connection,code,meta)
+            history=raw.copy()
+            for c in SOURCE_COLUMNS[2:]:history[c]=pd.to_numeric(history[c]).astype(float)
+            histories.append(history)
             raw=raw[raw.trade_date.between(start,end)].copy()
             rows=connection.execute(text(f'SELECT {fields} FROM `{CANONICAL_TABLE}` WHERE build_id=:id AND ts_code=:code AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),dict(id=meta['build_id'],code=code,start=start,end=end)).mappings().all()
             frame=pd.DataFrame(rows,columns=('ts_code','trade_date',*FEATURE_COLUMNS))
@@ -114,7 +120,7 @@ def load_feature_snapshot(session,stock_codes=None,start_date=None,end_date=None
         metadata={k:meta[k] for k in ('build_id','storage_contract','algorithm_version','columns_sha256','code_sha256','source_sha256')}
         metadata.update(source_start=str(meta['source_start']),source_cutoff=str(meta['source_cutoff']),
                         feature_names=list(FEATURE_COLUMNS),source_evidence=evidence)
-        return FeatureSnapshot(pd.concat(features,ignore_index=True),metadata,pd.concat(prices,ignore_index=True))
+        return FeatureSnapshot(pd.concat(features,ignore_index=True),metadata,pd.concat(prices,ignore_index=True),pd.concat(histories,ignore_index=True))
     except FeatureStoreUnavailable:raise
     except Exception:
         raise FeatureStoreUnavailable('Feature store unavailable; explicit operator verification required') from None

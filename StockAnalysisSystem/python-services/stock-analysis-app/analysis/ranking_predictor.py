@@ -22,6 +22,9 @@ def get_feature_columns(df):
 def train_ranking_model(panel_df, feature_names=None, use_probe=True,
                         probe_config=None, save_name=None, use_gpu=False,
                         forward_days=5, save_model=True):
+    if panel_df.attrs.get('feature_store_contract'):
+        from analysis.feature_store_inputs import validate_research_calendar
+        validate_research_calendar(panel_df,panel_df.attrs.get('strategy_calendar'))
     names = list(feature_names) if feature_names is not None else get_feature_columns(panel_df)
     samples = dated_samples(panel_df, names, horizon=forward_days, classification=False)
     groups = purged_splits(samples)
@@ -86,6 +89,8 @@ def load_ranking_bundle(model_path=None):
 
 def load_ranking_model(model_path=None):
     model, features, metadata = load_ranking_bundle(model_path)
+    if (metadata or {}).get('storage_contract'):
+        raise ValueError('New ranking model requires verified feature-store input contract')
     return model, features, (metadata or {}).get('metrics', {})
 
 

@@ -185,6 +185,8 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
 
 def load_stock_features_from_db(stock_codes=None, date_col='trade_date'):
     """Guarded default read. Unavailable data propagates, never triggers a build."""
+    from data_loader.market_data_repository import _to_db_code
+    stock_codes=None if stock_codes is None else [_to_db_code(c) for c in stock_codes]
     with DatabaseConnector(diagnostic=True) as db:
         with db.session_scope() as session:
             return repository.load_features_df(session,stock_codes,date_col)

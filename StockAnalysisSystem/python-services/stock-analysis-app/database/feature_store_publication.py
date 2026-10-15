@@ -92,9 +92,8 @@ def publish(db,build_id,rollback=False):
         connection.exec_driver_sql('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
         verify_build(connection,meta,incoming)
         connection.rollback()
-        renamed=False
         try:
-            rename_pair(connection,incoming,previous);renamed=True
+            rename_pair(connection,incoming,previous)
             connection.commit()
             with connection.begin():
                 connection.execute(text('UPDATE stock_feature_build SET active_slot=NULL WHERE active_slot=:slot'),dict(slot=ACTIVE_SLOT))
@@ -110,7 +109,19 @@ def publish(db,build_id,rollback=False):
                 return dict(build_id=build_id,published=True,reconciled_commit=True)
             if (current and (not previous or current['build_id']!=previous['build_id'])) or (previous and not current):
                 raise FeatureStoreUnavailable('Publication recovery requires operator inspection') from None
-            if renamed:restore_pair(connection,incoming,previous,build_id)
+            # RENAME can succeed while its acknowledgement/commit raises. Infer
+            # physical state under the *same still-owned* lock, never a flag set
+            # after a network acknowledgement that might not arrive.
+            if connection.execute(text('SELECT IS_USED_LOCK(:name)=CONNECTION_ID()'),dict(name=lock_name(db))).scalar_one()!=1:
+                raise FeatureStoreUnavailable('Publication lock lost; operator recovery required') from None
+            schema=inspect(connection)
+            if not schema.has_table(incoming):
+                restore_pair(connection,incoming,previous,build_id)
+            else:
+                validate_table(connection,incoming,build_id)
+                if previous:validate_table(connection,CANONICAL_TABLE,previous['build_id'])
+                elif schema.has_table(CANONICAL_TABLE):
+                    raise FeatureStoreUnavailable('Unknown physical publication state; operator recovery required') from None
             if not rollback:
                 connection.execute(text("UPDATE stock_feature_build SET state='FAILED',failure_code='PUBLICATION_FAILED' WHERE build_id=:id AND state='BUILDING' AND active_slot IS NULL"),dict(id=build_id))
                 connection.commit()
