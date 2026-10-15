@@ -104,3 +104,27 @@ def test_idle_worker_waits_bounded_time_until_quota_deadline(tmp_path):
     worker.sleep=sleep
     worker.run_forever()
     assert delays==[60]
+
+
+@pytest.mark.parametrize('returncode,stdout,expected',[
+    (10,'',False),
+    (1,'',None),
+    (0,'{"pid": 7, "started_at": "2026-10-11T09:00:00.0000000Z"}',
+       {'pid':7,'started_at':'2026-10-11T09:00:00.0000000Z'}),
+    (0,'',False),
+])
+def test_windows_probe_maps_explicit_absent_exit_code(monkeypatch,returncode,stdout,expected):
+    module=importlib.import_module('app.preparation.process_owner')
+    class Result: pass
+    result=Result(); result.returncode=returncode; result.stdout=stdout
+    monkeypatch.setattr(module.subprocess,'run',lambda *args,**kwargs:result)
+    monkeypatch.setattr(module.os,'name','nt')
+    assert module._process(7)==expected
+
+
+def test_confirmed_absent_owner_probe_allows_recovery(monkeypatch):
+    import socket
+    module=importlib.import_module('app.preparation.process_owner')
+    monkeypatch.setattr(module,'_process',lambda pid:False)
+    owner=dict(pid=101,host=socket.gethostname(),started_at='2026-10-11T09:00:00Z')
+    assert module.owner_alive(owner) is False
