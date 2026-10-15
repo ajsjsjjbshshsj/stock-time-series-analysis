@@ -16,27 +16,52 @@
 
     <div class="card section">
       <div class="card-title">analysis_result 表预览（{{ tsCode }}）</div>
-      <div class="card-sub">预测结果落库记录 · result 为 JSON 明细 · prediction / confidence 冗余存对应模型指标</div>
-      <DataTable :columns="resultColumns" :rows="results" row-key="id" />
+      <div class="card-sub">{{ live
+        ? '冻结模型发布落库摘要（V0.7 XGBoost · 下一交易日收盘收益率口径）· 只读呈现'
+        : '预测结果落库记录 · result 为 JSON 明细 · prediction / confidence 冗余存对应模型指标' }}</div>
+      <p v-if="loading" role="status">发布记录加载中…</p>
+      <p v-else-if="error" role="alert">{{ error }} <button class="btn btn-sm" @click="load(tsCode)">重试</button></p>
+      <DataTable v-else :columns="resultColumns" :rows="results" :row-key="rowKey" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import DataTable from '../../components/DataTable.vue'
 import Icon from '../../components/Icon.vue'
 import { getAnalysisResults } from '../../api/analysis.js'
+import { dataSource } from '../../api/client.js'
 import { fmtNum } from '../../utils/format.js'
+import { createGenerationGuard, returnPercent } from '../../utils/prediction.js'
 
 const props = defineProps({ tsCode: { type: String, required: true } })
 const results = ref([])
+const loading = ref(false)
+const error = ref('')
+const guard = createGenerationGuard()
 
-watch(() => props.tsCode, async (code) => {
-  results.value = await getAnalysisResults(code)
-}, { immediate: true })
+// hybrid 下 getAnalysisResults 返回的是发布摘要行（publication_id/model_id/…），
+// 与 mock 的 analysis_result 原始列（id/analysis_date/…）完全不同构，列必须切换。
+const live = computed(() => dataSource.value === 'hybrid')
 
-const resultColumns = [
+async function load(code) {
+  const run = guard.next()
+  loading.value = true; error.value = ''; results.value = []
+  try {
+    const rows = await getAnalysisResults(code, { signal: run.signal })
+    if (run.current()) results.value = rows
+  } catch (e) {
+    if (run.current() && e.name !== 'AbortError') error.value = e.message
+  } finally {
+    if (run.current()) loading.value = false
+  }
+}
+
+watch(() => [props.tsCode, dataSource.value], () => load(props.tsCode), { immediate: true })
+onBeforeUnmount(() => guard.cancel())
+
+const mockColumns = [
   { key: 'id', label: 'id', width: '60px', align: 'right', type: 'number', format: (v) => String(v) },
   { key: 'ts_code', label: 'ts_code', width: '96px' },
   { key: 'analysis_date', label: 'analysis_date', width: '104px' },
@@ -46,6 +71,18 @@ const resultColumns = [
   { key: 'confidence', label: 'confidence', width: '96px', align: 'right', type: 'number', format: (v) => fmtNum(v, 4) },
   { key: 'created_at', label: 'created_at', width: '150px' },
 ]
+const percent = (value) => value === null || value === undefined ? '暂无' : `${returnPercent(value).toFixed(4)}%`
+const liveColumns = [
+  { key: 'publication_id', label: '发布 ID', width: '76px', align: 'right', type: 'number', format: String },
+  { key: 'model_id', label: 'model_id', ellipsis: true },
+  { key: 'ts_code', label: '股票', width: '96px' },
+  { key: 'data_cutoff', label: '行情截止', width: '100px' },
+  { key: 'target', label: 'target', width: '210px', ellipsis: true },
+  { key: 'horizon', label: 'horizon', width: '74px', align: 'right', type: 'number', format: String },
+  { key: 'latest', label: '最新信号预测', width: '110px', align: 'right', format: (v) => v ? percent(v.predicted_return) : '暂无' },
+]
+const resultColumns = computed(() => (live.value ? liveColumns : mockColumns))
+const rowKey = computed(() => (live.value ? 'publication_id' : 'id'))
 </script>
 
 <style scoped>

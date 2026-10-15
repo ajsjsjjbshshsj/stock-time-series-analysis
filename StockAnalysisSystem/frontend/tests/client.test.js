@@ -61,3 +61,18 @@ test('real market allowlist accepts safe codes and query strings only', async ()
   const failing = createRequestClient({ mode: 'hybrid', fetchImpl: async () => { throw new TypeError('offline') } })
   await assert.rejects(failing(() => 'mock', '/api/analysis/stocks'), /无法连接/)
 })
+
+test('Transformer 冻结信号走精确白名单，训练/预测端点永远落演示数据', async () => {
+  const paths = []
+  const client = createRequestClient({ mode: 'hybrid', mockDelayMs: 0, fetchImpl: async (path) => { paths.push(path); return { ok: true, json: async () => 'live' } } })
+  // 只读信号端点（含 ?date）接入真实后端
+  assert.equal(await client(() => 'mock', '/api/analysis/transformer/signals'), 'live')
+  assert.equal(await client(() => 'mock', '/api/analysis/transformer/signals?date=2026-10-08'), 'live')
+  // 红线：训练面板的 configs/train/predict 以及任何形近路径绝不放行
+  for (const path of ['/api/analysis/transformer/configs', '/api/analysis/transformer/train',
+    '/api/analysis/transformer/predict', '/api/analysis/transformer/signals/x',
+    '/api/analysis/transformer/signals-extra']) {
+    assert.equal(await client(() => 'mock', path), 'mock', path)
+  }
+  assert.deepEqual(paths, ['/api/analysis/transformer/signals', '/api/analysis/transformer/signals?date=2026-10-08'])
+})

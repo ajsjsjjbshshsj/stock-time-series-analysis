@@ -100,7 +100,8 @@
 <script setup>
 /**
  * 用户端入口页（/#/user）：与调试端布局完全隔离（见 App.vue 的 isUserApp 分支）。
- * - 只提供精简核心功能：股票模糊搜索 + 综合概览 / 模型预测 / 风险提示（复用调试端分析组件）
+ * - 只提供精简核心功能：股票模糊搜索 + 市场概览 / 综合概览 / 技术指标 / 统计分析 / 多股对比 / 模型预测 / Transformer 信号 / 风险提示
+ * - Transformer 信号为冻结模型封存产物的只读呈现，客户端绝不暴露任何训练/触发计算能力
  * - 不暴露数据模式切换（dataSource 仍由 localStorage / VITE_DATA_SOURCE 决定，演示模式顶部有角标提示）
  * - 股票池加载逻辑与 AnalysisView 相同：AbortController + generation guard 防过期响应
  */
@@ -110,6 +111,7 @@ import StockSearch from '../components/StockSearch.vue'
 import AnalysisOverview from './analysis/AnalysisOverview.vue'
 import AnalysisPrediction from './analysis/AnalysisPrediction.vue'
 import AnalysisRisk from './analysis/AnalysisRisk.vue'
+import AnalysisTransformerSignals from './analysis/AnalysisTransformerSignals.vue'
 import UserTechnical from './user/UserTechnical.vue'
 import UserStats from './user/UserStats.vue'
 import UserCompare from './user/UserCompare.vue'
@@ -127,6 +129,7 @@ const TABS = [
   { key: 'stats', label: '统计分析', comp: UserStats },
   { key: 'compare', label: '多股对比', comp: UserCompare },
   { key: 'prediction', label: '模型预测', comp: AnalysisPrediction },
+  { key: 'transformer', label: 'Transformer 信号', comp: AnalysisTransformerSignals },
   { key: 'risk', label: '风险提示', comp: AnalysisRisk },
 ]
 
