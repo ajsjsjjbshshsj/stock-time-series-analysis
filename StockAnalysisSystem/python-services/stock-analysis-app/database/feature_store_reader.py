@@ -103,6 +103,8 @@ def load_feature_snapshot(session,stock_codes=None,start_date=None,end_date=None
             for c in SOURCE_COLUMNS[2:]:history[c]=pd.to_numeric(history[c]).astype(float)
             histories.append(history)
             raw=raw[raw.trade_date.between(start,end)].copy()
+            reference=connection.execute(text('SELECT industry,name FROM stock_basic WHERE ts_code=:code'),dict(code=code)).mappings().one()
+            raw['industry']=reference['industry'];raw['name']=reference['name']
             rows=connection.execute(text(f'SELECT {fields} FROM `{CANONICAL_TABLE}` WHERE build_id=:id AND ts_code=:code AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),dict(id=meta['build_id'],code=code,start=start,end=end)).mappings().all()
             frame=pd.DataFrame(rows,columns=('ts_code','trade_date',*FEATURE_COLUMNS))
             keys=set(zip(raw.ts_code,raw.trade_date))

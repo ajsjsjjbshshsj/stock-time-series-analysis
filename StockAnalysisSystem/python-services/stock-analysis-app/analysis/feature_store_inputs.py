@@ -66,10 +66,24 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
         raise ValueError('Feature input identity/schema mismatch')
     frame=frame.merge(raw,on=['ts_code','trade_date'],how='inner',validate='one_to_one')
     # Optional sector/name columns belong to a selected pool, never global storage.
+    references=snapshot.raw_prices
+    industry_mapping={code:None for code in codes}
     for c in ('industry','name','股票名称'):
-        if c in raw_prices:
-            extra=raw_prices[['ts_code','trade_date',c]].copy()
+        if c in references:
+            extra=references[['ts_code','trade_date',c]].copy()
             extra['trade_date']=[date_only(v) for v in extra.trade_date]
+            if c=='industry':
+                extra[c]=extra[c].map(lambda v:None if pd.isna(v) else str(v))
+                if c in raw_prices:
+                    supplied=raw_prices[['ts_code','trade_date',c]].copy()
+                    supplied['trade_date']=[date_only(v) for v in supplied.trade_date]
+                    supplied[c]=supplied[c].map(lambda v:None if pd.isna(v) else str(v))
+                    if not supplied.sort_values(['ts_code','trade_date']).reset_index(drop=True).equals(extra.sort_values(['ts_code','trade_date']).reset_index(drop=True)):
+                        raise ValueError('Caller industry differs from verified master reference')
+                for code,group in extra.groupby('ts_code'):
+                    values=group[c].drop_duplicates().tolist()
+                    if len(values)!=1:raise ValueError('Expected one current master industry per stock')
+                    industry_mapping[code]=values[0]
             frame=frame.merge(extra,on=['ts_code','trade_date'],validate='one_to_one')
     frame['trade_date']=pd.to_datetime(frame.trade_date)
     contract=deepcopy(snapshot.metadata)
@@ -78,6 +92,8 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
     if set(history.ts_code)!=set(codes):raise ValueError('Missing feature dependency history')
     contract.update(pool_identity=identity,stock_codes=codes,stockid2idx=mapping,
                     pool_mapping_sha256=hashlib.sha256(canonical_bytes(mapping)).hexdigest(),
+                    industry_mapping=industry_mapping,reference_basis='stock_basic_current_snapshot',
+                    reference_sha256=hashlib.sha256(canonical_bytes(industry_mapping)).hexdigest(),
                     feature_history_start=snapshot.metadata['source_start'],
                     source_prefix_start=str(history.trade_date.min()),source_prefix_cutoff=str(history.trade_date.max()),
                     source_prefix_sha256=calculation_source_digest(history))
@@ -122,7 +138,7 @@ def validate_model_inputs(model_metadata,feature_contract,feature_names,pool_ide
     names=list(feature_names)
     if not names or len(set(names))!=len(names) or sanitize_feature_columns(names)!=names:
         raise ValueError('Unsafe model feature order')
-    required=('storage_contract','algorithm_version','columns_sha256','code_sha256','pool_identity','pool_mapping_sha256','feature_history_start')
+    required=('storage_contract','algorithm_version','columns_sha256','code_sha256','pool_identity','pool_mapping_sha256','feature_history_start','reference_sha256','reference_basis')
     if (feature_contract.get('storage_contract')!=STORAGE_CONTRACT
             or any(not feature_contract.get(k) or model_metadata.get(k)!=feature_contract[k] for k in required)
             or model_metadata.get('feature_names')!=names or feature_contract.get('pool_identity')!=pool_identity

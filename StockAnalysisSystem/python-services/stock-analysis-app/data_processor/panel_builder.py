@@ -619,15 +619,11 @@ def compute_cross_sectional_features(
 
     # ── 行业 Z-Score ──────────────────────────────────────────────────────────
     if has_industry:
-        df['return_zscore_industry'] = (
-            df.groupby([date_column, industry_column])[FEAT_RETURN_1D]
-            .transform(lambda x: (x - x.mean()) / x.std().replace(0, np.nan))
-        )
+        returns=df.groupby([date_column,industry_column])[FEAT_RETURN_1D]
+        df['return_zscore_industry']=(df[FEAT_RETURN_1D]-returns.transform('mean'))/returns.transform('std').replace(0,np.nan)
         if 'volatility_20d' in df.columns:
-            df['volatility_zscore_industry'] = (
-                df.groupby([date_column, industry_column])['volatility_20d']
-                .transform(lambda x: (x - x.mean()) / x.std().replace(0, np.nan))
-            )
+            volatilities=df.groupby([date_column,industry_column])['volatility_20d']
+            df['volatility_zscore_industry']=(df['volatility_20d']-volatilities.transform('mean'))/volatilities.transform('std').replace(0,np.nan)
 
     # 清理 inf
     new_cols = set(df.columns) - new_cols_before
