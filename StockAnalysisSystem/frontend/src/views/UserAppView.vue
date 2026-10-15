@@ -48,7 +48,36 @@
           <div class="stock-tags muted">
             {{ current.industry }} · {{ current.area }} · 上市 {{ current.list_date }}
           </div>
+          <button
+            class="fav-btn" :class="{ active: watchlist.has(tsCode) }"
+            :aria-pressed="watchlist.has(tsCode)"
+            :title="watchlist.has(tsCode) ? '从自选股移除' : '加入自选股（保存在本机浏览器）'"
+            @click="watchlist.toggle(tsCode)"
+          >
+            <Icon name="star" />
+            {{ watchlist.has(tsCode) ? '已自选' : '加自选' }}
+          </button>
         </section>
+
+        <UserValuation :ts-code="tsCode" />
+
+        <section v-if="watchItems.length" class="watch-bar" aria-label="自选股快速切换">
+          <span class="watch-label"><Icon name="star" />自选股</span>
+          <span
+            v-for="w in watchItems" :key="w.ts_code"
+            class="watch-chip" :class="{ active: w.ts_code === tsCode }"
+          >
+            <button class="chip-main" @click="tsCode = w.ts_code">
+              {{ w.name }}<code class="num">{{ w.symbol }}</code>
+            </button>
+            <button class="chip-x" :aria-label="`从自选股移除 ${w.name}`" @click="watchlist.remove(w.ts_code)">
+              <Icon name="x" />
+            </button>
+          </span>
+        </section>
+        <p v-else class="watch-hint muted">
+          小提示：点股票信息卡右侧「加自选」，可把常看的股票收藏在本机浏览器，随时一键切换
+        </p>
 
         <div class="tabs">
           <button
@@ -58,7 +87,7 @@
           >{{ t.label }}</button>
         </div>
 
-        <component :is="activeComponent" :ts-code="tsCode" />
+        <component :is="activeComponent" :ts-code="tsCode" @pick="onPick" />
       </template>
     </main>
 
@@ -71,7 +100,7 @@
 <script setup>
 /**
  * 用户端入口页（/#/user）：与调试端布局完全隔离（见 App.vue 的 isUserApp 分支）。
- * - 只提供精简核心功能：股票模糊搜索 + 综合概览 / 模型预测 / Transformer 信号 / 风险提示（复用调试端分析组件）
+ * - 只提供精简核心功能：股票模糊搜索 + 市场概览 / 综合概览 / 技术指标 / 统计分析 / 多股对比 / 模型预测 / Transformer 信号 / 风险提示
  * - Transformer 信号为冻结模型封存产物的只读呈现，客户端绝不暴露任何训练/触发计算能力
  * - 不暴露数据模式切换（dataSource 仍由 localStorage / VITE_DATA_SOURCE 决定，演示模式顶部有角标提示）
  * - 股票池加载逻辑与 AnalysisView 相同：AbortController + generation guard 防过期响应
@@ -83,18 +112,29 @@ import AnalysisOverview from './analysis/AnalysisOverview.vue'
 import AnalysisPrediction from './analysis/AnalysisPrediction.vue'
 import AnalysisRisk from './analysis/AnalysisRisk.vue'
 import AnalysisTransformerSignals from './analysis/AnalysisTransformerSignals.vue'
+import UserTechnical from './user/UserTechnical.vue'
+import UserStats from './user/UserStats.vue'
+import UserCompare from './user/UserCompare.vue'
+import UserMarket from './user/UserMarket.vue'
+import UserValuation from './user/UserValuation.vue'
 import { dataSource } from '../api/client.js'
 import { getStockPool } from '../api/analysis.js'
 import { useThemeStore } from '../stores/theme.js'
+import { useWatchlistStore } from '../stores/watchlist.js'
 
 const TABS = [
+  { key: 'market', label: '市场概览', comp: UserMarket },
   { key: 'overview', label: '综合概览', comp: AnalysisOverview },
+  { key: 'technical', label: '技术指标', comp: UserTechnical },
+  { key: 'stats', label: '统计分析', comp: UserStats },
+  { key: 'compare', label: '多股对比', comp: UserCompare },
   { key: 'prediction', label: '模型预测', comp: AnalysisPrediction },
   { key: 'transformer', label: 'Transformer 信号', comp: AnalysisTransformerSignals },
   { key: 'risk', label: '风险提示', comp: AnalysisRisk },
 ]
 
 const theme = useThemeStore()
+const watchlist = useWatchlistStore()
 const live = computed(() => dataSource.value === 'hybrid')
 
 const pool = ref([])
@@ -107,6 +147,17 @@ let controller
 let generation = 0
 
 const current = computed(() => pool.value.find((s) => s.ts_code === tsCode.value))
+
+// 自选股 → 池内完整信息（不在当前池中的收藏自动隐藏，如 live/mock 池切换后）
+const watchItems = computed(() =>
+  watchlist.codes.map((c) => pool.value.find((s) => s.ts_code === c)).filter(Boolean))
+
+// 市场概览排行榜点股 → 切换主选股并跳到综合概览（池外代码忽略，防止 current 为空）
+function onPick(code) {
+  if (!pool.value.some((s) => s.ts_code === code)) return
+  tsCode.value = code
+  activeTab.value = 'overview'
+}
 
 watch(activeTab, () => {
   activeComponent.value = TABS.find((t) => t.key === activeTab.value)?.comp || AnalysisOverview
@@ -269,7 +320,7 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
 /* ── 股票信息卡 ───────────────────────────────── */
 .stock-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
@@ -296,6 +347,119 @@ onBeforeUnmount(() => { generation++; controller?.abort() })
 
 .stock-tags {
   font-size: 12.5px;
+}
+
+/* ── 收藏与自选股 ─────────────────────────────── */
+.fav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fav-btn:hover {
+  color: var(--text-1);
+  border-color: var(--border-strong);
+}
+
+.fav-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.fav-btn.active {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: rgba(250, 178, 25, 0.1);
+  font-weight: 650;
+}
+
+.watch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.watch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.watch-label svg {
+  width: 13px;
+  height: 13px;
+  color: var(--warning);
+}
+
+.watch-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.watch-chip.active {
+  border-color: var(--accent);
+}
+
+.chip-main {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 4px 5px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.chip-main code {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.watch-chip.active .chip-main {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.chip-x {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.chip-x:hover {
+  color: var(--critical);
+}
+
+.chip-x svg {
+  width: 11px;
+  height: 11px;
+}
+
+.watch-hint {
+  font-size: 11.5px;
+  margin-bottom: 14px;
 }
 
 /* ── 页脚 ─────────────────────────────────────── */

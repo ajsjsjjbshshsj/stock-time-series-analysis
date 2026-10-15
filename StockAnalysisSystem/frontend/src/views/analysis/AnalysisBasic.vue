@@ -47,7 +47,11 @@ const dailyColumns = [
 ]
 
 watch(() => props.tsCode, async (code) => {
-  const [kline, b] = await Promise.all([getKline(code), getDailyBasicRow(code)])
+  const [kline, b] = await Promise.all([
+    getKline(code),
+    // live 下该股无估值行时后端回 404：静默降级为空对象（模板 v-if="basic.ts_code" 隐藏网格）
+    getDailyBasicRow(code).catch(() => ({})),
+  ])
   rows.value = [...kline.bars].reverse().slice(0, 30)
   basic.value = b
 }, { immediate: true })

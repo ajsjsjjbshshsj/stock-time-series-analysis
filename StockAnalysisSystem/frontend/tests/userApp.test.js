@@ -71,12 +71,67 @@ test('debug AnalysisView keeps its nine tabs and search integration', async () =
   }
 })
 
-/* ── 5. 用户端第 4 tab：Transformer 冻结信号（只读呈现） ── */
+/* ── 5. 用户端功能丰富：本地计算新页签 + 自选股 + 多股对比 ── */
+test('user app gains local-compute tabs and local-only watchlist', async () => {
+  const view = await read('../src/views/UserAppView.vue')
+  // 三个新用户端组件按 tab 挂载
+  for (const comp of ['UserTechnical', 'UserStats', 'UserCompare']) {
+    assert.match(view, new RegExp(`import ${comp} from '\\./user/${comp}\\.vue'`))
+  }
+  for (const label of ['技术指标', '统计分析', '多股对比']) assert.match(view, new RegExp(label))
+  // 自选股：本地 store + 星标按钮 + 快速切换条；仍不暴露数据模式切换
+  assert.match(view, /useWatchlistStore/)
+  assert.match(view, /watchlist\.toggle\(tsCode\)/)
+  assert.match(view, /fav-btn/)
+  assert.match(view, /watch-chip/)
+  assert.match(view, /name="star"/)
+  assert.doesNotMatch(view, /setDataSource/)
+
+  const store = await read('../src/stores/watchlist.js')
+  assert.match(store, /sas-watchlist/) // 本地存储键
+  assert.match(store, /STOCK_CODE/) // 代码校验
+  assert.match(store, /MAX_ITEMS/) // 收藏上限
+  assert.match(store, /function toggle/)
+
+  const icon = await read('../src/components/Icon.vue')
+  assert.match(icon, /name === 'star'/)
+})
+
+test('user technical and stats panels compute locally from kline', async () => {
+  const tech = await read('../src/views/user/UserTechnical.vue')
+  // 数据流：getKline → computeIndicators 本地计算，不依赖 8083 indicators（ClickHouse 未部署时 503）
+  assert.match(tech, /getKline/)
+  assert.match(tech, /computeIndicators/)
+  assert.doesNotMatch(tech, /getIndicatorSeries/)
+  assert.match(tech, /createGenerationGuard/)
+  assert.match(tech, /settleDetailRequest/)
+  for (const p of ['MACD', 'RSI', 'KDJ', 'BOLL', '量能']) assert.match(tech, new RegExp(p))
+  assert.match(tech, /不构成投资建议/)
+
+  const stats = await read('../src/views/user/UserStats.vue')
+  assert.match(stats, /getKline/)
+  assert.match(stats, /computeIndicators/)
+  assert.match(stats, /computeStatistics/)
+  // 不走 API 层的 getStatisticalAnalysis：hybrid 下该路径不在白名单，会静默落到演示数据
+  assert.doesNotMatch(stats, /getStatisticalAnalysis/)
+  assert.match(stats, /createGenerationGuard/)
+})
+
+test('user compare aligns common window and caps at four stocks', async () => {
+  const cmp = await read('../src/views/user/UserCompare.vue')
+  assert.match(cmp, /const MAX = 4/)
+  assert.match(cmp, /getKline/)
+  assert.match(cmp, /computeStatistics/)
+  assert.match(cmp, /commonDates/) // 共同交易日交集对齐
+  assert.match(cmp, /<StockSearch/)
+  assert.match(cmp, /getStockPoolCached/) // 模块级池缓存（api 层共享），live 大池只拉一次
+})
+
+/* ── 6. 用户端 Transformer 冻结信号 tab（只读呈现） ── */
 test('UserAppView adds the read-only transformer signals tab', async () => {
   const view = await read('../src/views/UserAppView.vue')
   assert.match(view, /import AnalysisTransformerSignals from '\.\/analysis\/AnalysisTransformerSignals\.vue'/)
   assert.match(view, /key: 'transformer', label: 'Transformer 信号', comp: AnalysisTransformerSignals/)
-  // 原三个 tab 与后台端 9 tab 断言均不受影响（见上方两个测试）
   const signals = await read('../src/views/analysis/AnalysisTransformerSignals.vue')
   // 红线：只读呈现层绝不引用训练/触发计算端点
   assert.match(signals, /getTransformerSignals/)

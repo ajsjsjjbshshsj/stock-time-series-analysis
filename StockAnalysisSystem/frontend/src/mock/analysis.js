@@ -8,6 +8,7 @@ import {
   STOCK_POOL, FIXED_TODAY, getBars, getIndicators,
   mulberry32, hashSeed,
 } from './generator.js'
+import { computeStatistics } from '../utils/indicators.js'
 
 /* ── v1(生成器内部名) → v2(数据库列名) 映射 ─────────────── */
 
@@ -144,103 +145,9 @@ export function getFeatureRows(tsCode, limit = 30) {
 
 /* ── 统计分析 ───────────────────────────────────────────── */
 
-function quantile(sorted, q) {
-  const pos = (sorted.length - 1) * q
-  const lo = Math.floor(pos), hi = Math.ceil(pos)
-  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo)
-}
-
-function pearson(x, y) {
-  const pairs = x.map((v, i) => [v, y[i]]).filter(([a, b]) => a != null && b != null && !isNaN(a) && !isNaN(b))
-  const n = pairs.length
-  if (n < 3) return 0
-  const mx = pairs.reduce((a, p) => a + p[0], 0) / n
-  const my = pairs.reduce((a, p) => a + p[1], 0) / n
-  let sxy = 0, sxx = 0, syy = 0
-  for (const [a, b] of pairs) { sxy += (a - mx) * (b - my); sxx += (a - mx) ** 2; syy += (b - my) ** 2 }
-  return sxx && syy ? sxy / Math.sqrt(sxx * syy) : 0
-}
-
-const CORR_FEATURES = ['return_1d', 'rsi', 'macd_dif', 'kdj_k', 'bias20', 'cci20', 'volatility_20d', 'volume_ratio', 'mfi14', 'turnover_rate_5']
-
+// 统计计算内核在 utils/indicators.js（computeStatistics），此处为 mock 薄壳
 export function getStatisticalAnalysis(tsCode) {
-  const bars = getBars(tsCode)
-  const feats = getIndicators(tsCode).map(toV2Row)
-  const rets = feats.map((f) => (f.return_1d == null ? null : f.return_1d * 100)).filter((v) => v != null)
-  const sorted = [...rets].sort((a, b) => a - b)
-  const mean = rets.reduce((a, b) => a + b, 0) / rets.length
-  const std = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length)
-  const m3 = rets.reduce((a, b) => a + ((b - mean) / std) ** 3, 0) / rets.length
-  const m4 = rets.reduce((a, b) => a + ((b - mean) / std) ** 4, 0) / rets.length - 3
-
-  // 直方图（24 桶）
-  const min = sorted[0], max = sorted[sorted.length - 1]
-  const binW = (max - min) / 24
-  const bins = Array.from({ length: 24 }, (_, i) => ({
-    range: +(min + i * binW).toFixed(2),
-    count: 0,
-  }))
-  for (const r of rets) {
-    const idx = Math.min(23, Math.floor((r - min) / binW))
-    bins[idx].count++
-  }
-
-  // 回撤曲线
-  let peak = -Infinity, maxDd = 0, maxDdDate = null
-  const drawdown = bars.map((b) => {
-    peak = Math.max(peak, b.close)
-    const dd = ((b.close - peak) / peak) * 100
-    if (dd < maxDd) { maxDd = dd; maxDdDate = b.trade_date }
-    return { date: b.trade_date, value: +dd.toFixed(2) }
-  })
-
-  // 滚动波动率（年化 %）
-  const roll = (w) => feats.map((f, i) => {
-    if (i < w) return null
-    const win = rets.slice(i - w, i)
-    const m = win.reduce((a, b) => a + b, 0) / w
-    return +(Math.sqrt(win.reduce((a, b) => a + (b - m) ** 2, 0) / w) * Math.sqrt(252)).toFixed(2)
-  })
-  const volatility = {
-    dates: bars.map((b) => b.trade_date),
-    vol20: roll(20), vol60: roll(60), vol120: roll(120),
-  }
-
-  // 相关性热力图
-  const corr = CORR_FEATURES.map((f1) =>
-    CORR_FEATURES.map((f2) => +pearson(feats.map((r) => r[f1]), feats.map((r) => r[r && f2])).toFixed(2)),
-  )
-
-  // 趋势（近 60 日线性回归）
-  const win = bars.slice(-60)
-  const n = win.length
-  const xs = win.map((_, i) => i)
-  const ys = win.map((b) => b.close)
-  const mx = xs.reduce((a, b) => a + b, 0) / n
-  const my = ys.reduce((a, b) => a + b, 0) / n
-  let sxy = 0, sxx = 0, syy = 0
-  for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2 }
-  const slope = sxy / sxx
-  const r2 = (sxy * sxy) / (sxx * syy)
-  const slopePct = (slope / my) * 100
-
-  return {
-    descriptive: {
-      mean: +mean.toFixed(4), std: +std.toFixed(4),
-      min: +min.toFixed(4), q25: +quantile(sorted, 0.25).toFixed(4),
-      q50: +quantile(sorted, 0.5).toFixed(4), q75: +quantile(sorted, 0.75).toFixed(4),
-      max: +max.toFixed(4), skewness: +m3.toFixed(4), kurtosis: +m4.toFixed(4),
-    },
-    histogram: bins,
-    drawdown: { series: drawdown, max_drawdown: +maxDd.toFixed(2), max_drawdown_date: maxDdDate },
-    volatility,
-    correlation: { features: CORR_FEATURES, matrix: corr },
-    trend: {
-      slope: +slopePct.toFixed(4), r_squared: +r2.toFixed(4),
-      direction: slopePct > 0.05 ? 'up' : slopePct < -0.05 ? 'down' : 'flat',
-      window: 60,
-    },
-  }
+  return computeStatistics(getBars(tsCode), getIndicators(tsCode))
 }
 
 /* ── 模型注册表（对齐 model_registry.py 元数据 + 各评估器指标） ── */
@@ -485,6 +392,46 @@ export function getRanking() {
     rows,
     model_eval: { RMSE: 0.0271, Direction_Accuracy: 0.5724 },
     params: { train_window: 365, rebalance_days: 5 },
+  }
+}
+
+/* ── 市场概览：最新交易日（FIXED_TODAY）全池聚合，契约与 8083 /market/overview 一致 ── */
+
+export function getMarketOverview() {
+  const rows = STOCK_POOL.map((s) => {
+    const bars = getBars(s.ts_code)
+    const bar = bars[bars.length - 1]
+    return {
+      ts_code: s.ts_code, name: s.name, industry: s.industry,
+      close: bar.close, pct_chg: bar.pct_chg ?? 0, amount: bar.amount ?? 0,
+    }
+  })
+  const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0)
+  const up = rows.filter((r) => r.pct_chg > 0).length
+  const down = rows.filter((r) => r.pct_chg < 0).length
+
+  const byIndustry = new Map()
+  for (const r of rows) {
+    if (!r.industry) continue
+    if (!byIndustry.has(r.industry)) byIndustry.set(r.industry, [])
+    byIndustry.get(r.industry).push(r.pct_chg)
+  }
+  const industries = [...byIndustry.entries()]
+    .map(([industry, list]) => ({ industry, count: list.length, avg_pct_chg: +mean(list).toFixed(4) }))
+    .sort((a, b) => b.avg_pct_chg - a.avg_pct_chg)
+
+  const sorted = [...rows].sort((a, b) => b.pct_chg - a.pct_chg || a.ts_code.localeCompare(b.ts_code))
+  return {
+    trade_date: FIXED_TODAY,
+    total: rows.length,
+    up_count: up,
+    down_count: down,
+    flat_count: rows.length - up - down,
+    avg_pct_chg: +mean(rows.map((r) => r.pct_chg)).toFixed(4),
+    total_amount: +rows.reduce((a, r) => a + r.amount, 0).toFixed(2), // 千元
+    industries,
+    top_stocks: sorted.slice(0, 10),
+    bottom_stocks: sorted.slice(-10).reverse(),
   }
 }
 
