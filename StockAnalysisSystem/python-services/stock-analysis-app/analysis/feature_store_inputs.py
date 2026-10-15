@@ -1,12 +1,27 @@
 """Source-bound research inputs, with labels separate from inference features."""
 from copy import deepcopy
+from dataclasses import dataclass,field
 import hashlib
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from data_processor.feature_store_contract import FEATURE_COLUMNS,STORAGE_CONTRACT,date_only,validate_stock_code
 from data_processor.feature_store_source import SOURCE_COLUMNS,canonical_bytes
+
+
+@dataclass(frozen=True)
+class DependencyHistory:
+    """Immutable Arrow transport: pandas attrs can copy/compare it cheaply."""
+    table: pa.Table=field(compare=False,repr=False)
+    sha256: str
+
+    def __deepcopy__(self,memo):
+        return self
+
+    def to_frame(self):
+        return self.table.to_pandas()
 
 
 def normalize_prices(frame):
@@ -62,7 +77,8 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
                     source_prefix_start=str(history.trade_date.min()),source_prefix_cutoff=str(history.trade_date.max()),
                     source_prefix_sha256=calculation_source_digest(history))
     frame.attrs['feature_store_contract']=contract
-    frame.attrs['feature_store_source_history']=history
+    frame.attrs['feature_store_source_history']=DependencyHistory(
+        pa.Table.from_pandas(history,preserve_index=False),contract['source_prefix_sha256'])
     return frame,contract
 
 
@@ -110,7 +126,10 @@ def validate_model_inputs(model_metadata,feature_contract,feature_names,pool_ide
     if model_metadata['source_sha256']!=feature_contract.get('source_sha256'):
         if raw_prices is None or not all(model_metadata.get(k) for k in ('source_prefix_start','source_prefix_cutoff','source_prefix_sha256')):
             raise ValueError('Model historical source prefix evidence required')
-        raw=normalize_prices(raw_prices.attrs.get('feature_store_source_history',raw_prices))
+        dependency=raw_prices.attrs.get('feature_store_source_history')
+        if dependency is not None and not isinstance(dependency,DependencyHistory):
+            raise ValueError('Invalid dependency history transport')
+        raw=normalize_prices(dependency.to_frame() if dependency is not None else raw_prices)
         supplied=normalize_prices(raw_prices)
         matching=supplied[['ts_code','trade_date']].merge(raw,on=['ts_code','trade_date'],how='left',validate='one_to_one')
         if not normalize_prices(matching).equals(supplied):
