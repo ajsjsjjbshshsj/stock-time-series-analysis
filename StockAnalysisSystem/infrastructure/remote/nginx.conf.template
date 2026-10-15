@@ -1,0 +1,74 @@
+# Linux host-network gateway. All upstreams remain on loopback.
+server {
+    listen 443 ssl;
+    server_name ${SERVER_NAME};
+    ssl_certificate /run/tls/server.crt;
+    ssl_certificate_key /run/tls/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    server_tokens off;
+    client_max_body_size 16k;
+    root /srv/frontend;
+    index index.html;
+    add_header Strict-Transport-Security 'max-age=31536000' always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" always;
+
+    location = /_auth {
+        internal;
+        proxy_pass ${AUTH_UPSTREAM}/api/auth/check;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length '';
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Auth-Client-IP $remote_addr;
+    }
+    location = /_admin_auth {
+        internal;
+        proxy_pass ${AUTH_UPSTREAM}/api/auth/check-admin;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length '';
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Auth-Client-IP $remote_addr;
+    }
+    location = /api/auth/readiness { return 404; }
+    location ~ ^/api/auth/(session|login|logout|password)$ {
+        proxy_pass ${AUTH_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Auth-Client-IP $remote_addr;
+    }
+    location /api/auth/ { return 404; }
+    location /api/admin/ {
+        auth_request /_admin_auth;
+        proxy_pass ${AUTH_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Auth-Client-IP $remote_addr;
+    }
+    location = /api/analysis/stocks {
+        auth_request /_auth;
+        proxy_pass ${MARKET_UPSTREAM};
+    }
+    location = /api/analysis/market/overview {
+        auth_request /_auth;
+        proxy_pass ${MARKET_UPSTREAM};
+    }
+    location ~ "^/api/analysis/(kline|indicators|daily-basic)/[0-9]{6}\.(SZ|SH|BJ)$" {
+        auth_request /_auth;
+        proxy_pass ${MARKET_UPSTREAM};
+    }
+    location /api/analysis/ {
+        auth_request /_auth;
+        proxy_pass ${AUTH_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Auth-Client-IP $remote_addr;
+    }
+    location /api/consumer/ {
+        auth_request /_admin_auth;
+        proxy_pass ${CONSUMER_UPSTREAM};
+    }
+    location = /actuator/health {
+        auth_request /_admin_auth;
+        proxy_pass ${CONSUMER_UPSTREAM};
+    }
+    location /api/ { return 404; }
+    location / { try_files $uri $uri/ /index.html; }
+}

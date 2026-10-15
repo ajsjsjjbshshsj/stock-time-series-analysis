@@ -1,6 +1,12 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { authState, restoreAuth, invalidateAuth } from '../stores/auth.js'
+import { authorizeRoute } from '../utils/access.js'
+import { setUserContext } from '../api/client.js'
 
 const routes = [
+  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { standalone: true } },
+  { path: '/password', name: 'password', component: () => import('../views/LoginView.vue'), meta: { standalone: true } },
+  { path: '/accounts', name: 'accounts', component: () => import('../views/admin/AccountsView.vue'), meta: { title: '账户管理', icon: 'users', adminOnly: true } },
   { path: '/', redirect: '/overview' },
   {
     path: '/overview',
@@ -36,7 +42,19 @@ const routes = [
   },
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHashHistory(),
   routes,
 })
+
+router.beforeEach(async to => {
+  try { await restoreAuth() }
+  catch { return to.name === 'login' ? true : '/login' }
+  const decision = authorizeRoute(to, authState)
+  if (decision === true) setUserContext(Boolean(to.meta?.userApp))
+  return decision
+})
+if (typeof window !== 'undefined') window.addEventListener('sas-auth-required', () => {
+  if (authState.mode === 'protected') { invalidateAuth(); router.replace('/login') }
+})
+export default router

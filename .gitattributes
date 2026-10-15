@@ -1,0 +1,2 @@
+# Linux gateway entrypoint must remain executable by /bin/sh after Windows checkout.
+StockAnalysisSystem/infrastructure/remote/start.sh text eol=lf

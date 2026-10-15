@@ -1,5 +1,6 @@
 <template>
   <div>
+    <p v-if="protectedContext" class="card section" role="status">后台训练队列尚未接入，当前不能提交训练；请在用户端查看已封存结果。下方不展示模拟训练成功。</p>
     <!-- 控件 -->
     <div class="card section">
       <div class="card-title">训练 / 预测配置</div>
@@ -34,7 +35,7 @@
         </div>
         <div class="field submit-field">
           <label>&nbsp;</label>
-          <button class="btn btn-primary" :disabled="running" @click="run">
+          <button class="btn btn-primary" :disabled="running || protectedContext" @click="run">
             {{ running ? '训练中…' : '运行训练 + 预测' }}
           </button>
         </div>
@@ -100,6 +101,7 @@ import ChartBox from '../../components/ChartBox.vue'
 import DataTable from '../../components/DataTable.vue'
 import { getTransformerConfigs, getTransformerTraining, getTransformerPredictions } from '../../api/analysis.js'
 import { useThemeStore } from '../../stores/theme.js'
+import { protectedContext } from '../../api/client.js'
 import { fmtNum } from '../../utils/format.js'
 import { baseOption, xAxis, yAxis, lineSeries, barSeries, chrome, seriesColors } from '../../utils/chart.js'
 
@@ -125,6 +127,7 @@ const preds = ref([])
 const running = ref(false)
 
 async function run() {
+  if (protectedContext.value) return
   running.value = true
   const [t, p] = await Promise.all([
     getTransformerTraining({ ...cfg }),
@@ -136,6 +139,7 @@ async function run() {
 }
 
 onMounted(async () => {
+  if (protectedContext.value) return
   configs.value = await getTransformerConfigs()
   Object.assign(cfg, configs.value.defaults || {})
   await run()

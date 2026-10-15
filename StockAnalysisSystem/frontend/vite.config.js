@@ -12,6 +12,8 @@ export default defineConfig(({ mode }) => {
     port: 5173,
     open: false,
     proxy: {
+      '/api/auth': { target: predictionTarget, changeOrigin: false },
+      '/api/admin': { target: predictionTarget, changeOrigin: false },
       '^/api/analysis/evaluations(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/evaluations/[0-9]{6}\\.(?:SZ|SH|BJ)/eval_[0-9a-f]{32}(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/models(?:\\?|$)': { target: predictionTarget, changeOrigin: true },

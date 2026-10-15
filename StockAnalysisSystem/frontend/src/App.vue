@@ -35,11 +35,13 @@
           <span class="mock-badge">{{ sourceLabel }}</span>
           <label class="source-select">
             <span class="sr-only">数据模式</span>
-            <select :value="dataSource" @change="setDataSource($event.target.value)" aria-label="数据模式">
+            <select :value="dataSource" :disabled="authState.mode === 'protected'" @change="setDataSource($event.target.value)" aria-label="数据模式">
               <option value="mock">演示模式</option>
               <option value="hybrid">接入现有 API</option>
             </select>
           </label>
+          <button v-if="authState.mode === 'protected'" class="btn btn-sm" @click="logout">退出登录</button>
+          <span v-if="logoutError" role="alert">{{ logoutError }}</span>
           <span class="clock num">{{ clock }}</span>
           <button
             class="theme-toggle"
@@ -52,7 +54,13 @@
       </header>
 
       <main class="content">
-        <RouterView :key="dataSource + route.path" />
+        <section v-if="authState.mode === 'protected' && ['overview', 'collector'].includes(route.name)" class="card">
+          <h1>后台功能尚未接入</h1>
+          <p>当前可使用账户管理、消费监控和用户端真实结果。采集管理与训练队列尚未接线，不展示模拟任务成功。</p>
+          <RouterLink class="btn" to="/accounts">账户管理</RouterLink>
+          <RouterLink class="btn" to="/user">查看用户端</RouterLink>
+        </section>
+        <RouterView v-else :key="dataSource + route.path" />
       </main>
     </div>
   </div>
@@ -65,16 +73,25 @@ import Icon from './components/Icon.vue'
 import { dataSource, setDataSource } from './api/client.js'
 import { useThemeStore } from './stores/theme.js'
 import { fmtTime } from './utils/format.js'
+import { authState, signOut } from './stores/auth.js'
 
 const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
 
 // /user 路由（meta.userApp）走独立用户端布局，不渲染调试侧边栏与顶栏
-const isUserApp = computed(() => Boolean(route.meta?.userApp))
+const isUserApp = computed(() => Boolean(route.meta?.userApp) || Boolean(route.meta?.standalone))
 
-const navRoutes = computed(() => router.getRoutes().filter((r) => r.meta?.title))
+const navRoutes = computed(() => router.getRoutes().filter((r) => r.meta?.title && (!r.meta.adminOnly || authState.user?.role === 'admin')))
+const logoutError = ref('')
+async function logout() {
+  logoutError.value = ''
+  try { await signOut(); await router.replace('/login') }
+  catch (e) { logoutError.value = `退出失败，当前仍登录：${e.message}` }
+}
 const sourceLabel = computed(() => {
+  if (authState.mode === 'protected' && route.name === 'accounts') return '受保护模式 · 真实账户管理'
+  if (authState.mode === 'protected' && ['overview', 'collector'].includes(route.name)) return '受保护模式 · 后台功能未就绪'
   if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'
   if (route.name === 'monitor') return '监控接口数据'
   if (route.name === 'analysis') return '真实行情 · 概览与预测已接入'
