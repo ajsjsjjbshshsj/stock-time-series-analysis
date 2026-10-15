@@ -54,6 +54,10 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
     codes=list(pool_metadata.get('stock_codes',[]));identity=pool_metadata.get('pool_identity')
     if not isinstance(identity,str) or not identity or len(codes)!=len(set(codes)) or set(codes)!=set(raw.ts_code):
         raise ValueError('Frozen pool mapping does not match complete source coverage')
+    mapping=dict(pool_metadata.get('stockid2idx',{code:i for i,code in enumerate(sorted(codes))}))
+    if (set(mapping)!=set(codes) or any(type(v) is not int for v in mapping.values())
+            or set(mapping.values())!=set(range(len(codes)))):
+        raise ValueError('Invalid frozen stock identity mapping')
     frame=snapshot.frame.copy(deep=True)
     frame['trade_date']=[date_only(v) for v in frame.trade_date]
     if (frame.columns.duplicated().any() or set(frame)!={'ts_code','trade_date',*FEATURE_COLUMNS}
@@ -72,7 +76,8 @@ def build_research_inputs(snapshot,raw_prices,pool_metadata):
     history=normalize_prices(getattr(snapshot,'source_history',snapshot.raw_prices))
     history=history[history.trade_date<=raw.trade_date.max()].copy()
     if set(history.ts_code)!=set(codes):raise ValueError('Missing feature dependency history')
-    contract.update(pool_identity=identity,stock_codes=codes,pool_mapping_sha256=pool_identity(codes),
+    contract.update(pool_identity=identity,stock_codes=codes,stockid2idx=mapping,
+                    pool_mapping_sha256=hashlib.sha256(canonical_bytes(mapping)).hexdigest(),
                     feature_history_start=snapshot.metadata['source_start'],
                     source_prefix_start=str(history.trade_date.min()),source_prefix_cutoff=str(history.trade_date.max()),
                     source_prefix_sha256=calculation_source_digest(history))
