@@ -7,7 +7,6 @@ from fastapi import HTTPException, Request
 
 PACKET_FILES = ('payload.json', 'marker.json', 'receipt.json', 'seal.json')
 DEFAULT_SIGNALS_ROOT = Path(__file__).resolve().parents[1] / 'models' / 'transformer'
-CACHE_LIMIT = 32
 _DATE_RE = re.compile(r'\d{4}-\d{2}-\d{2}')
 
 
@@ -33,10 +32,6 @@ def _discover(root):
             if result.setdefault(folder.name, store_root) != store_root:
                 raise ValueError('Signal date published in more than one store')
     return result
-
-
-def _mtimes(folder):
-    return tuple((folder / name).stat().st_mtime_ns for name in PACKET_FILES)
 
 
 def _build(folder, store_name, signal_date):
@@ -101,16 +96,6 @@ def register_transformer_signal_routes(app, signals_root=None):
     from api.forecast import _query, _validate
 
     root = Path(signals_root) if signals_root is not None else DEFAULT_SIGNALS_ROOT
-    cache = {}
-
-    def packet(store_root, signal_date):
-        folder = store_root / 'signals' / signal_date
-        key = (str(folder), _mtimes(folder))
-        if key not in cache:
-            if len(cache) >= CACHE_LIMIT:
-                cache.clear()
-            cache[key] = _build(folder, store_root.name, signal_date)
-        return cache[key]
 
     @app.get('/api/analysis/transformer/signals')
     def transformer_signals(request: Request, date: str = None):
@@ -132,6 +117,11 @@ def register_transformer_signal_routes(app, signals_root=None):
         if signal_date not in found:
             raise HTTPException(404, 'Resource not found')
         try:
-            return dict(packet(found[signal_date], signal_date), available_dates=dates)
+            # Packet mtimes cannot attest to binding or evidence integrity, and
+            # may be preserved across edits. Verify every response, including
+            # repeat requests; never reuse a previously verified response body.
+            store_root = found[signal_date]
+            body = _build(store_root / 'signals' / signal_date, store_root.name, signal_date)
+            return dict(body, available_dates=dates)
         except Exception:
             raise HTTPException(503, 'Transformer signal dependency unavailable') from None
