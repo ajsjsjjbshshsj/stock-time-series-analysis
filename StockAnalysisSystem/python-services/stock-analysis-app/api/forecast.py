@@ -43,7 +43,10 @@ def _metadata(payload):
             if k not in ('test_series', 'latest', 'feature_importance')}
 
 
-def create_app(repository=None, evaluation_repository=None, transformer_signals_root=None):
+def create_app(repository=None, evaluation_repository=None, transformer_signals_root=None,
+               auth_service=None,auth_settings=None):
+    from api.auth.contracts import AuthSettings
+    settings=auth_settings or AuthSettings.from_env()
     @asynccontextmanager
     async def lifespan(app):
         if repository is None:
@@ -57,15 +60,25 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
                 app.state.evaluation_repository = EvaluationRepository(app.state.repository.connector)
             except Exception:
                 app.state.evaluation_repository = None
+        if settings.mode=='protected' and auth_service is None and app.state.repository is not None:
+            from api.auth.repository import AuthRepository
+            from api.auth.service import AuthService
+            app.state.auth_service=AuthService(AuthRepository(app.state.repository.connector.engine),secret=settings.secret)
         try:
             yield
         finally:
             if repository is None and app.state.repository is not None:
                 app.state.repository.connector.close()
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(lifespan=lifespan,docs_url=None if settings.mode=='protected' else '/docs',
+                  redoc_url=None if settings.mode=='protected' else '/redoc',
+                  openapi_url=None if settings.mode=='protected' else '/openapi.json')
     app.state.repository = repository
     app.state.evaluation_repository = evaluation_repository
+    app.state.auth_settings=settings
+    app.state.auth_service=auth_service
+    from api.auth.routes import register_auth_routes
+    register_auth_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

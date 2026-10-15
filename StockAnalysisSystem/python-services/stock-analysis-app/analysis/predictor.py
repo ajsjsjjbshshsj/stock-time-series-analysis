@@ -12,7 +12,6 @@ logger = get_logger(__name__)
 
 # 模型保存目录
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
-os.makedirs(MODEL_DIR, exist_ok=True)
 
 
 class StockPredictor:
@@ -131,6 +130,12 @@ class StockPredictor:
         """Keep source dates; unknown labels never remove latest inference rows."""
         from analysis.pipeline import LABEL_COLUMNS, IDENTITY_COLUMNS
         names = feature_names or self.feature_names
+        contract=df.attrs.get('feature_store_contract')
+        if (self.train_metadata or {}).get('storage_contract') and not contract:
+            raise ValueError('Model requires verified feature-store input contract')
+        if contract:
+            from analysis.feature_store_inputs import validate_model_inputs
+            validate_model_inputs(self.train_metadata,contract,names,contract['pool_identity'],raw_prices=df)
         if (not names or len(set(names)) != len(names)
                 or set(names) & (LABEL_COLUMNS | IDENTITY_COLUMNS)
                 or not {'trade_date', *names}.issubset(df)):
@@ -143,13 +148,16 @@ class StockPredictor:
         result.loc[:, names] = values
         return result[np.isfinite(values.to_numpy(dtype=float)).all(axis=1)].sort_values('trade_date')
 
-    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2):
+    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2, allow_panel=False, calendar=None):
         """Date-bound alternative to legacy anonymous-array trainers; no save."""
         from analysis.strategy_samples import dated_samples, purged_splits
+        if df.attrs.get('feature_store_contract'):
+            from analysis.feature_store_inputs import validate_research_calendar
+            validate_research_calendar(df,calendar or df.attrs.get('strategy_calendar'))
         from xgboost import XGBClassifier, XGBRegressor
         if self.model_type not in ('xgboost', 'xgboost_regression'):
             raise ValueError('Unsupported dated trainer; legacy LSTM training is absent')
-        if 'ts_code' not in df or df.ts_code.nunique() != 1:
+        if 'ts_code' not in df or (not allow_panel and df.ts_code.nunique() != 1):
             raise ValueError('Single-stock training requires one stock')
         classification = self.model_type == 'xgboost'
         samples = dated_samples(df, feature_names, horizon=horizon, classification=classification)
@@ -165,6 +173,9 @@ class StockPredictor:
         self.model, self.feature_names = model, list(feature_names)
         self.train_metadata = dict(validation_schema=1, seen_through=groups['seen_through'],
                                    splits=groups['splits'], horizon=horizon, feature_names=list(feature_names))
+        if df.attrs.get('feature_store_contract'):
+            self.feature_contract=dict(df.attrs['feature_store_contract'])
+            self.train_metadata.update({k:v for k,v in self.feature_contract.items() if k!='feature_names'})
         output = test[['ts_code', 'trade_date', 'label_target_date', 'label']].copy()
         output['prediction'] = predictions
         metrics = self._evaluate_model(test.label, predictions) if classification else self._evaluate_regression(test.label, predictions)
@@ -411,12 +422,14 @@ class StockPredictor:
         metadata = build_metadata(
             model_name=model_name,
             model_type=self.model_type,
-            feature_names=feature_names or [],
+            feature_names=feature_names or self.feature_names or [],
             train_start_date=train_start_date,
             train_end_date=train_end_date,
             metrics=metrics or {},
             params=self._get_model_params(),
             seed=42,
+            extra={k:v for k,v in dict(getattr(self,'train_metadata',None) or {},
+                                     **(getattr(self,'feature_contract',None) or {})).items() if k!='feature_names'},
         )
 
         # 打包模型对象 + scaler

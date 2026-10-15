@@ -9,6 +9,9 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <RouterLink v-if="authState.user?.role === 'admin'" class="btn btn-sm" to="/accounts">后台管理</RouterLink>
+        <button v-if="authState.mode === 'protected'" class="btn btn-sm" @click="logout">退出登录</button>
+        <span v-if="logoutError" role="alert">{{ logoutError }}</span>
         <span v-if="!live" class="demo-badge">演示数据 · 非真实行情</span>
         <button
           class="theme-btn"
@@ -121,6 +124,16 @@ import { dataSource } from '../api/client.js'
 import { getStockPool } from '../api/analysis.js'
 import { useThemeStore } from '../stores/theme.js'
 import { useWatchlistStore } from '../stores/watchlist.js'
+import { useRouter, RouterLink } from 'vue-router'
+import { authState, signOut } from '../stores/auth.js'
+
+const router = useRouter()
+const logoutError = ref('')
+async function logout() {
+  logoutError.value = ''
+  try { await signOut(); await router.replace('/login') }
+  catch (e) { logoutError.value = `退出失败，当前仍登录：${e.message}` }
+}
 
 const TABS = [
   { key: 'market', label: '市场概览', comp: UserMarket },

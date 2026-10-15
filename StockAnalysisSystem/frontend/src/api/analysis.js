@@ -2,7 +2,7 @@
  * 分析接口层：股票池、K 线、Flink 指标已接入 market-api-service。
  * 其他端点仅提供演示数据，真实模式不开放对应标签页。
  */
-import { request, dataSource } from './client.js'
+import { request, dataSource, requestScope } from './client.js'
 import * as mock from '../mock/analysis.js'
 import { STOCK_POOL, getBars, getDailyBasic, getIndicators, FIXED_TODAY } from '../mock/generator.js'
 import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } from '../utils/market.js'
@@ -37,12 +37,14 @@ export async function getStockPool(options = {}) {
 }
 
 /* 模块级股票池缓存：live 模式 5000+ 行只拉一次，多组件（对比/市场概览）跨实例复用；失败清缓存可重试 */
-let poolPromise = null
+const poolPromises = new Map()
 export function getStockPoolCached() {
-  if (!poolPromise) {
-    poolPromise = getStockPool().catch((e) => { poolPromise = null; throw e })
+  const scope = requestScope.value
+  if (!poolPromises.has(scope)) {
+    if (poolPromises.size >= 4) poolPromises.clear()
+    poolPromises.set(scope, getStockPool().catch((e) => { poolPromises.delete(scope); throw e }))
   }
-  return poolPromise
+  return poolPromises.get(scope)
 }
 
 /**

@@ -159,7 +159,7 @@ def run_analysis(df, stock_code="unknown"):
     logger.info("分析流程完成")
 
 
-def run_prediction(df, model_type='xgboost'):
+def run_prediction(df, model_type='xgboost', *, calendar=None):
     """
     执行预测流程
 
@@ -177,6 +177,20 @@ def run_prediction(df, model_type='xgboost'):
     logger.info("="*50)
 
     predictor = StockPredictor(model_type=model_type)
+
+    if df.attrs.get('feature_store_contract'):
+        if model_type not in ('xgboost','xgboost_regression'):
+            raise ValueError('New feature-store research requires a supported dated trainer')
+        from data_processor.feature_store_contract import FEATURE_COLUMNS
+        from analysis.feature_store_inputs import inference_on_date
+        result=predictor.train_dated(df,feature_names=list(FEATURE_COLUMNS),horizon=1,calendar=calendar)
+        result['model_path']=predictor.save_model(feature_names=list(FEATURE_COLUMNS))
+        latest=inference_on_date(df,df.attrs['feature_store_contract']['source_cutoff'])
+        usable=predictor.prepare_inference_frame(latest)
+        if len(usable)!=1:raise ValueError('Latest stock features are not ready for inference')
+        result['latest_signal_date']=str(usable.trade_date.iloc[0].date())
+        result['latest_prediction']=predictor.model.predict(usable[list(FEATURE_COLUMNS)]).tolist()
+        return result
 
     # 根据模型类型选择目标列
     if model_type in ('xgboost_regression', 'xgboost_multiclass'):
@@ -307,37 +321,8 @@ def save_data_to_db(stock_code, df_raw, df_processed, prediction_result=None, mo
                 repository.save_daily_records(session, daily_records)
             logger.info(f"保存 {len(daily_records)} 条日线数据")
 
-            # 2. 保存技术指标 (stock_features)
-            # feature_engineer v2.0 输出 snake_case，映射与 DB 列名 1:1 对齐
-
-            available = {df_col: db_col for df_col, db_col in FEATURE_COL_MAP.items()
-                         if df_col in df_processed.columns}
-
-            feature_records = []
-            for _, row in df_processed.iterrows():
-                trade_date = row.get('trade_date', row.get('date'))
-                if pd.isna(trade_date):
-                    continue
-                if not isinstance(trade_date, pd.Timestamp):
-                    trade_date = pd.to_datetime(trade_date)
-
-                record = {'ts_code': stock_code, 'trade_date': trade_date}
-                has_nan = False
-                for df_col, db_col in available.items():
-                    v = row.get(df_col)
-                    if v is None or pd.isna(v):
-                        has_nan = True
-                        break
-                    record[db_col] = float(v)
-
-                if has_nan:
-                    continue
-                feature_records.append(record)
-
-            if feature_records:
-                db_cols = list(available.values())
-                repository.save_features(session, feature_records, db_cols)
-            logger.info(f"保存 {len(feature_records)} 条特征数据")
+            # Global features are published only by the explicit verified builder.
+            # Single-stock analysis must never mutate the legacy feature table.
 
             # 3. 保存分析结果 (analysis_result)
             if prediction_result and model_type:
@@ -379,6 +364,7 @@ def run_ranking_pipeline(top_n=10, use_probe=True, forward_days=5, use_tushare=F
     raw, selection = select_strategy_snapshot(raw, calendar, request_time, required_columns=required)
     featured = prepare_panel_for_training(raw, forward_days=forward_days, use_tushare=use_tushare,
                                           n_workers=n_workers, use_parallel=True, keep_unlabelled=True)
+    featured.attrs['strategy_calendar']=calendar
     from analysis.ranking_backtester import require_panel_coverage
     require_panel_coverage(featured, raw)
     result = train_ranking_model(featured, use_probe=use_probe, forward_days=forward_days, use_gpu=use_gpu)
@@ -506,18 +492,7 @@ def cmd_collect(args, sector_list, index_list):
 
         # ---- 步骤2：传统管线特征入库 ----
         logger.info("\n" + "=" * 60)
-        logger.info("步骤 2/3：传统管线特征（72列，入库 stock_features + parquet缓存）")
-        logger.info("=" * 60)
-        from data_processor.panel_builder import prepare_panel_for_training
-
-        if not panel_df.empty:
-            prepare_panel_for_training(
-                panel_df, forward_days=args.forward_days, use_tushare=args.use_tushare,
-                n_workers=args.n_workers, use_parallel=True, save_to_db=True,
-            )
-            logger.info("传统管线特征更新完成")
-        else:
-            logger.error("无有效数据，传统特征跳过")
+        logger.info("传统特征请独立执行 scripts.feature_store build/publish；不写旧表。")
 
         # ---- 步骤3：Transformer 管线特征 ----
         logger.info("\n" + "=" * 60)
@@ -559,27 +534,19 @@ def cmd_clean(args):
 
 def cmd_feature(args, sector_list, index_list):
     """feature 子命令：特征计算"""
-    init_database()
 
     if args.pipeline == 'traditional':
-        # 原 save_features 模式
-        logger.info("执行传统管线特征计算（72列，入库 stock_features）...")
-        from data_processor.panel_builder import incremental_update, prepare_panel_for_training
-
-        logger.info("步骤1: 加载面板数据...")
-        panel_df = incremental_update(
-            use_tushare=args.use_tushare, delay=args.delay,
-            sectors=sector_list, index_codes=index_list, start_date=args.start_date
-        )
-        if panel_df.empty:
-            logger.error("无有效数据，请先执行 collect 采集数据")
-        else:
-            logger.info("步骤2: 计算所有股票特征并入库...")
-            prepare_panel_for_training(
-                panel_df, forward_days=args.forward_days, use_tushare=args.use_tushare,
-                n_workers=args.n_workers, use_parallel=True, save_to_db=True,
-            )
-            logger.info("传统特征批量入库完成")
+        from scripts.feature_store import main as feature_store_main
+        if sector_list or index_list:
+            raise ValueError('Global feature builds do not accept a filtered pool')
+        from database import repository as source_repository
+        with DatabaseConnector(diagnostic=True) as db:
+            with db.session_scope() as session:
+                latest=source_repository.get_latest_trade_dates(session)
+        if not latest:raise ValueError('No raw source data')
+        start=pd.Timestamp(args.start_date).date().isoformat()
+        cutoff=max(latest.values()).isoformat()
+        return feature_store_main(['build','--start-date',start,'--cutoff',cutoff])
 
     elif args.pipeline == 'transformer':
         # 原 transform_features / incremental_features 模式
@@ -624,7 +591,7 @@ def cmd_train(args, sector_list, index_list):
     if args.pipeline == 'traditional':
         # 原 demo 模式的训练部分：单股采集 → 处理 → 分析 → 训练
         logger.info("运行传统管线训练（单股 demo 流程）...")
-        init_database()
+        load_strategy_calendar(args.calendar)
 
         collector = DataCollector(use_tushare=args.use_tushare)
         end_date = datetime.now().strftime('%Y%m%d')
@@ -635,11 +602,12 @@ def cmd_train(args, sector_list, index_list):
             return
 
         df_raw = df.copy()
-        df_processed = run_data_processing(df, args.stock)
+        from data_processor.panel_builder import load_stock_features_from_db
+        df_processed = load_stock_features_from_db([args.stock])
         run_analysis(df_processed, args.stock)
         if args.backtest:
             return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
-        prediction_result = run_prediction(df_processed, args.model)
+        prediction_result = run_prediction(df_processed, args.model,calendar=load_strategy_calendar(args.calendar))
         save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
         logger.info("传统管线训练完成")
@@ -736,7 +704,7 @@ def cmd_predict(args, sector_list, index_list):
         load_strategy_calendar(args.calendar)
 
     if args.pipeline == 'traditional':
-        init_database()
+        load_strategy_calendar(args.calendar)
 
         if args.stock:
             # 单股预测（原 demo / predict / backtest 模式）
@@ -750,20 +718,19 @@ def cmd_predict(args, sector_list, index_list):
                 return
 
             df_raw = df.copy()
-            df_processed = run_data_processing(df, args.stock)
+            from data_processor.panel_builder import load_stock_features_from_db
+            df_processed = load_stock_features_from_db([args.stock])
             run_analysis(df_processed, args.stock)
             if args.backtest:
                 return run_backtest(df_processed, args.stock, calendar=args.calendar, model_type=args.model)
-            prediction_result = run_prediction(df_processed, args.model)
+            prediction_result = run_prediction(df_processed, args.model,calendar=load_strategy_calendar(args.calendar))
             save_data_to_db(args.stock, df_raw, df_processed, prediction_result, args.model)
 
             logger.info("单股预测完成")
         else:
             # 全市场批量预测排名（原 batch_predict_rank 模式）
             logger.info("运行传统管线全市场批量预测排名...")
-            from data_processor.panel_builder import (
-                load_stock_features_from_db, compute_and_save_traditional_features_batch
-            )
+            from data_processor.panel_builder import load_stock_features_from_db
             filtered_codes = None
             if sector_list or index_list:
                 from data_processor.stock_filter import resolve_stock_codes
@@ -777,22 +744,16 @@ def cmd_predict(args, sector_list, index_list):
             features_df = load_stock_features_from_db(stock_codes=filtered_codes)
 
             if features_df.empty:
-                logger.info("stock_features 缓存为空，先批量计算特征...")
-                features_df = compute_and_save_traditional_features_batch(
-                    stock_codes=filtered_codes,
-                    use_tushare=args.use_tushare, n_workers=args.n_workers
-                )
-                if features_df.empty:
-                    logger.error("特征计算失败，无数据可用")
-                    return
-
-            logger.info(f"从 stock_features 加载 {len(features_df)} 行特征, "
-                         f"{features_df['ts_code'].nunique()} 只股票")
+                raise ValueError('Verified feature store empty; explicitly build/publish first')
+            from analysis.feature_store_inputs import training_copy,inference_on_date
+            latest=inference_on_date(features_df,features_df.attrs['feature_store_contract']['source_cutoff'])
+            predictor_contract=features_df.attrs['feature_store_contract']
+            features_df=training_copy(features_df,forward_days=1)
 
             features_df['trade_date'] = pd.to_datetime(features_df['trade_date'])
-            latest = features_df.loc[features_df.groupby('ts_code')['trade_date'].idxmax()]
 
             predictor = StockPredictor(model_type=args.model)
+            predictor.feature_contract = predictor_contract
             target_col = 'future_direction_1d' if args.model == 'xgboost' else 'future_return_1d'
 
             feature_names = predictor.prepare_features(features_df, target_column=target_col)
@@ -801,16 +762,10 @@ def cmd_predict(args, sector_list, index_list):
                 return
             X_all, y_all, available_features = feature_names
 
-            logger.info(f"使用全市场数据训练{args.model}模型...")
-            if args.model == 'xgboost':
-                train_result = predictor.train_xgboost(X_all, y_all)
-            elif args.model == 'xgboost_regression':
-                train_result = predictor.train_xgboost_regression(X_all, y_all)
-            elif args.model == 'xgboost_multiclass':
-                train_result = predictor.train_xgboost_multiclass(X_all, y_all)
-            else:
-                logger.error(f"不支持的模型类型: {args.model}")
-                return
+            if args.model not in ('xgboost','xgboost_regression'):
+                raise ValueError('New feature-store batch training requires a supported dated trainer')
+            train_result=predictor.train_dated(features_df,feature_names=available_features,horizon=1,allow_panel=True,
+                                                calendar=load_strategy_calendar(args.calendar))
 
             if train_result is None:
                 logger.error("模型训练失败")
@@ -823,7 +778,8 @@ def cmd_predict(args, sector_list, index_list):
             logger.info(f"全市场预测排名 ({args.model})")
             logger.info(f"{'='*60}")
 
-            X_latest = latest[available_features].dropna()
+            from analysis.feature_store_inputs import inference_values
+            X_latest = inference_values(features_df,available_features,predictor_contract['source_cutoff'])
             if X_latest.empty:
                 logger.error("最新数据无有效特征")
                 return
@@ -863,7 +819,7 @@ def cmd_predict(args, sector_list, index_list):
             ranking_df.to_csv(output_path, index=True, index_label='排名', encoding='utf-8-sig')
             logger.info(f"排名结果已保存至: {output_path}")
 
-            predictor.save_model(f'batch_{args.model}_latest')
+            predictor.save_model(feature_names=available_features)
 
     elif args.pipeline == 'ranking':
         # 原 rank / rank_backtest 的预测部分

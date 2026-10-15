@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 #  特征版本
 # ═══════════════════════════════════════════════════════════════════════════════
 
-FEATURE_VERSION = "2.0.0"
+FEATURE_VERSION = "2.0.1"
 """
 特征版本语义：
   MAJOR ── 特征集合有删除或语义变更（不向后兼容）
@@ -51,6 +51,7 @@ FEATURE_VERSION = "2.0.0"
   PATCH ── 算法修复或参数微调
 
 变更记录：
+  2.0.1 ── 接回既有 MFI14；无收益历史时风险特征自然 NaN，避免全 NaN 窗口告警。
   2.0.0 ── 统一 snake_case 命名；增加 volatility_* 替代旧 Variance*（语义修正）；
            增加横截面特征；去除风险指标 fillna(0)；BB 改用 ddof=0
   1.0.0 ── 初始版本（旧版 MA5 / RSI / Variance20 等命名）
@@ -347,6 +348,7 @@ class FeatureEngineer:
         df = self._calc_bollinger(df)
         df = self._calc_kdj(df)
         df = self._calc_volume(df)
+        df = self._calc_mfi(df)
         df = self._calc_macd(df)
         df = self._calc_rsi(df)
         df = self._calc_turnover(df)
@@ -558,6 +560,18 @@ class FeatureEngineer:
         [修正] 窗口不足时保留 NaN（旧版 fillna(0) 会在样本稀少时引入虚假信号）。
         """
         ret = df[FEAT_RETURN_1D]
+
+        # A newly listed one-row history has no returns at all. Its risk
+        # statistics are naturally undefined; pandas skew/kurt emit an
+        # All-NaN warning for this case. Keep NaN without fabricating zeroes.
+        if not ret.notna().any():
+            for feature in (
+                FEAT_VOLATILITY_20D, FEAT_VOLATILITY_60D, FEAT_VOLATILITY_120D,
+                FEAT_SKEWNESS_20D, FEAT_SKEWNESS_60D, FEAT_SKEWNESS_120D,
+                FEAT_KURTOSIS_20D, FEAT_KURTOSIS_60D, FEAT_KURTOSIS_120D,
+            ):
+                df[feature] = np.nan
+            return df
 
         # 年化波动率 = std(daily_return) * √252
         df[FEAT_VOLATILITY_20D]  = ret.rolling(window=20).std()  * np.sqrt(252)

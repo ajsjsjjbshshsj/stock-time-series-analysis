@@ -75,29 +75,8 @@ def save_stock_basic(session, records):
 
 
 def save_features(session, records, db_columns, batch_size=_BATCH_SIZE):
-    """
-    批量写入特征数据到 stock_features（INSERT IGNORE 去重）。
-
-    Args:
-        session: SQLAlchemy Session
-        records: list[dict]，每条含 ts_code, trade_date + 特征列
-        db_columns: 特征列名列表（不含 ts_code, trade_date）
-        batch_size: 每批大小
-
-    Returns:
-        int: 写入行数
-    """
-    if not records:
-        return 0
-
-    col_str = ', '.join([f'`{c}`' for c in db_columns])
-    placeholders = ', '.join([f':{c}' for c in db_columns])
-    stmt = text(
-        f'INSERT IGNORE INTO `{TABLE_STOCK_FEATURES}` '
-        f'(ts_code, trade_date, {col_str}) '
-        f'VALUES (:ts_code, :trade_date, {placeholders})'
-    )
-    return _batch_execute(session, stmt, records, batch_size, TABLE_STOCK_FEATURES)
+    """Legacy writes are retired; only verified explicit builds may publish."""
+    raise ValueError('Legacy feature writes disabled; use scripts.feature_store build and publish')
 
 
 def save_analysis_result(session, record):
@@ -206,6 +185,19 @@ def load_constituents(
 
 
 def load_features_df(session, stock_codes=None, date_col='trade_date'):
+    """New default: verified feature store plus bound raw inputs and metadata."""
+    if date_col!='trade_date':raise ValueError('Only canonical feature date is supported')
+    from database.feature_store_reader import load_feature_snapshot
+    from analysis.feature_store_inputs import build_research_inputs,pool_identity
+    snapshot=load_feature_snapshot(session,stock_codes)
+    codes=sorted(snapshot.raw_prices.ts_code.unique())
+    frame,contract=build_research_inputs(snapshot,snapshot.raw_prices,
+        dict(stock_codes=codes,pool_identity=pool_identity(codes)))
+    frame.attrs['feature_store_contract']=contract
+    return frame
+
+
+def load_legacy_features_df(session, stock_codes=None, date_col='trade_date'):
     """
     从 stock_features 加载特征面板。
 
@@ -217,6 +209,7 @@ def load_features_df(session, stock_codes=None, date_col='trade_date'):
     Returns:
         DataFrame
     """
+    if date_col!='trade_date':raise ValueError('Only canonical feature date is supported')
     query = f'SELECT * FROM `{TABLE_STOCK_FEATURES}` WHERE 1=1'
     params = {}
 

@@ -1,0 +1,19 @@
+# Optional Linux server gateway. Do not combine with publicly bound API ports.
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-public.ecr.aws/docker/library/nginx@sha256:ed84151ed2d47ef93c0939eb9b9754c6990db6092cd2081e11988a47a83d47ea}
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/gateway/start.sh"]
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?Set the TLS hostname}
+      AUTH_ORIGIN: ${AUTH_ORIGIN:?Set the exact HTTPS origin}
+      AUTH_UPSTREAM: http://127.0.0.1:${AUTH_PORT:-8084}
+      MARKET_UPSTREAM: http://127.0.0.1:${MARKET_PORT:-8083}
+      CONSUMER_UPSTREAM: http://127.0.0.1:${CONSUMER_PORT:-8080}
+    volumes:
+      - ./start.sh:/gateway/start.sh:ro
+      - ./nginx.conf.template:/gateway/nginx.conf.template:ro
+      - ../../frontend/dist:/srv/frontend:ro
+      - ${TLS_CERT_FILE:?Provide a valid certificate}:/run/tls/server.crt:ro
+      - ${TLS_KEY_FILE:?Provide the private key}:/run/tls/server.key:ro

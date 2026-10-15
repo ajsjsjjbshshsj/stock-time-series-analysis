@@ -1,14 +1,19 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { STOCK_CODE } from '../utils/market.js'
+import { authState } from './auth.js'
 
 const STORAGE_KEY = 'sas-watchlist'
 const MAX_ITEMS = 20
 
+function storageKey() {
+  return authState.mode === 'protected' ? (authState.user?.id ? `${STORAGE_KEY}:${authState.user.id}` : null) : STORAGE_KEY
+}
+
 function load() {
   try {
-    if (typeof localStorage === 'undefined') return []
-    const arr = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]')
+    if (typeof localStorage === 'undefined' || !storageKey()) return []
+    const arr = JSON.parse(localStorage.getItem(storageKey()) ?? '[]')
     if (!Array.isArray(arr)) return []
     return [...new Set(arr.filter((c) => typeof c === 'string' && STOCK_CODE.test(c)))].slice(0, MAX_ITEMS)
   } catch (e) {
@@ -22,10 +27,11 @@ function load() {
  */
 export const useWatchlistStore = defineStore('watchlist', () => {
   const codes = ref(load())
+  watch(storageKey, () => { codes.value = load() }, { flush: 'sync' })
 
   function persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(codes.value))
+      if (storageKey()) localStorage.setItem(storageKey(), JSON.stringify(codes.value))
     } catch (e) {
       /* 忽略隐私模式下的存储失败，收藏仅当前会话生效 */
     }

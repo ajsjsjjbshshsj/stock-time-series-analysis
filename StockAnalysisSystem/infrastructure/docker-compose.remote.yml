@@ -1,0 +1,12 @@
+# Apply with the base compose file on a remote host (Compose 2.24.4+).
+# Replace, rather than append to, public port bindings.
+services:
+  kafka:
+    ports: !override
+      - "127.0.0.1:9092:9092"
+  flink-jobmanager:
+    ports: !override
+      - "127.0.0.1:8082:8081"
+  kafka-ui:
+    ports: !override
+      - "127.0.0.1:8081:8080"

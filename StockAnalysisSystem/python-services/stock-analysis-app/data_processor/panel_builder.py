@@ -184,138 +184,25 @@ def load_all_stock_data_from_db(start_date=None, end_date=None,
 
 
 def load_stock_features_from_db(stock_codes=None, date_col='trade_date'):
-    """
-    从 stock_features 表批量加载传统管线特征（缓存复用）。
-
-    参数:
-        stock_codes: 股票代码列表，None 则加载全部
-        date_col: 日期列名
-
-    返回:
-        DataFrame: 特征面板数据（含 ts_code, trade_date 及所有特征列）
-    """
-    try:
-        with DatabaseConnector() as db:
-            with db.session_scope() as session:
-                df = repository.load_features_df(session, stock_codes, date_col)
-                if df.empty:
-                    logger.warning("数据库中无特征数据")
-                    return pd.DataFrame()
-                logger.info(f"从 stock_features 加载特征: {len(df)} 行, {df['ts_code'].nunique()} 只股票")
-                return df
-    except Exception as e:
-        logger.error(f"加载特征失败: {e}")
-        return pd.DataFrame()
+    """Guarded default read. Unavailable data propagates, never triggers a build."""
+    from data_loader.market_data_repository import _to_db_code
+    stock_codes=None if stock_codes is None else [_to_db_code(c) for c in stock_codes]
+    with DatabaseConnector(diagnostic=True) as db:
+        with db.session_scope() as session:
+            return repository.load_features_df(session,stock_codes,date_col)
 
 
 def compute_and_save_traditional_features_batch(stock_codes=None, use_tushare=False,
-                                                 n_workers=None):
-    """
-    批量计算传统管线特征并保存到 stock_features 表（增量模式）。
-
-    流程：
-        1. 从 stock_daily 读取已有日线数据
-        2. 逐股计算 FeatureEngineer 全量特征
-        3. 批量写入 stock_features 表（INSERT IGNORE 去重）
-
-    参数:
-        stock_codes: 股票代码列表，None 则全部
-        use_tushare: 数据源
-        n_workers: 并行进程数
-
-    返回:
-        DataFrame: 特征面板数据
-    """
-    try:
-        with DatabaseConnector() as db:
-            with db.session_scope() as session:
-                # 1. 加载日线数据
-                panel_df = load_all_stock_data_from_db(
-                    stock_codes=stock_codes, sectors=None, index_codes=None,
-                    use_tushare=use_tushare
-                )
-                if panel_df.empty:
-                    logger.error("日线数据为空，请先采集数据")
-                    return pd.DataFrame()
-
-                logger.info(f"开始批量计算特征: {panel_df['ts_code'].nunique()} 只股票, {len(panel_df)} 行")
-
-                # 2. 逐股计算特征
-                engineer = FeatureEngineer()
-                codes = panel_df['ts_code'].unique()
-                all_records = []
-                success_count = 0
-                fail_count = 0
-
-                for idx, code in enumerate(codes, 1):
-                    stock_df = panel_df[panel_df['ts_code'] == code].copy()
-                    stock_df = stock_df.sort_values('trade_date').reset_index(drop=True)
-
-                    if len(stock_df) < 60:
-                        continue
-
-                    try:
-                        featured = engineer.calculate_all_features(stock_df)
-
-                        # 构建数据库记录
-                        # 新 feature_engineer v2.0 输出 snake_case，直接使用
-                        available = {
-                            df_col: db_col
-                            for df_col, db_col in FEATURE_COL_MAP.items()
-                            if df_col in featured.columns
-                        }
-
-                        for _, row in featured.iterrows():
-                            trade_date = row.get('trade_date')
-                            if pd.isna(trade_date):
-                                continue
-                            if not isinstance(trade_date, pd.Timestamp):
-                                trade_date = pd.to_datetime(trade_date)
-
-                            record = {'ts_code': code, 'trade_date': trade_date}
-                            has_nan = False
-                            for df_col, db_col in available.items():
-                                v = row.get(df_col)
-                                if v is None or pd.isna(v):
-                                    has_nan = True
-                                    break
-                                record[db_col] = float(v)
-
-                            if has_nan:
-                                continue
-                            all_records.append(record)
-
-                        success_count += 1
-
-                        if idx % 200 == 0:
-                            logger.info(f"已计算 {idx}/{len(codes)} 只股票特征")
-
-                    except Exception as e:
-                        fail_count += 1
-                        if fail_count <= 3:
-                            logger.warning(f"计算股票 {code} 特征失败: {e}")
-                        continue
-
-                logger.info(f"特征计算完成: 成功={success_count}, 失败={fail_count}, "
-                             f"总记录={len(all_records)}")
-
-                # 3. 批量写入（分批避免 max_allowed_packet）
-                if all_records:
-                    sample = all_records[0]
-                    db_cols = list(sample.keys())
-                    feature_db_cols = [c for c in db_cols if c not in ('ts_code', 'trade_date')]
-                    repository.save_features(session, all_records, feature_db_cols)
-                    logger.info(f"批量特征入库完成: {len(all_records)} 条")
-                else:
-                    logger.warning("无完整特征数据可入库")
-
-                # 返回特征面板（供后续训练使用）
-                result_df = repository.load_features_df(session)
-                return result_df
-
-    except Exception as e:
-        logger.error(f"批量特征计算失败: {e}")
-        raise
+                                                 n_workers=None, *, start_date=None, cutoff=None, output=None):
+    """Explicit unfiltered global build; publication remains a separate operation."""
+    if stock_codes is not None:
+        raise ValueError('Global feature store builds cannot shrink to a selected pool')
+    from scripts.feature_store import main
+    if start_date is None or cutoff is None:
+        raise ValueError('Explicit source bounds required for feature build')
+    args=['build','--start-date',str(start_date),'--cutoff',str(cutoff)]
+    if output is not None:args.extend(['--output',os.fspath(output)])
+    return main(args)
 def _safe_float(val):
     """将值转为 float，NaN 转为 None（MySQL 不接受 NaN）。"""
     try:
@@ -732,15 +619,11 @@ def compute_cross_sectional_features(
 
     # ── 行业 Z-Score ──────────────────────────────────────────────────────────
     if has_industry:
-        df['return_zscore_industry'] = (
-            df.groupby([date_column, industry_column])[FEAT_RETURN_1D]
-            .transform(lambda x: (x - x.mean()) / x.std().replace(0, np.nan))
-        )
+        returns=df.groupby([date_column,industry_column])[FEAT_RETURN_1D]
+        df['return_zscore_industry']=(df[FEAT_RETURN_1D]-returns.transform('mean'))/returns.transform('std').replace(0,np.nan)
         if 'volatility_20d' in df.columns:
-            df['volatility_zscore_industry'] = (
-                df.groupby([date_column, industry_column])['volatility_20d']
-                .transform(lambda x: (x - x.mean()) / x.std().replace(0, np.nan))
-            )
+            volatilities=df.groupby([date_column,industry_column])['volatility_20d']
+            df['volatility_zscore_industry']=(df['volatility_20d']-volatilities.transform('mean'))/volatilities.transform('std').replace(0,np.nan)
 
     # 清理 inf
     new_cols = set(df.columns) - new_cols_before
@@ -771,6 +654,10 @@ def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
     返回:
         DataFrame: 可用于训练的面板数据（含特征+label）
     """
+    if save_to_db:
+        raise ValueError('Legacy feature writes disabled; use explicit feature-store build/publish')
+    if cache_dir is None:
+        return prepare_verified_research_panel(panel_df,forward_days,keep_unlabelled)
     if panel_df.empty:
         logger.warning("面板数据为空")
         return pd.DataFrame()
@@ -854,6 +741,24 @@ def prepare_panel_for_training(panel_df, forward_days=5, use_tushare=False,
     return featured_panel
 
 
+def prepare_verified_research_panel(panel_df,forward_days=5,keep_unlabelled=True):
+    """Selected pool only: verified base features plus causal cross-sectionals."""
+    if panel_df.empty:raise ValueError('Research source panel empty')
+    from database.feature_store_reader import load_feature_snapshot
+    from analysis.feature_store_inputs import build_research_inputs,pool_identity,training_copy
+    codes=list(panel_df.attrs.get('requested_codes',sorted(panel_df.ts_code.unique())))
+    with DatabaseConnector(diagnostic=True) as db:
+        with db.session_scope() as session:
+            snapshot=load_feature_snapshot(session,codes,start_date=panel_df.trade_date.min(),end_date=panel_df.trade_date.max(),
+                expected_keys=zip(panel_df.ts_code,panel_df.trade_date))
+    featured,contract=build_research_inputs(snapshot,panel_df,
+        dict(stock_codes=codes,pool_identity=pool_identity(codes)))
+    featured=compute_cross_sectional_features(featured)
+    featured=training_copy(featured,forward_days)
+    featured.attrs['feature_store_contract']=contract
+    return featured if keep_unlabelled else featured[featured.label.notna()].copy()
+
+
 def _prepare_panel_incremental(panel_df, cache_path, raw_cache_path, forward_days, n_workers, use_parallel):
     """
     增量模式：加载已有特征缓存，只计算新增日期的特征。
@@ -928,60 +833,5 @@ def _prepare_panel_incremental(panel_df, cache_path, raw_cache_path, forward_day
 
 
 def save_features_batch_to_db(featured_panel):
-    """
-    将批量计算的特征面板数据写入 stock_features 表。
-
-    参数:
-        featured_panel: 包含技术指标的 DataFrame（需含 ts_code, trade_date 列）
-    """
-    if featured_panel.empty:
-        logger.warning("特征面板为空，跳过入库")
-        return
-
-    logger.info(f"开始批量保存特征到 stock_features 表，共 {len(featured_panel)} 行...")
-
-    try:
-        with DatabaseConnector() as db:
-            with db.session_scope() as session:
-                # 筛选 DataFrame 中实际存在的特征列
-                available_map = {df_col: db_col for df_col, db_col in FEATURE_COL_MAP.items()
-                                 if df_col in featured_panel.columns}
-                available_df_cols = list(available_map.keys())
-                missing_cols = [df_col for df_col in FEATURE_COL_MAP if df_col not in featured_panel.columns]
-                if missing_cols:
-                    logger.warning(f"DataFrame 中缺少以下特征列: {missing_cols}")
-
-                logger.info(f"可用特征列: {len(available_df_cols)}/{len(FEATURE_COL_MAP)}")
-
-                # 向量化操作：提取需要的列 + 过滤 NaN（比 iterrows 快 100 倍）
-                cols_needed = ['ts_code', 'trade_date'] + available_df_cols
-                sub = featured_panel[cols_needed].copy()
-
-                total_before = len(sub)
-                # 删除 ts_code 或 trade_date 为空的行
-                sub = sub.dropna(subset=['ts_code', 'trade_date'])
-                # 删除任一特征列为 NaN 的行
-                sub = sub.dropna(subset=available_df_cols)
-                skipped = total_before - len(sub)
-                logger.info(f"NaN 过滤完成: {len(sub)} 行有效, {skipped} 行被过滤")
-
-                # 重命名列
-                sub.rename(columns=available_map, inplace=True)
-
-                # 确保 trade_date 是日期类型
-                sub['trade_date'] = pd.to_datetime(sub['trade_date'])
-
-                # 转为字典列表（向量化转换，比逐行构建快很多）
-                db_cols = list(available_map.values())
-                records = sub[['ts_code', 'trade_date'] + db_cols].to_dict('records')
-
-                if records:
-                    feature_db_cols = [c for c in db_cols if c not in ('ts_code', 'trade_date')]
-                    repository.save_features(session, records, feature_db_cols)
-                    logger.info(f"特征批量入库完成: 写入 {len(records)} 条, 过滤 {skipped} 条不完整行")
-                else:
-                    logger.warning(f"无完整特征数据可入库，过滤了 {skipped} 行")
-
-    except Exception as e:
-        logger.error(f"特征批量入库失败: {e}")
-        raise
+    """Explicitly retired writer; leaves old feature table unchanged."""
+    raise ValueError('Legacy feature writes disabled; use scripts.feature_store build and publish')

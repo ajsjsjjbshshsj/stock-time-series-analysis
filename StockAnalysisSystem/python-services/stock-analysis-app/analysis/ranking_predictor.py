@@ -22,6 +22,9 @@ def get_feature_columns(df):
 def train_ranking_model(panel_df, feature_names=None, use_probe=True,
                         probe_config=None, save_name=None, use_gpu=False,
                         forward_days=5, save_model=True):
+    if panel_df.attrs.get('feature_store_contract'):
+        from analysis.feature_store_inputs import validate_research_calendar
+        validate_research_calendar(panel_df,panel_df.attrs.get('strategy_calendar'))
     names = list(feature_names) if feature_names is not None else get_feature_columns(panel_df)
     samples = dated_samples(panel_df, names, horizon=forward_days, classification=False)
     groups = purged_splits(samples)
@@ -57,6 +60,9 @@ def train_ranking_model(panel_df, feature_names=None, use_probe=True,
                               extra=dict(validation_schema=1, horizon=forward_days,
                                          splits=groups['splits'], seen_through=groups['seen_through'],
                                          probe_log=log_records))
+    contract=panel_df.attrs.get('feature_store_contract')
+    if contract:
+        metadata.update({k:v for k,v in contract.items() if k!='feature_names'})
     bundle = dict(model=model, feature_names=names, model_type='ranking_lgb',
                   metrics=metrics, validation_metadata=metadata)
     path = reg_save(bundle, metadata, name) if save_model else None
@@ -73,9 +79,9 @@ def load_ranking_bundle(model_path=None):
                       and isinstance(m.get('model_file'), str)
                       and os.path.basename(m['model_file']) == m['model_file']
                       and m['model_file'].endswith('.pkl')
-                      and os.path.isfile(os.path.join(registry_dir, m['model_file']))]
+                      and os.path.isfile(m.get('_artifact_path',os.path.join(registry_dir, m['model_file'])))]
         if not candidates: return None, None, None
-        model_path = os.path.join(registry_dir, candidates[0]['model_file'])
+        model_path = candidates[0].get('_artifact_path',os.path.join(registry_dir, candidates[0]['model_file']))
     bundle, metadata = reg_load(model_path, model_type='ranking_lgb')
     if bundle is None: return None, None, None
     return bundle.get('model'), bundle.get('feature_names', []), metadata or {}
@@ -83,11 +89,19 @@ def load_ranking_bundle(model_path=None):
 
 def load_ranking_model(model_path=None):
     model, features, metadata = load_ranking_bundle(model_path)
+    if (metadata or {}).get('storage_contract'):
+        raise ValueError('New ranking model requires verified feature-store input contract')
     return model, features, (metadata or {}).get('metrics', {})
 
 
 def _latest(panel_df, model_path):
-    model, names, _ = load_ranking_model(model_path)
+    contract=panel_df.attrs.get('feature_store_contract')
+    if contract:
+        model,names,metadata=load_ranking_bundle(model_path)
+        from analysis.feature_store_inputs import validate_model_inputs
+        validate_model_inputs(metadata,contract,names,contract['pool_identity'],raw_prices=panel_df)
+    else:
+        model,names,_=load_ranking_model(model_path)
     if model is None: raise ValueError('Ranking model unavailable')
     if (panel_df.empty or panel_df.columns.duplicated().any()
             or not names or set(names) & (LABEL_COLUMNS | IDENTITY_COLUMNS)
