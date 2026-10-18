@@ -7,7 +7,10 @@ export function createAuthClient({ fetchImpl = globalThis.fetch, base = '' } = {
     const abort = () => controller.abort()
     if (options.signal?.aborted) controller.abort()
     options.signal?.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, 10000)
+    // Binding the full immutable pool verifies source identities before enqueue.
+    // This is still a bounded HTTP create, never synchronous model training.
+    const timeoutMs = method === 'POST' && path === '/api/admin/training/jobs' && body?.kind === 'lightgbm_all_market' ? 60000 : 10000
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
     try {
       const headers = { ...options.headers, Accept: 'application/json' }
       if (method !== 'GET') {
