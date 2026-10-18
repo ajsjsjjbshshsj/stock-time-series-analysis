@@ -32,11 +32,11 @@ class TaskService:
         if row is None: raise NotFound('Task unavailable')
         return row
 
-    def _event(self,c,task_id,event):
+    def _event(self,c,task_id,event,*,actor_id=None):
         if event not in EVENTS:raise ValueError('Invalid event')
         row=self._row(c,task_id)
         if row['event_count']>=2000:raise ValueError('Event bound exceeded')
-        c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock())))
+        c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock()),actor_id=actor_id))
         c.execute(tasks.update().where(tasks.c.id==task_id).values(event_count=row['event_count']+1))
 
     def create(self,actor_id,request,idempotency_key):
@@ -54,7 +54,7 @@ class TaskService:
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),
                 state='QUEUED',stage='QUEUED',created_at=int(self.clock()),event_count=0))
-            self._event(c,task_id,'CREATED')
+            self._event(c,task_id,'CREATED',actor_id=actor_id)
             return public(self._row(c,task_id))
 
     def get(self,task_id):
@@ -84,7 +84,7 @@ class TaskService:
             values=dict(state=state)
             if state=='CANCELLED':values['finished_at']=int(self.clock())
             c.execute(tasks.update().where(tasks.c.id==task_id).values(**values))
-            self._event(c,task_id,state)
+            self._event(c,task_id,state,actor_id=actor_id)
             return public(self._row(c,task_id))
 
     def _expire(self,c,slot):
@@ -180,4 +180,4 @@ class TaskService:
             if (operator_confirmed is not True or not slot['quarantined'] or slot['task_id']!=task_id
                     or slot['worker_id']!=worker_id or slot['generation']!=generation):
                 raise Conflict('Original process shutdown confirmation required')
-            self._release(c);self._event(c,task_id,'RECOVERED')
+            self._release(c);self._event(c,task_id,'RECOVERED',actor_id=actor_id)

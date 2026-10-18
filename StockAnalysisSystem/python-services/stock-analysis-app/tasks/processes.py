@@ -81,6 +81,8 @@ class OwnedProcess:
         if len(line)>65536:raise ValueError('Task control bound')
         try:
             if os.name=='nt':self.job=_WindowsJob()
+            elif not all(hasattr(os,name) for name in ('waitid','WNOWAIT','WEXITED','WNOHANG','P_PID')):
+                raise OSError('Non-reaping process ownership unavailable')
             self.process=subprocess.Popen(self.command,cwd=self.cwd,env=self.env,stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0,start_new_session=os.name!='nt')
@@ -89,7 +91,7 @@ class OwnedProcess:
             self.process.stdin.write(line);self.process.stdin.flush()
             threading.Thread(target=self._read,daemon=True).start()
         except BaseException:
-            if self.process and not self._assigned and self.process.poll() is None:
+            if os.name=='nt' and self.process and not self._assigned and self.process.poll() is None:
                 self.process.terminate();self.process.wait(timeout=5)
             self.stop();raise
 
@@ -115,14 +117,23 @@ class OwnedProcess:
             except queue.Empty:return messages
 
     def keepalive(self):
-        if self.process and self.process.poll() is None:
+        if self.process and self.poll() is None:
             try:self.process.stdin.write(b'PING\n');self.process.stdin.flush()
             except (BrokenPipeError,OSError):
                 # Closing stdin can precede the visible OS exit by a few ticks.
                 # Completion still requires exit status + drained protocol + files.
                 pass
 
-    def poll(self):return self.process.poll()
+    def poll(self):
+        if os.name=='nt' or self._stopped:return self.process.poll()
+        # Keep even an exited leader waitable: its unreaped PID reserves our
+        # process-group identity until stop has signalled all descendants.
+        # A reaped/external child is NOT safe to signal by its reusable number.
+        if getattr(self.process,'returncode',None) is not None:raise ChildProcessError('Process identity already reaped')
+        result=os.waitid(os.P_PID,self.process.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        if result is None:return None
+        if result.si_pid!=self.process.pid:raise ChildProcessError('Process identity unavailable')
+        return result.si_status if result.si_code==os.CLD_EXITED else -result.si_status
 
     def stop(self):
         if self._stopped:return True
@@ -132,9 +143,11 @@ class OwnedProcess:
         try:
             if self.job and self._assigned:
                 self.job.terminate()
-            elif self.process.poll() is None:
-                if os.name=='nt':self.process.terminate()
-                else:os.killpg(self.process.pid,signal.SIGKILL)
+            elif os.name!='nt':
+                self.poll()  # WNOWAIT verifies ownership, including exited leaders.
+                try:os.killpg(self.process.pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+            elif self.process.poll() is None:self.process.terminate()
             self.process.wait(timeout=5)
             if self.job and self._assigned:
                 deadline=time.monotonic()+5

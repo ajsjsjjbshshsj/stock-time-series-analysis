@@ -21,7 +21,8 @@ tasks=Table('analysis_training_task',schema,
 events=Table('analysis_training_event',schema,
     Column('id',Integer,primary_key=True,autoincrement=True),
     Column('task_id',String(32),ForeignKey('analysis_training_task.id'),nullable=False,index=True),
-    Column('event',String(24),nullable=False),Column('created_at',BigInteger,nullable=False))
+    Column('event',String(24),nullable=False),Column('created_at',BigInteger,nullable=False),
+    Column('actor_id',String(32)))
 
 
 class TaskRepository:

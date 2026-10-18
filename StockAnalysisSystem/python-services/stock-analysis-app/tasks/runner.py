@@ -17,6 +17,11 @@ def run_xgboost(task,root,source,emit):
     frame,calendar,contract=source.load(task)
     names=list(contract['feature_names'])
     emit('INPUT')
+    # Legacy dated_samples deliberately cleans invalid feature rows. A queued
+    # source-bound task must instead reject any malformed requested input.
+    numeric=frame[names].apply(pd.to_numeric,errors='raise')
+    if not np.isfinite(numeric.to_numpy(dtype=float)).all():
+        raise ValueError('Non-finite task features')
     params=dict(n_estimators=request['n_estimators'],max_depth=request['max_depth'],n_jobs=1,
                 random_state=42,tree_method='hist',device='cpu')
     samples=dated_samples(frame,names,horizon=1,classification=True)

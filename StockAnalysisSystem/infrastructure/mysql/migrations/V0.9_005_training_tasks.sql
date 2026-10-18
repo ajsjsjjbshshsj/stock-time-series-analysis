@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS analysis_training_task (
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS analysis_training_event (
  id INT AUTO_INCREMENT PRIMARY KEY, task_id VARCHAR(32) NOT NULL,
- event VARCHAR(24) NOT NULL, created_at BIGINT NOT NULL,
+ event VARCHAR(24) NOT NULL, created_at BIGINT NOT NULL, actor_id VARCHAR(32),
  FOREIGN KEY (task_id) REFERENCES analysis_training_task(id),
  INDEX ix_analysis_training_event_task_id(task_id)
 ) ENGINE=InnoDB;
