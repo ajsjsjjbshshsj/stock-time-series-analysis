@@ -14,6 +14,10 @@ def public(row):
         'started_at','heartbeat_at','finished_at','failure_code')}
     result.update(request=json.loads(row['request']),binding=json.loads(row['binding']),
                   candidate=json.loads(row['candidate']) if row['candidate'] else None)
+    if result['request']['kind']=='lightgbm_all_market':
+        binding=result['binding']
+        result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff')}
+        result['progress']=json.loads(row['progress']) if row['progress'] else None
     return result
 
 
@@ -32,11 +36,12 @@ class TaskService:
         if row is None: raise NotFound('Task unavailable')
         return row
 
-    def _event(self,c,task_id,event,*,actor_id=None):
+    def _event(self,c,task_id,event,*,actor_id=None,detail=None):
         if event not in EVENTS:raise ValueError('Invalid event')
         row=self._row(c,task_id)
         if row['event_count']>=2000:raise ValueError('Event bound exceeded')
-        c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock()),actor_id=actor_id))
+        c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock()),actor_id=actor_id,
+                                        detail=encoded(detail) if detail is not None else None))
         c.execute(tasks.update().where(tasks.c.id==task_id).values(event_count=row['event_count']+1))
 
     def create(self,actor_id,request,idempotency_key):
@@ -74,7 +79,10 @@ class TaskService:
             self._row(c,task_id)
             rows=c.execute(select(events).where(events.c.task_id==task_id,events.c.id>after)
                            .order_by(events.c.id).limit(limit)).mappings().all()
-        return dict(items=[dict(r) for r in rows],next_cursor=rows[-1]['id'] if rows else after)
+        items=[dict(r) for r in rows]
+        for item in items:
+            if item['detail'] is not None:item['detail']=json.loads(item['detail'])
+        return dict(items=items,next_cursor=rows[-1]['id'] if rows else after)
 
     def cancel(self,actor_id,task_id):
         with self.repo.transaction() as (c,_):
@@ -118,9 +126,22 @@ class TaskService:
             c.execute(tasks.update().where(tasks.c.id==row['id']).values(state='RUNNING',stage='PREFLIGHT',
                 worker_id=worker_id,generation=generation,started_at=now,heartbeat_at=now))
             self._event(c,row['id'],'PREFLIGHT')
-            result=public(self._row(c,row['id']))
+            current=self._row(c,row['id'])
+            result=public(current)
+            result['binding']=json.loads(current['binding'])
             result.update(worker_id=worker_id,generation=generation)
             return result
+
+    def execution_task(self,task_id,worker_id,generation,expected_sha):
+        """Internal reference handshake: never exposed as a browser endpoint."""
+        from .artifacts import task_digest
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation)
+            if row['state']!='RUNNING':raise LeaseLost('Task execution cancelled')
+            task=dict(id=row['id'],request=json.loads(row['request']),binding=json.loads(row['binding']))
+            if not isinstance(expected_sha,str) or task_digest(task)!=expected_sha:
+                raise ValueError('Task reference mismatch')
+            return task
 
     def _owned(self,c,slot,task_id,worker_id,generation):
         identity(task_id);identity(worker_id);bound_integer(generation,1,2**63-1)
@@ -139,7 +160,7 @@ class TaskService:
             return public(self._row(c,task_id))
 
     def stage(self,task_id,worker_id,generation,stage):
-        allowed=('PREFLIGHT','INPUT','TRAIN','VERIFY','SAVE')
+        allowed=('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE')
         if stage not in allowed:raise ValueError('Invalid training stage')
         with self.repo.transaction() as (c,slot):
             row=self._owned(c,slot,task_id,worker_id,generation)
@@ -147,6 +168,22 @@ class TaskService:
             if row['stage']!=stage:
                 c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage))
                 self._event(c,task_id,stage)
+            return public(self._row(c,task_id))
+
+    def progress(self,task_id,worker_id,generation,phase,completed,total):
+        if phase not in ('INPUT','PROBE','TRAIN'):raise ValueError('Invalid progress phase')
+        bound_integer(total,1,10000000);bound_integer(completed,0,total)
+        detail=dict(phase=phase,completed=completed,total=total)
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation)
+            if json.loads(row['request'])['kind']!='lightgbm_all_market' or row['stage']!=phase:
+                raise Conflict('Progress does not match current stage')
+            old=json.loads(row['progress']) if row['progress'] else None
+            if old and old['phase']==phase:
+                if total!=old['total'] or completed<old['completed']:raise Conflict('Progress regression')
+                if completed==old['completed']:return public(row)
+            c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
+            self._event(c,task_id,'PROGRESS',detail=detail)
             return public(self._row(c,task_id))
 
     def _release(self,c):
