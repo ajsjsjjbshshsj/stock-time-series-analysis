@@ -10,7 +10,7 @@ from .market_evidence import SuspensionEvidence,collector_root
 
 def market_identity():
     names=('tasks/market_source.py','tasks/market_evidence.py','tasks/source.py',
-           'database/feature_store_reader.py')
+           'database/feature_store_reader.py','tasks/market_samples.py','tasks/disk_matrix.py')
     files={name:(APP/name).read_text(encoding='utf-8') for name in names}
     for name in ('app/preparation/evidence.py','app/repositories/source_evidence_repository.py',
                  'app/market_data/repair_contract.py','app/market_data/repair_acquisition.py'):
@@ -79,6 +79,7 @@ class MarketSource:
         with self.engine.connect() as c:
             reader.validate_metadata(meta);reader.validate_table(c,CANONICAL_TABLE,meta['build_id'])
         request=task['request'];start,end=date_only(request['start_date']),date_only(request['end_date'])
+        reference_by_code={row['ts_code']:row for row in references}
         expected=(meta['build_id'],meta['source_sha256'])
         for code in codes:
             with self.engine.connect() as c,c.begin():
@@ -87,6 +88,7 @@ class MarketSource:
                     raise SourceChanged('Full market publication changed')
                 snapshot=reader.read_stock_snapshot(c,code,meta,start,end)
             proof=self.evidence.for_stock(code,str(meta['source_start']),request['end_date'])
+            proof['list_date']=reference_by_code[code]['list_date']
             yield code,snapshot,calendar,proof
             del snapshot,proof
         self._verify_binding(task)
