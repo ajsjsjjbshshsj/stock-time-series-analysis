@@ -44,7 +44,7 @@ def _metadata(payload):
 
 
 def create_app(repository=None, evaluation_repository=None, transformer_signals_root=None,
-               auth_service=None,auth_settings=None):
+               auth_service=None,auth_settings=None,task_service=None):
     from api.auth.contracts import AuthSettings
     settings=auth_settings or AuthSettings.from_env()
     @asynccontextmanager
@@ -64,6 +64,12 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
             from api.auth.repository import AuthRepository
             from api.auth.service import AuthService
             app.state.auth_service=AuthService(AuthRepository(app.state.repository.connector.engine),secret=settings.secret)
+        if settings.mode=='protected' and task_service is None and app.state.auth_service is not None:
+            from tasks.repository import TaskRepository
+            from tasks.service import TaskService
+            from tasks.source import SourceProvider
+            engine=app.state.auth_service.repo.engine
+            app.state.task_service=TaskService(TaskRepository(engine),SourceProvider(engine))
         try:
             yield
         finally:
@@ -77,8 +83,11 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     app.state.evaluation_repository = evaluation_repository
     app.state.auth_settings=settings
     app.state.auth_service=auth_service
+    app.state.task_service=task_service
     from api.auth.routes import register_auth_routes
     register_auth_routes(app)
+    from tasks.routes import register_task_routes
+    register_task_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

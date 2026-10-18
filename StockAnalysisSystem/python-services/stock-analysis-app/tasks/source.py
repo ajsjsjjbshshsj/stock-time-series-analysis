@@ -46,6 +46,15 @@ class SourceProvider:
         configured=Path(calendar_path or os.getenv('TRAINING_CALENDAR_FILE','.runtime/training_tasks/calendar.json'))
         self.calendar_path=configured if configured.is_absolute() else PROJECT/configured
 
+    def describe(self):
+        calendar=read_calendar(self.calendar_path)
+        with self.engine.connect() as c:
+            row=c.execute(text('SELECT state,build_id,source_start,source_cutoff FROM stock_feature_build WHERE active_slot=:slot'),dict(slot='traditional_v2')).mappings().one_or_none()
+        if row is None or row['state']!='READY':raise ValueError('READY source required')
+        start=max(str(row['source_start']),calendar['start']);end=min(str(row['source_cutoff']),calendar['end'])
+        if start>end:raise ValueError('No covered source range')
+        return dict(build_id=row['build_id'],source_start=start,source_cutoff=end)
+
     def bind(self,request):
         request=normalize_request(request);calendar=read_calendar(self.calendar_path)
         if not calendar['start']<=request['start_date']<=request['end_date']<=calendar['end']:
