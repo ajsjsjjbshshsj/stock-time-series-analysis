@@ -17,7 +17,8 @@ class LeaseLost(RuntimeError): pass
 class TaskFailure(RuntimeError):
     def __init__(self,code):
         self.code=code if code in {'SOURCE_CHANGED','INPUT_INVALID','TRAINING_FAILED','CANDIDATE_INVALID',
-            'PROCESS_FAILED','PROTOCOL_INVALID','INTERRUPTED','DEPENDENCY_UNAVAILABLE'} else 'TRAINING_FAILED'
+            'PROCESS_FAILED','PROTOCOL_INVALID','INTERRUPTED','DEPENDENCY_UNAVAILABLE',
+            'RESOURCE_UNAVAILABLE','RESOURCE_LIMIT','TIME_LIMIT'} else 'TRAINING_FAILED'
         super().__init__(self.code)
 
 

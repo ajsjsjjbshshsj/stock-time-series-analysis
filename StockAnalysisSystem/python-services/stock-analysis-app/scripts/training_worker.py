@@ -12,6 +12,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='command',required=True)
     commands.add_parser('migrate',help='Create only training tables, never market data')
+    commands.add_parser('migrate-all-market',help='Explicit additive training queue upgrade; stop API/worker first')
     run=commands.add_parser('run',help='Run the single-slot worker, protected mode required')
     run.add_argument('--once',action='store_true',help='Attempt at most one queued job')
     commands.add_parser('status',help='Show execution slot status; never starts training')
@@ -26,6 +27,8 @@ def main():
     from tasks.contracts import encoded
     with DatabaseConnector(diagnostic=True) as db:
         repo=TaskRepository(db.engine)
+        if args.command=='migrate-all-market':
+            repo.migrate_all_market();print('All-market training queue schema ready; no task started.');return
         if args.command=='migrate':
             repo.migrate();print('Training tables ready; no task or worker started.');return
         if settings.mode!='protected':raise ValueError('Protected configuration required')

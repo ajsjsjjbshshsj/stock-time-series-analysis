@@ -11,7 +11,8 @@ from .market_evidence import SuspensionEvidence,collector_root
 def market_identity():
     names=('tasks/market_source.py','tasks/market_evidence.py','tasks/source.py',
            'database/feature_store_reader.py','tasks/market_samples.py','tasks/disk_matrix.py',
-           'tasks/market_profile.py','analysis/disk_probe.py','analysis/disk_ranking.py','data_processor/probe_rules.py')
+           'tasks/market_profile.py','analysis/disk_probe.py','analysis/disk_ranking.py','data_processor/probe_rules.py',
+           'tasks/lightgbm_runner.py','tasks/lightgbm_artifacts.py','tasks/resources.py')
     files={name:(APP/name).read_text(encoding='utf-8') for name in names}
     for name in ('app/preparation/evidence.py','app/repositories/source_evidence_repository.py',
                  'app/market_data/repair_contract.py','app/market_data/repair_acquisition.py'):

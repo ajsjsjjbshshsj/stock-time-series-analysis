@@ -11,9 +11,20 @@ from .contracts import encoded,TaskFailure
 
 def parse_message(raw):
     if len(raw)>4096 or not raw.endswith(b'\n'):raise ValueError('Protocol bound')
-    body=json.loads(raw,parse_constant=lambda x:(_ for _ in ()).throw(ValueError('Protocol number')))
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise ValueError('Duplicate protocol field')
+            result[key]=value
+        return result
+    body=json.loads(raw,object_pairs_hook=unique,parse_constant=lambda x:(_ for _ in ()).throw(ValueError('Protocol number')))
     if not isinstance(body,dict):raise ValueError('Protocol schema')
-    if set(body)=={'event','stage'} and body['event']=='stage' and body['stage'] in ('PREFLIGHT','INPUT','TRAIN','VERIFY','SAVE'):return body
+    if set(body)=={'event','stage'} and body['event']=='stage' and body['stage'] in ('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE'):return body
+    if set(body)=={'event','phase','completed','total'} and body['event']=='progress':
+        from .contracts import bound_integer
+        if body['phase'] not in ('INPUT','PROBE','TRAIN'):raise ValueError('Protocol phase')
+        bound_integer(body['total'],1,10000000);bound_integer(body['completed'],0,body['total'])
+        return body
     if set(body)=={'event'} and body['event']=='complete':return body
     if set(body)=={'event','code'} and body['event']=='failure':
         return dict(event='failure',code=TaskFailure(body['code']).code)
@@ -67,6 +78,43 @@ class _WindowsJob:
 
     def close(self):
         if self.handle:self.kernel.CloseHandle(self.handle);self.handle=None
+
+    def rss_bytes(self):
+        """Enumerate job members, open each handle, verify membership, read RSS."""
+        from ctypes import wintypes as wt
+        ct=self.ct;size=256
+        while True:
+            data=ct.create_string_buffer(size)
+            if self.kernel.QueryInformationJobObject(self.handle,3,data,size,None):break
+            if ct.get_last_error()!=234 or size>=1024*1024:raise OSError('Owned memory query unavailable')
+            size*=2
+        count=ct.c_uint32.from_buffer(data,4).value
+        if 8+count*ct.sizeof(ct.c_size_t)>size:raise OSError('Invalid job member count')
+        ids=(ct.c_size_t*count).from_buffer(data,8)
+        self.kernel.OpenProcess.argtypes=[wt.DWORD,wt.BOOL,wt.DWORD];self.kernel.OpenProcess.restype=wt.HANDLE
+        self.kernel.IsProcessInJob.argtypes=[wt.HANDLE,wt.HANDLE,ct.POINTER(wt.BOOL)]
+        self.kernel.IsProcessInJob.restype=wt.BOOL
+        class Counters(ct.Structure):
+            _fields_=[('cb',wt.DWORD),('faults',wt.DWORD)]+[(name,ct.c_size_t) for name in
+                ('peak_ws','ws','peak_paged','paged','peak_nonpaged','nonpaged','pagefile','peak_pagefile','private')]
+        psapi=ct.WinDLL('psapi',use_last_error=True)
+        psapi.GetProcessMemoryInfo.argtypes=[wt.HANDLE,ct.POINTER(Counters),wt.DWORD]
+        psapi.GetProcessMemoryInfo.restype=wt.BOOL;total=0
+        for pid in ids:
+            handle=self.kernel.OpenProcess(0x410,False,pid)
+            if not handle:
+                if ct.get_last_error()==87:continue  # exited between enumeration/open
+                raise OSError('Owned process handle unavailable')
+            try:
+                member=wt.BOOL()
+                if not self.kernel.IsProcessInJob(handle,self.handle,ct.byref(member)):raise OSError('Owned membership unavailable')
+                if not member.value:continue  # PID was recycled outside this job.
+                info=Counters();info.cb=ct.sizeof(info)
+                if not psapi.GetProcessMemoryInfo(handle,ct.byref(info),ct.sizeof(info)):
+                    raise OSError('Owned process memory unavailable')
+                total+=info.ws
+            finally:self.kernel.CloseHandle(handle)
+        return int(total)
 
 
 class OwnedProcess:
@@ -123,6 +171,21 @@ class OwnedProcess:
                 # Closing stdin can precede the visible OS exit by a few ticks.
                 # Completion still requires exit status + drained protocol + files.
                 pass
+
+    def rss_bytes(self):
+        if self.process is None or self._stopped:return 0
+        if self.job and self._assigned:return self.job.rss_bytes()
+        # The leader remains unreaped, reserving our process-group identity.
+        self.poll()
+        import psutil
+        total=0
+        for process in psutil.process_iter():
+            try:
+                if os.getpgid(process.pid)==self.process.pid:
+                    before=process.create_time();rss=process.memory_info().rss
+                    if process.create_time()==before and os.getpgid(process.pid)==self.process.pid:total+=rss
+            except (ProcessLookupError,psutil.NoSuchProcess):pass
+        return int(total)
 
     def poll(self):
         if os.name=='nt' or self._stopped:return self.process.poll()

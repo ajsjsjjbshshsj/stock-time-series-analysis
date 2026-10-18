@@ -196,19 +196,27 @@ class TaskService:
             row=self._owned(c,slot,task_id,worker_id,generation)
             if row['state']=='CANCEL_REQUESTED':outcome='CANCELLED'
             if outcome=='SUCCEEDED':
-                import re
-                if (not isinstance(candidate,dict) or set(candidate)!={'task_id','purpose','verified','manifest_sha256','files','metrics'}
-                        or candidate['task_id']!=task_id or candidate['purpose']!='engineering_smoke' or candidate['verified'] is not True
-                        or not isinstance(candidate['manifest_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',candidate['manifest_sha256'])
-                        or set(candidate['files'])!={'model.json','metadata.json','probe.json'}
-                        or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in candidate['files'].values())):
-                    raise ValueError('Verified candidate required')
+                request=json.loads(row['request'])
+                if request['kind']=='lightgbm_all_market':
+                    from .lightgbm_artifacts import validate_summary
+                    validate_summary(candidate,dict(id=task_id,request=request,binding=json.loads(row['binding'])))
+                else:self._validate_xgboost_candidate(candidate,task_id)
             else:candidate=None
             c.execute(tasks.update().where(tasks.c.id==task_id).values(state=outcome,stage='DONE',
                 finished_at=int(self.clock()),candidate=encoded(candidate) if candidate else None,
                 failure_code=TaskFailure(failure_code).code if outcome in ('FAILED','INTERRUPTED') else None))
             self._event(c,task_id,outcome);self._release(c)
             return public(self._row(c,task_id))
+
+    @staticmethod
+    def _validate_xgboost_candidate(candidate,task_id):
+        import re
+        if (not isinstance(candidate,dict) or set(candidate)!={'task_id','purpose','verified','manifest_sha256','files','metrics'}
+                or candidate['task_id']!=task_id or candidate['purpose']!='engineering_smoke' or candidate['verified'] is not True
+                or not isinstance(candidate['manifest_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',candidate['manifest_sha256'])
+                or set(candidate['files'])!={'model.json','metadata.json','probe.json'}
+                or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in candidate['files'].values())):
+            raise ValueError('Verified candidate required')
 
     def recover(self,actor_id,task_id,worker_id,generation,*,operator_confirmed):
         identity(task_id);identity(worker_id)

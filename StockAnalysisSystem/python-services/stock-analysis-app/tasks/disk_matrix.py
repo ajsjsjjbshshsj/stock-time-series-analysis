@@ -85,7 +85,7 @@ class MatrixBundle:
             splits[phase]=index
         coverage_path=directory/'coverage.json'
         if coverage_path.stat().st_size>16*1024*1024:raise ValueError('Coverage bound exceeded')
-        coverage=json.loads(coverage_path.read_text(encoding='utf-8'))
+        coverage=read_json(coverage_path,max_bytes=16*1024*1024)
         return cls(directory,meta['rows'],meta['feature_names'],arrays['features.f32'],arrays['labels.f64'],
                    arrays['dates.i32'],arrays['targets.i32'],arrays['codes.i32'],splits,meta['splits'],coverage)
 
