@@ -56,8 +56,9 @@
       <main class="content">
         <section v-if="authState.mode === 'protected' && ['overview', 'collector'].includes(route.name)" class="card">
           <h1>后台功能尚未接入</h1>
-          <p>当前可使用账户管理、消费监控和用户端真实结果。采集管理与训练队列尚未接线，不展示模拟任务成功。</p>
+          <p>当前可使用账户管理、训练任务、消费监控和用户端真实结果。采集管理尚未接线，不展示模拟任务成功。</p>
           <RouterLink class="btn" to="/accounts">账户管理</RouterLink>
+          <RouterLink class="btn" to="/training">训练任务</RouterLink>
           <RouterLink class="btn" to="/user">查看用户端</RouterLink>
         </section>
         <RouterView v-else :key="dataSource + route.path" />
@@ -90,6 +91,7 @@ async function logout() {
   catch (e) { logoutError.value = `退出失败，当前仍登录：${e.message}` }
 }
 const sourceLabel = computed(() => {
+  if (authState.mode === 'protected' && route.name === 'training') return '受保护模式 · 真实工程任务 · 不自动发布'
   if (authState.mode === 'protected' && route.name === 'accounts') return '受保护模式 · 真实账户管理'
   if (authState.mode === 'protected' && ['overview', 'collector'].includes(route.name)) return '受保护模式 · 后台功能未就绪'
   if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'

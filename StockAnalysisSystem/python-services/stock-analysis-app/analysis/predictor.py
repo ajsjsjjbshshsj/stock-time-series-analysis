@@ -148,7 +148,7 @@ class StockPredictor:
         result.loc[:, names] = values
         return result[np.isfinite(values.to_numpy(dtype=float)).all(axis=1)].sort_values('trade_date')
 
-    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2, allow_panel=False, calendar=None):
+    def train_dated(self, df, *, feature_names, horizon=1, train_ratio=.6, val_ratio=.2, test_ratio=.2, allow_panel=False, calendar=None, model_params=None):
         """Date-bound alternative to legacy anonymous-array trainers; no save."""
         from analysis.strategy_samples import dated_samples, purged_splits
         if df.attrs.get('feature_store_contract'):
@@ -164,6 +164,21 @@ class StockPredictor:
         groups = purged_splits(samples, train_ratio=train_ratio, val_ratio=val_ratio, test_ratio=test_ratio)
         train, val, test = (groups[k] for k in ('train', 'val', 'test'))
         params = dict(MODEL_CONFIG['xgboost_params'])
+        if model_params is not None:
+            allowed={'n_estimators','max_depth','n_jobs','random_state','tree_method','device'}
+            if (not isinstance(model_params,dict) or not set(model_params)<=allowed
+                    or type(model_params.get('n_estimators',20)) is not int
+                    or not 1<=model_params.get('n_estimators',20)<=100
+                    or type(model_params.get('max_depth',3)) is not int
+                    or not 1<=model_params.get('max_depth',3)<=6
+                    or model_params.get('n_jobs',1)!=1 or model_params.get('random_state',42)!=42
+                    or model_params.get('tree_method','hist')!='hist' or model_params.get('device','cpu')!='cpu'):
+                raise ValueError('Invalid bounded engineering parameters')
+            # Queue engineering profiles are self-contained, not a partial
+            # overlay on mutable legacy/global training defaults.
+            params=dict(n_estimators=20,max_depth=3,learning_rate=.1,random_state=42,
+                        n_jobs=1,tree_method='hist',device='cpu')
+            params.update(model_params)
         params.setdefault('random_state', MODEL_CONFIG.get('random_seed', 42))
         params.update(objective='binary:logistic' if classification else 'reg:squarederror',
                       eval_metric='logloss' if classification else 'rmse')
@@ -173,6 +188,7 @@ class StockPredictor:
         self.model, self.feature_names = model, list(feature_names)
         self.train_metadata = dict(validation_schema=1, seen_through=groups['seen_through'],
                                    splits=groups['splits'], horizon=horizon, feature_names=list(feature_names))
+        if model_params is not None:self.train_metadata['engineering_params']=dict(params)
         if df.attrs.get('feature_store_contract'):
             self.feature_contract=dict(df.attrs['feature_store_contract'])
             self.train_metadata.update({k:v for k,v in self.feature_contract.items() if k!='feature_names'})
