@@ -104,6 +104,7 @@ def build_market_matrix(task,stock_iterator,workdir,emit):
             if len(seen)>=len(codes) or code!=codes[len(seen)]:raise ValueError('Stream changed frozen pool')
             samples,report=qualify_stock(snapshot,calendar,proof,task['request'])
             if not seen:
+                coverage['calendar']=calendar
                 coverage['daily_eligible_stocks']={str(day):0 for day in open_days(calendar)
                     if task['request']['start_date']<=str(day)<=task['request']['end_date']}
             for day in samples.trade_date:

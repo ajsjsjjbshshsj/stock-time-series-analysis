@@ -63,8 +63,8 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
     frame['trade_date']=[date_only(v) for v in frame.trade_date]
     if (frame.duplicated(['ts_code','trade_date']).any() or set(zip(frame.ts_code,frame.trade_date))!=set(zip(raw.ts_code,raw.trade_date))):
         raise ValueError('Feature and price keys differ')
-    listed=absence_proof.get('list_date') or evidence[code].get('first_date')
-    if not isinstance(listed,str):raise ValueError('Listing/reference boundary required')
+    listed=absence_proof.get('list_date')
+    if not isinstance(listed,str) or not listed:raise MarketInputError(code,start,'UNKNOWN_LISTING_BOUNDARY')
     if re.fullmatch('[0-9]{8}',listed):listed=f'{listed[:4]}-{listed[4:6]}-{listed[6:]}'
     listed=date_only(listed);suspended={date_only(v) for v in absence_proof['full_days']}
     quotes={row.trade_date:row.close for row in history.itertuples()}
