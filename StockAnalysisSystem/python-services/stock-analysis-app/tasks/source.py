@@ -57,7 +57,11 @@ class SourceProvider:
         return dict(build_id=row['build_id'],source_start=start,source_cutoff=end)
 
     def bind(self,request):
-        request=normalize_request(request);calendar=read_calendar(self.calendar_path)
+        request=normalize_request(request)
+        if request['kind']=='lightgbm_all_market':
+            from .market_source import MarketSource
+            return MarketSource(self.engine,self.calendar_path).bind(request)
+        calendar=read_calendar(self.calendar_path)
         if not calendar['start']<=request['start_date']<=request['end_date']<=calendar['end']:
             raise ValueError('Calendar does not cover task')
         with self.engine.connect() as c:

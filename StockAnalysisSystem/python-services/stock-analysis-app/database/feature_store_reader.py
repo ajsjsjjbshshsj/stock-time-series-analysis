@@ -82,6 +82,32 @@ def stock_source(connection,code,meta):
     return frame,evidence
 
 
+def read_stock_snapshot(connection,code,meta,start,end):
+    """One stock, caller-owned transaction and prevalidated global publication."""
+    validate_stock_code(code);start=date_only(start);end=date_only(end)
+    if start>end or start<date_only(meta['source_start']) or end>date_only(meta['source_cutoff']):
+        raise FeatureStoreUnavailable('Requested range outside verified feature source')
+    raw,proof=stock_source(connection,code,meta)
+    history=raw.copy()
+    for name in SOURCE_COLUMNS[2:]:history[name]=pd.to_numeric(history[name]).astype(float)
+    raw=raw[raw.trade_date.between(start,end)].copy()
+    reference=connection.execute(text('SELECT industry,name FROM stock_basic WHERE ts_code=:code'),dict(code=code)).mappings().one()
+    raw['industry']=reference['industry'];raw['name']=reference['name']
+    fields=','.join('`'+name+'`' for name in ('ts_code','trade_date',*FEATURE_COLUMNS))
+    rows=connection.execute(text(f'SELECT {fields} FROM `{CANONICAL_TABLE}` WHERE build_id=:id AND ts_code=:code AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),
+                            dict(id=meta['build_id'],code=code,start=start,end=end)).mappings().all()
+    frame=pd.DataFrame(rows,columns=('ts_code','trade_date',*FEATURE_COLUMNS))
+    frame['trade_date']=[date_only(value) for value in frame.trade_date]
+    keys=set(zip(raw.ts_code,raw.trade_date))
+    if len(frame)!=len(keys) or keys!=set(zip(frame.ts_code,frame.trade_date)):
+        raise FeatureStoreUnavailable('Requested feature key coverage missing')
+    for name in SOURCE_COLUMNS[2:]:raw[name]=pd.to_numeric(raw[name]).astype(float)
+    metadata={k:meta[k] for k in ('build_id','storage_contract','algorithm_version','columns_sha256','code_sha256','source_sha256')}
+    metadata.update(source_start=str(meta['source_start']),source_cutoff=str(meta['source_cutoff']),
+                    feature_names=list(FEATURE_COLUMNS),source_evidence={code:proof})
+    return FeatureSnapshot(frame,metadata,raw,history)
+
+
 def load_feature_snapshot(session,stock_codes=None,start_date=None,end_date=None,expected_keys=None):
     """Caller owns one bounded read transaction; labels never enter this reader."""
     try:
@@ -96,23 +122,12 @@ def load_feature_snapshot(session,stock_codes=None,start_date=None,end_date=None
         if not codes or len(set(codes))!=len(codes):raise FeatureStoreUnavailable('Invalid requested feature pool')
         codes=sorted(validate_stock_code(c) for c in codes)
         features=[];prices=[];histories=[];evidence={};all_keys=set()
-        fields=','.join('`'+c+'`' for c in ('ts_code','trade_date',*FEATURE_COLUMNS))
         for code in codes:
-            raw,proof=stock_source(connection,code,meta)
-            history=raw.copy()
-            for c in SOURCE_COLUMNS[2:]:history[c]=pd.to_numeric(history[c]).astype(float)
-            histories.append(history)
-            raw=raw[raw.trade_date.between(start,end)].copy()
-            reference=connection.execute(text('SELECT industry,name FROM stock_basic WHERE ts_code=:code'),dict(code=code)).mappings().one()
-            raw['industry']=reference['industry'];raw['name']=reference['name']
-            rows=connection.execute(text(f'SELECT {fields} FROM `{CANONICAL_TABLE}` WHERE build_id=:id AND ts_code=:code AND trade_date BETWEEN :start AND :end ORDER BY trade_date'),dict(id=meta['build_id'],code=code,start=start,end=end)).mappings().all()
-            frame=pd.DataFrame(rows,columns=('ts_code','trade_date',*FEATURE_COLUMNS))
-            keys=set(zip(raw.ts_code,raw.trade_date))
-            if keys!=set(zip(frame.ts_code,frame.trade_date)):
-                raise FeatureStoreUnavailable('Requested feature key coverage missing')
+            stock=read_stock_snapshot(connection,code,meta,start,end)
+            keys=set(zip(stock.raw_prices.ts_code,stock.raw_prices.trade_date))
             all_keys.update(keys)
-            for c in SOURCE_COLUMNS[2:]:raw[c]=pd.to_numeric(raw[c]).astype(float)
-            features.append(frame);prices.append(raw);evidence[code]=proof
+            features.append(stock.frame);prices.append(stock.raw_prices);histories.append(stock.source_history)
+            evidence.update(stock.metadata['source_evidence'])
         if expected_keys is not None and {(validate_stock_code(c),date_only(d)) for c,d in expected_keys}!=all_keys:
             raise FeatureStoreUnavailable('Caller source keys differ from verified scope')
         # A metadata/table switch at any point is fail-closed, never legacy data.
