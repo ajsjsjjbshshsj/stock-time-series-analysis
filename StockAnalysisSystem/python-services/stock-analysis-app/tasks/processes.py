@@ -74,7 +74,7 @@ class OwnedProcess:
     def __init__(self,command,*,cwd,env=None):
         self.command=list(command);self.cwd=cwd;self.env=env
         self.process=None;self.job=None;self._assigned=False;self._stopped=False
-        self.protocol_error=threading.Event();self._messages=queue.Queue(maxsize=64)
+        self.protocol_error=threading.Event();self.reader_done=threading.Event();self._messages=queue.Queue(maxsize=64)
 
     def start(self,payload):
         line=encoded(payload).encode()+b'\n'
@@ -104,8 +104,10 @@ class OwnedProcess:
                 message=parse_message(raw)
                 self._messages.put_nowait(message)
         except Exception:self.protocol_error.set()
+        finally:self.reader_done.set()
 
-    def messages(self):
+    def messages(self,final=False):
+        if final and not self.reader_done.wait(timeout=5):raise TaskFailure('PROTOCOL_INVALID')
         if self.protocol_error.is_set():raise TaskFailure('PROTOCOL_INVALID')
         messages=[]
         while True:
@@ -116,7 +118,9 @@ class OwnedProcess:
         if self.process and self.process.poll() is None:
             try:self.process.stdin.write(b'PING\n');self.process.stdin.flush()
             except (BrokenPipeError,OSError):
-                if self.process.poll() is None:raise
+                # Closing stdin can precede the visible OS exit by a few ticks.
+                # Completion still requires exit status + drained protocol + files.
+                pass
 
     def poll(self):return self.process.poll()
 

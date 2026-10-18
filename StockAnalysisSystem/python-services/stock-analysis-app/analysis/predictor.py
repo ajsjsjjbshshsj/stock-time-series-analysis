@@ -174,6 +174,10 @@ class StockPredictor:
                     or model_params.get('n_jobs',1)!=1 or model_params.get('random_state',42)!=42
                     or model_params.get('tree_method','hist')!='hist' or model_params.get('device','cpu')!='cpu'):
                 raise ValueError('Invalid bounded engineering parameters')
+            # Queue engineering profiles are self-contained, not a partial
+            # overlay on mutable legacy/global training defaults.
+            params=dict(n_estimators=20,max_depth=3,learning_rate=.1,random_state=42,
+                        n_jobs=1,tree_method='hist',device='cpu')
             params.update(model_params)
         params.setdefault('random_state', MODEL_CONFIG.get('random_seed', 42))
         params.update(objective='binary:logistic' if classification else 'reg:squarederror',
@@ -184,6 +188,7 @@ class StockPredictor:
         self.model, self.feature_names = model, list(feature_names)
         self.train_metadata = dict(validation_schema=1, seen_through=groups['seen_through'],
                                    splits=groups['splits'], horizon=horizon, feature_names=list(feature_names))
+        if model_params is not None:self.train_metadata['engineering_params']=dict(params)
         if df.attrs.get('feature_store_contract'):
             self.feature_contract=dict(df.attrs['feature_store_contract'])
             self.train_metadata.update({k:v for k,v in self.feature_contract.items() if k!='feature_names'})

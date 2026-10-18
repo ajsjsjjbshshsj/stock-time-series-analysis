@@ -33,6 +33,11 @@ class TaskRepository:
             if c.execute(select(slots.c.id).where(slots.c.id==1)).first() is None:
                 c.execute(slots.insert().values(id=1,generation=0,quarantined=False))
 
+    def check_ready(self):
+        """Fail startup once on an incomplete schema, never silently retry it."""
+        with self.transaction() as (c,_):
+            for table in schema.sorted_tables:c.execute(select(table).limit(0))
+
     @contextmanager
     def transaction(self):
         with self.engine.begin() as c:

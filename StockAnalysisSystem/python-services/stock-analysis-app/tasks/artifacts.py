@@ -8,15 +8,21 @@ from .contracts import identity,digest,encoded,normalize_request
 FILES=('model.json','metadata.json','probe.json')
 
 
+def _is_link(path):
+    if path.is_symlink():return True
+    try:return bool(getattr(path.lstat(),'st_file_attributes',0)&0x400)  # Windows reparse point/junction, also on Python3.11.
+    except FileNotFoundError:return False
+
+
 def task_path(root,task_id):
     identity(task_id);root=Path(root).absolute()
-    if any(p.is_symlink() for p in (root,*root.parents)):raise ValueError('Unsafe candidate root')
+    if any(_is_link(p) for p in (root,*root.parents)):raise ValueError('Unsafe candidate root')
     root=root.resolve();path=root/task_id
     app=Path(__file__).resolve().parents[1]
     protected=app/'models'
     if root==app or root==app.parents[1] or root.is_relative_to(protected) or protected.is_relative_to(root):
         raise ValueError('Candidate root overlaps protected models')
-    if path.is_symlink() or path.resolve().parent!=root:raise ValueError('Unsafe task path')
+    if _is_link(path) or path.resolve().parent!=root:raise ValueError('Unsafe task path')
     return path
 
 

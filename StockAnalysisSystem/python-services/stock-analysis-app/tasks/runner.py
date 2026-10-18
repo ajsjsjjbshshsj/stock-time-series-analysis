@@ -1,5 +1,6 @@
 """One explicit CPU task. Success means reload-verified candidate, never release."""
 import time
+import json
 from .contracts import normalize_request
 from .artifacts import task_path,task_digest,write_json,file_digest,verify_candidate,FILES
 
@@ -30,7 +31,8 @@ def run_xgboost(task,root,source,emit):
     predictions=result['model'].predict(probe)
     if not np.isfinite(predictions).all():raise ValueError('Invalid model predictions')
     metadata=dict(schema_version=1,task_sha256=task_digest(task),purpose='engineering_smoke',
-        feature_names=names,params=params,metrics=metrics,training=result['metadata'],source=task['binding'],
+        feature_names=names,params=result['metadata']['engineering_params'],metrics=metrics,training=result['metadata'],source=task['binding'],
+        booster_config=json.loads(result['model'].get_booster().save_config()),
         dependencies=dict(xgboost=xgboost.__version__,pandas=pd.__version__,numpy=np.__version__),
         confusion_matrix=result['metrics']['Confusion_Matrix'].tolist(),elapsed_seconds=time.monotonic()-started)
     path.parent.mkdir(parents=True,exist_ok=True);path.mkdir()

@@ -26,9 +26,9 @@ class Worker:
             process=self.process_factory()
             process.start(dict(task={k:task[k] for k in ('id','request','binding')},root=str(self.root)))
             last_heartbeat=last_ping=0.;started=time.monotonic();complete=False
-            def drain():
+            def drain(final=False):
                 nonlocal complete
-                for event in process.messages():
+                for event in process.messages(final=final):
                     if event['event']=='stage':self.service.stage(*fence,event['stage'])
                     elif event['event']=='failure':raise TaskFailure(event['code'])
                     elif event['event']=='complete':
@@ -43,8 +43,7 @@ class Worker:
                 if now-last_ping>=1:process.keepalive();last_ping=now
                 drain()
                 if process.poll() is not None:
-                    # Reader can finish just after the OS exit becomes visible.
-                    time.sleep(.05);drain()
+                    drain(final=True)
                     if process.poll()!=0 or not complete:raise TaskFailure('PROCESS_FAILED')
                     if not process.stop():raise TaskFailure('PROCESS_FAILED')
                     from .artifacts import verify_candidate
@@ -67,6 +66,7 @@ class Worker:
         return True
 
     def run(self):
+        self.service.repo.check_ready()
         while True:
             try:
                 if not self.run_once():time.sleep(1)

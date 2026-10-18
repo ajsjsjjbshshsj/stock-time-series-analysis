@@ -1,6 +1,6 @@
 <template>
   <div>
-    <p v-if="protectedContext" class="card section" role="status">后台训练队列尚未接入，当前不能提交训练；请在用户端查看已封存结果。下方不展示模拟训练成功。</p>
+    <p v-if="protectedContext" class="card section" role="status">Transformer 任务尚未接入；单股 XGBoost 工程任务请在后台“训练任务”创建。本页只保留已封存结果入口，不展示模拟训练成功。</p>
     <!-- 控件 -->
     <div class="card section">
       <div class="card-title">训练 / 预测配置</div>

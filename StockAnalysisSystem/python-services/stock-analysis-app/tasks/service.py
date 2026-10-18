@@ -40,7 +40,9 @@ class TaskService:
         c.execute(tasks.update().where(tasks.c.id==task_id).values(event_count=row['event_count']+1))
 
     def create(self,actor_id,request,idempotency_key):
-        request=normalize_request(request);key=idempotency(idempotency_key);request_hash=digest(request)
+        # MySQL installations may use case-insensitive collations. Hash opaque
+        # keys so A... and a... retain distinct identities on every supported DB.
+        request=normalize_request(request);key=digest(idempotency(idempotency_key));request_hash=digest(request)
         with self.repo.transaction() as (c,_):
             self._admin(c,actor_id)
             old=c.execute(select(tasks).where(tasks.c.actor_id==actor_id,tasks.c.idempotency_key==key)).mappings().one_or_none()

@@ -14,7 +14,8 @@ class SourceChanged(ValueError): pass
 
 
 def runner_identity():
-    paths=('tasks/runner.py','tasks/artifacts.py','analysis/predictor.py','analysis/strategy_samples.py')
+    paths=('tasks/runner.py','tasks/artifacts.py','tasks/source.py','analysis/predictor.py',
+           'analysis/strategy_samples.py','analysis/pipeline.py','analysis/feature_store_inputs.py')
     return digest({p:(APP/p).read_text(encoding='utf-8') for p in paths})
 
 
@@ -67,11 +68,15 @@ class SourceProvider:
         manifest=row['source_manifest'];manifest=json.loads(manifest) if isinstance(manifest,str) else manifest
         selected=[s for s in manifest['shards'] if s['ts_code']==request['ts_code']]
         if len(selected)!=1:raise ValueError('Selected stock not in source')
+        history_start=selected[0].get('first_date',str(row['source_start']))
+        if calendar['start']>history_start:raise ValueError('Calendar must cover indicator dependency history')
         bound={k:str(row[k]) for k in ('build_id','storage_contract','algorithm_version','columns_sha256',
                                       'code_sha256','source_sha256','source_start','source_cutoff')}
         bound.update(ts_code=request['ts_code'],stock_codes=[request['ts_code']],
             pool_identity=digest([request['ts_code']]),stockid2idx={request['ts_code']:0},
             source_evidence=selected[0],calendar_sha256=digest(calendar),runner_sha256=runner_identity())
+        from importlib.metadata import version
+        bound['training_dependencies']={name:version(name) for name in ('xgboost','pandas','numpy','TA-Lib')}
         return bound
 
     def load(self,task):
@@ -88,6 +93,8 @@ class SourceProvider:
             raise SourceChanged('Stock evidence changed')
         calendar=read_calendar(self.calendar_path)
         if digest(calendar)!=bound['calendar_sha256']:raise SourceChanged('Calendar changed')
+        history=snapshot.source_history
+        validate_research_calendar(history[history.trade_date.astype(str)<=request['end_date']],calendar)
         frame,contract=build_research_inputs(snapshot,snapshot.raw_prices,
             dict(stock_codes=bound['stock_codes'],pool_identity=bound['pool_identity'],stockid2idx=bound['stockid2idx']))
         validate_research_calendar(frame,calendar)
