@@ -8,7 +8,7 @@ import numpy as np
 from lightgbm import Sequence
 from data_processor.feature_store_contract import FEATURE_COLUMNS
 from .artifacts import task_path,write_json,read_json,file_digest,_is_link
-from .market_samples import qualify_stock
+from .market_samples import qualify_stock,open_days
 
 DATA_FILES={'features.f32':'<f4','labels.f64':'<f8','dates.i32':'<i4','targets.i32':'<i4','codes.i32':'<i4'}
 
@@ -97,12 +97,17 @@ def build_market_matrix(task,stock_iterator,workdir,emit):
     names=list(FEATURE_COLUMNS);codes=task['binding']['stock_codes'];mapping=task['binding']['stockid2idx']
     if codes!=sorted(set(codes)) or mapping!={code:i for i,code in enumerate(codes)} or len(codes)!=task['binding']['pool_count']:
         raise ValueError('Frozen pool mapping invalid')
-    coverage=dict(pool_count=len(codes),pool_identity=task['binding']['pool_identity'],stocks={});rows=0;seen=[]
+    coverage=dict(pool_count=len(codes),pool_identity=task['binding']['pool_identity'],stocks={},daily_eligible_stocks={});rows=0;seen=[]
     with ExitStack() as stack:
         streams={name:stack.enter_context((directory/name).open('xb')) for name in DATA_FILES}
         for code,snapshot,calendar,proof in stock_iterator:
             if len(seen)>=len(codes) or code!=codes[len(seen)]:raise ValueError('Stream changed frozen pool')
             samples,report=qualify_stock(snapshot,calendar,proof,task['request'])
+            if not seen:
+                coverage['daily_eligible_stocks']={str(day):0 for day in open_days(calendar)
+                    if task['request']['start_date']<=str(day)<=task['request']['end_date']}
+            for day in samples.trade_date:
+                key=str(day.date());coverage['daily_eligible_stocks'][key]+=1
             values=samples[names].to_numpy(dtype='<f4')
             if not np.isfinite(values).all():raise ValueError('Non-finite model dtype conversion')
             values.tofile(streams['features.f32'])

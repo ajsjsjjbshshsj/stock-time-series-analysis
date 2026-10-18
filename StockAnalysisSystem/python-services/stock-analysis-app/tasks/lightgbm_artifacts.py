@@ -59,7 +59,9 @@ def verify_lightgbm(task,root):
     codes=task['binding']['stock_codes']
     if (coverage['pool_count']!=len(codes) or coverage['pool_identity']!=digest(codes)
             or set(coverage['stocks'])!=set(codes)
-            or coverage['eligible_rows']!=sum(r['eligible_rows'] for r in coverage['stocks'].values())):
+            or coverage['eligible_rows']!=sum(r['eligible_rows'] for r in coverage['stocks'].values())
+            or coverage['eligible_rows']!=sum(coverage['daily_eligible_stocks'].values())
+            or any(type(v) is not int or not 0<=v<=len(codes) for v in coverage['daily_eligible_stocks'].values())):
         raise ValueError('Candidate pool mismatch')
     if (path/'model.txt').stat().st_size>8*1024*1024:raise ValueError('Candidate model bound exceeded')
     model=lgb.Booster(model_file=str(path/'model.txt'))
