@@ -12,7 +12,7 @@ from app.preparation.service import PreparationFailure
 from app.preparation.worker import require_root_lock
 from app.nightly.contracts import freeze_market, parse_run_at, market_day
 from app.nightly.symbol_periods import reference_rows
-from app.nightly.universe import verify_reference
+from app.nightly.universe import verify_reference,latest_local_reference
 from app.nightly.acquisition import NativeDayAcquirer
 from app.repositories.preparation_repository import ERRORS
 from app.runtime_paths import resolve_reference,persist_reference
@@ -44,15 +44,7 @@ class GapUpdateService:
         if pinned is not None:
             bundle = self._verified_reference(pinned)
             return bundle
-        candidates = list((self.data_root/'gap_references').glob('*/complete.json'))
-        candidates += list((self.data_root/'market_updates').glob('*/attempts/*/reference/complete.json'))
-        if not candidates:return None
-        bundles = []
-        for path in sorted(candidates):
-            if self.paths is not None:
-                persist_reference(path.parent,self.paths)
-            bundles.append(verify_reference(path.parent))
-        return max(bundles, key=lambda value: timestamp(value['acquired_at']))
+        return latest_local_reference(self.data_root,self.paths)
 
     def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True):
         first, last = market_day(start), market_day(end)

@@ -6,16 +6,18 @@ from sqlalchemy import text
 from .contracts import digest,normalize_request
 from .source import SourceChanged,SourceProvider,read_calendar,APP
 from .market_evidence import SuspensionEvidence,collector_root
+from .market_lifecycle import bind_lifecycles
 
 
 def market_identity():
-    names=('tasks/market_source.py','tasks/market_evidence.py','tasks/source.py',
+    names=('tasks/market_source.py','tasks/market_evidence.py','tasks/market_lifecycle.py','tasks/source.py',
            'database/feature_store_reader.py','tasks/market_samples.py','tasks/disk_matrix.py',
            'tasks/market_profile.py','analysis/disk_probe.py','analysis/disk_ranking.py','data_processor/probe_rules.py',
            'tasks/lightgbm_runner.py','tasks/lightgbm_artifacts.py','tasks/resources.py')
     files={name:(APP/name).read_text(encoding='utf-8') for name in names}
     for name in ('app/preparation/evidence.py','app/repositories/source_evidence_repository.py',
-                 'app/market_data/repair_contract.py','app/market_data/repair_acquisition.py'):
+                 'app/market_data/repair_contract.py','app/market_data/repair_acquisition.py',
+                 'app/nightly/universe.py','app/nightly/symbol_periods.py','app/preparation/disclosure_evidence.py'):
         files['collector/'+name]=(collector_root()/name).read_text(encoding='utf-8')
     return digest(files)
 
@@ -66,6 +68,7 @@ class MarketSource:
             pool_identity=digest(codes),source_manifest_sha256=digest(meta['source_manifest']),
             reference_sha256=digest(references),calendar_sha256=digest(calendar),runner_sha256=market_identity(),
             absence_evidence_sha256=self.evidence.identity_for_pool(codes,start,end),
+            lifecycle=bind_lifecycles(self.evidence.store.root,references,request['end_date']),
             training_dependencies={name:version(name) for name in ('lightgbm','pandas','numpy','TA-Lib')})
         return bound
 
@@ -82,7 +85,8 @@ class MarketSource:
         with self.engine.connect() as c:
             reader.validate_metadata(meta);reader.validate_table(c,CANONICAL_TABLE,meta['build_id'])
         request=task['request'];start,end=date_only(request['start_date']),date_only(request['end_date'])
-        reference_by_code={row['ts_code']:row for row in references}
+        lifecycles=task['binding']['lifecycle']['stocks']
+        reviews=self.evidence.disclosures.load()
         expected=(meta['build_id'],meta['source_sha256'])
         for code in codes:
             with self.engine.connect() as c,c.begin():
@@ -90,8 +94,9 @@ class MarketSource:
                 if current['state']!='READY' or (current['build_id'],current['source_sha256'])!=expected:
                     raise SourceChanged('Full market publication changed')
                 snapshot=reader.read_stock_snapshot(c,code,meta,start,end)
-            proof=self.evidence.for_stock(code,str(meta['source_start']),request['end_date'])
-            proof['list_date']=reference_by_code[code]['list_date']
+            proof=self.evidence.for_stock(code,str(meta['source_start']),request['end_date'],reviews=reviews)
+            proof['lifecycle']=lifecycles[code]
+            proof['list_date']=lifecycles[code]['list_date']
             yield code,snapshot,calendar,proof
             del snapshot,proof
         self._verify_binding(task)

@@ -59,6 +59,21 @@ def verify_reference(directory):
     exclusions=[item for row in rows if (item:=excluded_legacy_reference(row,timestamp(acquired))) is not None]
     return dict(source_directory=str(root),manifest_sha256=digest(manifest),acquired_at=acquired,rows=rows,excluded_references=exclusions)
 
+
+def latest_local_reference(data_root,paths=None):
+    """Read sealed local lifecycle partitions only; never refresh the provider."""
+    root=Path(data_root).resolve()
+    candidates=list((root/'gap_references').glob('*/complete.json'))
+    candidates+=list((root/'market_updates').glob('*/attempts/*/reference/complete.json'))
+    if not candidates:return None
+    from app.runtime_paths import persist_reference
+    bundles=[]
+    for path in sorted(candidates):
+        if not path.resolve().is_relative_to(root):raise ValueError('REFERENCE_OUTSIDE_DATA_ROOT')
+        if paths is not None:persist_reference(path.parent,paths)
+        bundles.append(verify_reference(path.parent))
+    return max(bundles,key=lambda value:timestamp(value['acquired_at']))
+
 class MarketUniverseProvider:
     def __init__(self,client_factory,requests_factory,*,clock=time.time,pinned_reference=None,schema_version=1):
         if type(schema_version) is not int or schema_version not in (1,2):raise ValueError('MARKET_VERSION_INVALID')

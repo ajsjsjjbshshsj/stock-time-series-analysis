@@ -13,6 +13,7 @@ def _verify_semantics(task,metadata,coverage):
     from data_processor.feature_store_contract import FEATURE_COLUMNS
     from data_processor.probe_rules import select_probe_features
     from .market_samples import open_days
+    from .market_lifecycle import validate_lifecycle,inactive_reason
     calendar=coverage['calendar'];binding=task['binding'];request=task['request']
     if digest(calendar)!=binding['calendar_sha256']:raise ValueError('Candidate calendar identity mismatch')
     opened=[str(day) for day in open_days(calendar)];positions={day:i for i,day in enumerate(opened)}
@@ -21,14 +22,21 @@ def _verify_semantics(task,metadata,coverage):
     if not count or set(daily)!=set(requested):raise ValueError('Incomplete eligibility dates')
     indexes={day:i for i,day in enumerate(requested)};difference=np.zeros(count+1,dtype=np.int64)
     difference[0]=len(binding['stock_codes'])
-    allowed={'PRE_LISTING','SUSPENDED','WARMUP','UNMATURED_LABEL','TARGET_SUSPENDED'}
+    inactive={'PRE_LISTING','POST_DELISTING','OUTSIDE_CODE_PERIOD'}
+    allowed=inactive|{'SUSPENDED','WARMUP','UNMATURED_LABEL','TARGET_SUSPENDED','TARGET_INACTIVE'}
+    lifecycles=binding['lifecycle']['stocks']
+    if set(lifecycles)!=set(binding['stock_codes']):raise ValueError('Incomplete lifecycle binding')
     for code in binding['stock_codes']:
         row=coverage['stocks'][code];reasons=row['reasons'];ranges=row['excluded_ranges']
+        lifecycle=validate_lifecycle(code,lifecycles[code])
+        if row['lifecycle']!=lifecycle or row['list_date']!=lifecycle['list_date']:raise ValueError('Candidate lifecycle mismatch')
         if (row['ts_code']!=code or row['requested_open_days']!=count or set(reasons)!=set(ranges)
                 or not set(reasons)<=allowed or type(row['eligible_rows']) is not int or not 0<=row['eligible_rows']<=count
                 or type(row['observed_rows']) is not int or not 0<=row['observed_rows']<=count
                 or any(type(v) is not int or v<=0 for v in reasons.values())
                 or sum(reasons.values())+row['eligible_rows']!=count):raise ValueError('Invalid per-stock coverage')
+        observed=row['eligible_rows']+sum(reasons.get(k,0) for k in ('WARMUP','UNMATURED_LABEL','TARGET_SUSPENDED','TARGET_INACTIVE'))
+        if row['observed_rows']!=observed:raise ValueError('Observed rows conflict with eligibility accounting')
         occupied=np.zeros(count,dtype=bool)
         for reason,segments in ranges.items():
             total=0;last=-1
@@ -36,8 +44,23 @@ def _verify_semantics(task,metadata,coverage):
                 if first not in indexes or end not in indexes:raise ValueError('Exclusion outside requested calendar')
                 a,b=indexes[first],indexes[end]
                 if a>b or a<=last or occupied[a:b+1].any():raise ValueError('Overlapping exclusion ranges')
+                for day in requested[a:b+1]:
+                    status=inactive_reason(day,lifecycle)
+                    if (reason in inactive and status!=reason or reason not in inactive and status is not None):
+                        raise ValueError('Exclusion conflicts with lifecycle')
+                    target_pos=positions[day]+5
+                    matured=target_pos<len(opened) and opened[target_pos]<=request['end_date']
+                    target_inactive=matured and inactive_reason(opened[target_pos],lifecycle) is not None
+                    if reason=='TARGET_INACTIVE' and not target_inactive:raise ValueError('Invalid target lifecycle exclusion')
+                    if reason=='TARGET_SUSPENDED' and (not matured or target_inactive):raise ValueError('Invalid target suspension exclusion')
+                    if reason=='UNMATURED_LABEL' and matured:raise ValueError('Mature target classified as unavailable')
                 occupied[a:b+1]=True;last=b;total+=b-a+1;difference[a]-=1;difference[b+1]+=1
             if total!=reasons[reason]:raise ValueError('Exclusion count mismatch')
+        for i,day in enumerate(requested):
+            if inactive_reason(day,lifecycle) and not occupied[i]:raise ValueError('Inactive date counted as eligible')
+            target_pos=positions[day]+5
+            if (not occupied[i] and (target_pos>=len(opened) or opened[target_pos]>request['end_date']
+                    or inactive_reason(opened[target_pos],lifecycle))):raise ValueError('Ineligible label target')
     expected=np.cumsum(difference[:-1])
     if any(type(daily[day]) is not int or daily[day]!=int(expected[i]) for i,day in enumerate(requested)):
         raise ValueError('Daily and per-stock eligibility differ')

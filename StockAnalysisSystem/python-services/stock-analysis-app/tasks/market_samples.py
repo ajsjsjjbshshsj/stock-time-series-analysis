@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from data_processor.feature_store_contract import FEATURE_COLUMNS,feature_records,date_only,validate_stock_code
 from analysis.feature_store_inputs import normalize_prices
+from .market_lifecycle import validate_lifecycle,inactive_reason
 
 
 class MarketInputError(ValueError):
@@ -53,11 +54,14 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
     requested=[day for day in opened if start<=day<=end]
     if not requested:raise ValueError('No requested trading dates')
     history=normalize_prices(snapshot.source_history)
-    if set(history.ts_code)!={code}:raise ValueError('Mixed stock history')
+    if not history.empty and set(history.ts_code)!={code}:raise ValueError('Mixed stock history')
     history=history[history.trade_date<=end].reset_index(drop=True)
     raw=normalize_prices(snapshot.raw_prices)
     expected_raw=history[history.trade_date.between(start,end)].reset_index(drop=True)
-    if not raw.equals(expected_raw):raise ValueError('Request prices differ from dependency history')
+    # Empty normalized identity columns may infer different pandas dtypes.
+    # Both empty keysets are valid; any nonempty content must still match exactly.
+    if len(raw)!=len(expected_raw) or not raw.empty and not raw.equals(expected_raw):
+        raise ValueError('Request prices differ from dependency history')
     frame=snapshot.frame.copy()
     if set(frame)!={'ts_code','trade_date',*names} or frame.columns.duplicated().any():raise ValueError('Invalid feature columns')
     frame['trade_date']=[date_only(v) for v in frame.trade_date]
@@ -67,13 +71,16 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
     if not isinstance(listed,str) or not listed:raise MarketInputError(code,start,'UNKNOWN_LISTING_BOUNDARY')
     if re.fullmatch('[0-9]{8}',listed):listed=f'{listed[:4]}-{listed[4:6]}-{listed[6:]}'
     listed=date_only(listed);suspended={date_only(v) for v in absence_proof['full_days']}
+    lifecycle=validate_lifecycle(code,absence_proof.get('lifecycle'))
+    if lifecycle['list_date']!=str(listed):raise ValueError('Conflicting listing boundary')
     quotes={row.trade_date:row.close for row in history.itertuples()}
     for day in quotes:
         if day<listed:raise MarketInputError(code,day,'QUOTE_BEFORE_LISTING')
+        if inactive_reason(day,lifecycle):raise MarketInputError(code,day,'QUOTE_OUTSIDE_LIFECYCLE')
     if set(quotes)-set(opened):raise ValueError('Quote outside trading calendar')
     source_start=date_only(str(snapshot.metadata['source_start']))
     for day in opened:
-        if max(source_start,listed)<=day<=end and day not in quotes and day not in suspended:
+        if source_start<=day<=end and inactive_reason(day,lifecycle) is None and day not in quotes and day not in suspended:
             raise MarketInputError(code,day,'UNEXPLAINED_QUOTE_GAP')
     expected=None;max_warmup=max(120,max(TECHNICAL_INDICATORS['ma_periods'])-1,
         TECHNICAL_INDICATORS['rsi_period'],TECHNICAL_INDICATORS['macd_slow']+TECHNICAL_INDICATORS['macd_signal']-2)
@@ -85,8 +92,8 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
     actual=frame.set_index('trade_date');hist_positions={day:i for i,day in enumerate(history.trade_date)}
     reasons=Counter();excluded=defaultdict(list);samples=[]
     for day in requested:
-        reason=None
-        if day<listed:reason='PRE_LISTING'
+        reason=inactive_reason(day,lifecycle)
+        if reason:pass
         elif day not in quotes:reason='SUSPENDED'
         else:
             values=actual.loc[day,names].to_numpy(dtype=float)
@@ -103,7 +110,8 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
                 if target_pos>=len(opened) or opened[target_pos]>end:reason='UNMATURED_LABEL'
                 else:
                     target=opened[target_pos]
-                    if target not in quotes:reason='TARGET_SUSPENDED'
+                    if inactive_reason(target,lifecycle):reason='TARGET_INACTIVE'
+                    elif target not in quotes:reason='TARGET_SUSPENDED'
                     else:
                         label=float(quotes[target]/quotes[day]-1)
                         if not np.isfinite(label):raise MarketInputError(code,day,'INVALID_LABEL')
@@ -111,5 +119,5 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
                                             **dict(zip(names,values))))
         if reason:reasons[reason]+=1;excluded[reason].append(day)
     coverage=dict(ts_code=code,requested_open_days=len(requested),observed_rows=len(raw),eligible_rows=len(samples),
-        reasons=dict(reasons),excluded_ranges={key:_ranges(days,positions) for key,days in excluded.items()},list_date=str(listed))
+        reasons=dict(reasons),excluded_ranges={key:_ranges(days,positions) for key,days in excluded.items()},list_date=str(listed),lifecycle=lifecycle)
     return pd.DataFrame(samples,columns=('ts_code','trade_date','label_target_date','label',*names)),coverage
