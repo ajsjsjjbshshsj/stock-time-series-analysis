@@ -56,6 +56,10 @@ class SourceProvider:
         if start>end:raise ValueError('No covered source range')
         return dict(build_id=row['build_id'],source_start=start,source_cutoff=end)
 
+    def describe_market(self):
+        from .market_source import MarketSource
+        return MarketSource(self.engine,self.calendar_path).describe()
+
     def bind(self,request):
         request=normalize_request(request)
         if request['kind']=='lightgbm_all_market':

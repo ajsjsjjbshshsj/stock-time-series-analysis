@@ -48,6 +48,7 @@ class MarketSource:
 
     def describe(self):
         meta,codes,_=self._source();calendar=read_calendar(self.calendar_path)
+        if calendar['start']>str(meta['source_start']):raise ValueError('Full calendar dependency prefix required')
         return dict(build_id=meta['build_id'],pool_count=len(codes),pool_identity=digest(codes),
             source_start=max(str(meta['source_start']),calendar['start']),
             source_cutoff=min(str(meta['source_cutoff']),calendar['end']))
