@@ -90,19 +90,27 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
         featured=FeatureEngineer().calculate_all_features(calculation)
         expected=pd.DataFrame(feature_records(featured,snapshot.metadata['build_id'])).set_index('trade_date')
     actual=frame.set_index('trade_date');hist_positions={day:i for i,day in enumerate(history.trade_date)}
+    # Align once per stock, not twice per trading date. Keep float64 comparison
+    # and diagnostic precedence identical to the row-wise verification below.
+    actual_positions={day:i for i,day in enumerate(actual.index)}
+    values_matrix=actual[names].to_numpy(dtype=float)
+    if len(actual):
+        recomputed_matrix=expected.loc[actual.index,names].to_numpy(dtype=float)
+        consistent=(~np.isinf(values_matrix).any(axis=1) &
+            np.isclose(values_matrix,recomputed_matrix,rtol=1e-10,atol=1e-12,equal_nan=True).all(axis=1))
+        finite=np.isfinite(values_matrix).all(axis=1)
     reasons=Counter();excluded=defaultdict(list);samples=[]
     for day in requested:
         reason=inactive_reason(day,lifecycle)
         if reason:pass
         elif day not in quotes:reason='SUSPENDED'
         else:
-            values=actual.loc[day,names].to_numpy(dtype=float)
-            recomputed=expected.loc[day,names].to_numpy(dtype=float)
+            row=actual_positions[day];values=values_matrix[row]
             # Stored values remain unchanged. Tolerance only covers float64
             # compute/storage round trips, never old float32 cache conversion.
-            if np.isinf(values).any() or not np.allclose(values,recomputed,rtol=1e-10,atol=1e-12,equal_nan=True):
+            if not consistent[row]:
                 raise MarketInputError(code,day,'FEATURE_RECOMPUTE_MISMATCH')
-            if not np.isfinite(values).all():
+            if not finite[row]:
                 if hist_positions[day]>=max_warmup:raise MarketInputError(code,day,'MATURE_FEATURE_NONFINITE')
                 reason='WARMUP'
             else:
