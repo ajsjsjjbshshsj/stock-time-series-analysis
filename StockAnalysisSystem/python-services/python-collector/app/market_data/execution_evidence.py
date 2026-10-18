@@ -136,6 +136,7 @@ def acquire_limits(day,codes,client,pacing,store):
         rows=frame.astype(object).where(frame.notna(),None).to_dict('records')
         store.save(day,rows,code)
     if missing():
-        collect()
+        # An almost-complete day must not trigger a market-wide re-query.
+        if len(missing())>=100:collect()
         for code in missing():collect(code)
     return dict(day=day,missing_codes=missing())
