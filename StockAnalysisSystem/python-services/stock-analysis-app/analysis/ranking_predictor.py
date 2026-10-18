@@ -10,6 +10,7 @@ from config.settings import RANKING_CONFIG
 from analysis.pipeline import LABEL_COLUMNS, IDENTITY_COLUMNS
 from analysis.strategy_samples import dated_samples, purged_splits
 from data_processor.probe_selection import probe_feature_selection
+from analysis.disk_ranking import train_ranking_matrix
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
 

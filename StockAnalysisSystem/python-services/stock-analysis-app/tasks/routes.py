@@ -40,7 +40,15 @@ def register_task_routes(app):
         service,_=await guard(request);query(request,set())
         source=await run_in_threadpool(invoke,service.source.describe)
         slot=await run_in_threadpool(invoke,service.slot_status)
-        return dict(kinds=[dict(kind='xgboost_single',enabled=True),dict(kind='lightgbm_ranking',enabled=False),
+        market=dict(kind='lightgbm_all_market',enabled=False,scope='all_shsz_a',reason='INPUT_UNAVAILABLE')
+        from .market_profile import bounded_profile
+        market['profile']=bounded_profile()
+        describe=getattr(service.source,'describe_market',None)
+        if callable(describe):
+            try:
+                market['source']=await run_in_threadpool(describe);market['enabled']=True;market.pop('reason')
+            except Exception:pass  # No raw DB errors, paths or partial pool presented as ready.
+        return dict(kinds=[dict(kind='xgboost_single',enabled=True),market,
             dict(kind='transformer',enabled=False)],purpose='engineering_smoke',source=source,
             limits=dict(n_estimators=100,max_depth=6,concurrency=1),
             execution=dict(task_id=slot['task_id'],quarantined=slot['quarantined']))

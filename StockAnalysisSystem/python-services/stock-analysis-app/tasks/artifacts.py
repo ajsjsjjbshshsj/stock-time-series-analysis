@@ -35,9 +35,9 @@ def write_json(path,value):
         stream.write(encoded(value));stream.flush();os.fsync(stream.fileno())
 
 
-def read_json(path):
+def read_json(path,*,max_bytes=2*1024*1024):
     path=Path(path)
-    if path.is_symlink() or path.stat().st_size>2*1024*1024:raise ValueError('Unsafe candidate JSON')
+    if _is_link(path) or path.stat().st_size>max_bytes:raise ValueError('Unsafe candidate JSON')
     def unique(pairs):
         result={}
         for k,v in pairs:
@@ -52,6 +52,9 @@ def task_digest(task):return digest(dict(id=identity(task['id']),request=normali
 
 
 def verify_candidate(task,root):
+    if normalize_request(task['request'])['kind']=='lightgbm_all_market':
+        from .lightgbm_artifacts import verify_lightgbm
+        return verify_lightgbm(task,root)
     import numpy as np
     import pandas as pd
     from xgboost import XGBClassifier

@@ -3,7 +3,7 @@
 探针法特征筛选模块 (Probe/Shadow Feature Selection)
 
 核心思想：注入随机噪声特征作为"间谍"，只有重要性超过"运气最好的间谍"的真实特征才保留。
-三个任务（分类/回归/方向）同台竞技，必须全部过关才能留下。
+三个任务（分类/回归/方向）同台竞技，任一超过对应噪声最大值即可留下。
 
 直接在 _preprocess_common 输出的 DataFrame 上工作（每行=一只股票一天，列=158+39特征+label）。
 """
@@ -16,6 +16,7 @@ import pandas as pd
 import lightgbm as lgb
 import json
 import os
+from data_processor.probe_rules import select_probe_features
 
 
 def generate_probe_labels(df, date_column='trade_date'):
@@ -80,7 +81,7 @@ def probe_feature_selection(df, feature_names, n_iter=10, n_noise=10,
     关键改进：
     - 使用 split（分裂次数）而非 gain 作为重要性指标，更稳定
     - 增加 boosting 轮数，确保特征重要性充分展开
-    - 三个任务独立验证，必须全部过关
+    - 三个任务独立验证，只有全部不超过噪声阈值才删除
 
     参数:
         df: 包含特征和 'label' 列的 DataFrame
@@ -173,19 +174,10 @@ def probe_feature_selection(df, feature_names, n_iter=10, n_noise=10,
         imp_dir = model_dir.feature_importance(importance_type='split')
 
         # 取噪声特征重要性的最大值作为阈值
-        noise_cls = int(np.max(imp_cls[-n_noise:]))
-        noise_reg = int(np.max(imp_reg[-n_noise:]))
-        noise_dir = int(np.max(imp_dir[-n_noise:]))
-
-        # 剔除条件：三个任务的分裂次数都 <= 对应噪声最大值
-        to_remove = []
-        for idx, feat in enumerate(current_features):
-            if (imp_cls[idx] <= noise_cls and
-                    imp_reg[idx] <= noise_reg and
-                    imp_dir[idx] <= noise_dir):
-                to_remove.append(feat)
-
-        current_features = [f for f in current_features if f not in to_remove]
+        selected,thresholds=select_probe_features(current_features,[imp_cls,imp_reg,imp_dir],n_noise)
+        noise_cls,noise_reg,noise_dir=thresholds
+        to_remove=[f for f in current_features if f not in selected]
+        current_features=selected
 
         log_records.append({
             'iter': iter_idx,

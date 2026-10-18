@@ -32,7 +32,12 @@ def main():
     raw=sys.stdin.buffer.readline(65537)
     if len(raw)>65536 or not raw.endswith(b'\n'):return 70
     payload=json.loads(raw)
-    if not isinstance(payload,dict) or set(payload)!={'task','root'}:return 70
+    if not isinstance(payload,dict) or set(payload) not in ({'task','root'},{'task_id','worker_id','generation','expected_task_sha','root'}):return 70
+    referenced='task_id' in payload
+    if referenced:
+        from .contracts import identity,bound_integer
+        identity(payload['task_id']);identity(payload['worker_id']);bound_integer(payload['generation'],1,2**63-1)
+        if not isinstance(payload['root'],str) or not isinstance(payload['expected_task_sha'],str):return 70
     _guard()
     from .contracts import encoded,TaskFailure
     protocol=sys.stdout
@@ -45,7 +50,16 @@ def main():
             from .source import SourceProvider,SourceChanged
             from .runner import run_xgboost
             with DatabaseConnector(diagnostic=True) as db:
-                run_xgboost(payload['task'],payload['root'],SourceProvider(db.engine),lambda stage:emit('stage',stage=stage))
+                if referenced:
+                    from .repository import TaskRepository
+                    from .service import TaskService
+                    from .market_source import MarketSource
+                    from .lightgbm_runner import run_lightgbm
+                    source=MarketSource(db.engine)
+                    task=TaskService(TaskRepository(db.engine),source).execution_task(payload['task_id'],payload['worker_id'],
+                        payload['generation'],payload['expected_task_sha'])
+                    run_lightgbm(task,payload['root'],source,emit)
+                else:run_xgboost(payload['task'],payload['root'],SourceProvider(db.engine),lambda stage:emit('stage',stage=stage))
         emit('complete');return 0
     except Exception as error:
         code='SOURCE_CHANGED' if type(error).__name__=='SourceChanged' else 'INPUT_INVALID' if isinstance(error,ValueError) else 'TRAINING_FAILED'

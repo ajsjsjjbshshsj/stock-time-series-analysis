@@ -22,25 +22,39 @@ class Worker:
         if task is None:return False
         process=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
+        market=task['request']['kind']=='lightgbm_all_market'
         try:
             process=self.process_factory()
-            process.start(dict(task={k:task[k] for k in ('id','request','binding')},root=str(self.root)))
+            if market:
+                from .artifacts import task_digest
+                from .market_profile import bounded_profile
+                from .resources import check_tree,check_time
+                profile=bounded_profile()
+                process.resource_directory=self.root
+                payload=dict(task_id=task['id'],worker_id=self.worker_id,generation=task['generation'],
+                             expected_task_sha=task_digest(task),root=str(self.root))
+            else:payload=dict(task={k:task[k] for k in ('id','request','binding')},root=str(self.root))
+            process.start(payload)
             last_heartbeat=last_ping=0.;started=time.monotonic();complete=False
             def drain(final=False):
                 nonlocal complete
                 for event in process.messages(final=final):
                     if event['event']=='stage':self.service.stage(*fence,event['stage'])
+                    elif event['event']=='progress':self.service.progress(*fence,event['phase'],event['completed'],event['total'])
                     elif event['event']=='failure':raise TaskFailure(event['code'])
                     elif event['event']=='complete':
                         if complete:raise TaskFailure('PROTOCOL_INVALID')
                         complete=True
             while True:
                 now=time.monotonic()
-                if now-started>1800:raise TaskFailure('PROCESS_FAILED')
+                if market:check_time(now-started,profile)
+                elif now-started>1800:raise TaskFailure('PROCESS_FAILED')
                 if now-last_heartbeat>=5:
                     current=self.service.heartbeat(*fence);last_heartbeat=now
                     if current['state']=='CANCEL_REQUESTED':outcome='CANCELLED';break
-                if now-last_ping>=1:process.keepalive();last_ping=now
+                if now-last_ping>=1:
+                    process.keepalive();last_ping=now
+                    if market:check_tree(process,profile)
                 drain()
                 if process.poll() is not None:
                     drain(final=True)

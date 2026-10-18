@@ -7,8 +7,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TERMINAL=frozenset(('SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'))
-STAGES=frozenset(('QUEUED','PREFLIGHT','INPUT','TRAIN','VERIFY','SAVE','DONE'))
-EVENTS=STAGES | TERMINAL | {'CREATED','CANCEL_REQUESTED','RECOVERED'}
+STAGES=frozenset(('QUEUED','PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE','DONE'))
+EVENTS=STAGES | TERMINAL | {'CREATED','CANCEL_REQUESTED','RECOVERED','PROGRESS'}
 
 
 class Conflict(ValueError): pass
@@ -17,7 +17,8 @@ class LeaseLost(RuntimeError): pass
 class TaskFailure(RuntimeError):
     def __init__(self,code):
         self.code=code if code in {'SOURCE_CHANGED','INPUT_INVALID','TRAINING_FAILED','CANDIDATE_INVALID',
-            'PROCESS_FAILED','PROTOCOL_INVALID','INTERRUPTED','DEPENDENCY_UNAVAILABLE'} else 'TRAINING_FAILED'
+            'PROCESS_FAILED','PROTOCOL_INVALID','INTERRUPTED','DEPENDENCY_UNAVAILABLE',
+            'RESOURCE_UNAVAILABLE','RESOURCE_LIMIT','TIME_LIMIT'} else 'TRAINING_FAILED'
         super().__init__(self.code)
 
 
@@ -56,7 +57,25 @@ class JobRequest(BaseModel):
         return self
 
 
-def normalize_request(value): return JobRequest.model_validate(value).model_dump()
+class MarketJobRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    kind: Literal['lightgbm_all_market']
+    purpose: Literal['engineering_smoke']='engineering_smoke'
+    scope: Literal['all_shsz_a']='all_shsz_a'
+    profile: Literal['bounded_v1']='bounded_v1'
+    start_date: str=Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: str=Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+    @model_validator(mode='after')
+    def dates(self):
+        if date.fromisoformat(self.start_date)>date.fromisoformat(self.end_date):
+            raise ValueError('Invalid task range')
+        return self
+
+
+def normalize_request(value):
+    model=MarketJobRequest if isinstance(value,dict) and value.get('kind')=='lightgbm_all_market' else JobRequest
+    return model.model_validate(value).model_dump()
 
 
 def idempotency(value):
