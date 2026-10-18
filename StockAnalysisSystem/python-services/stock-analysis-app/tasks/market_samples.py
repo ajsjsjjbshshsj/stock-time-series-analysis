@@ -113,6 +113,7 @@ def _qualify(snapshot,calendar,absence_proof,request,*,with_labels):
     for day in requested:
         reason=inactive_reason(day,lifecycle)
         if reason:pass
+        elif not with_labels and day in suspended:reason='SUSPENDED'
         elif day not in quotes:reason='SUSPENDED'
         else:
             row=actual_positions[day];values=values_matrix[row]

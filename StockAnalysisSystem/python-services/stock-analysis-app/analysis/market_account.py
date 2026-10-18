@@ -99,6 +99,12 @@ def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
         return (executed,executed*factors_map[(code,day)]),None
 
     for day in opened[position[first]:position[end]+1]:
+        opening_value=cash
+        for code,lot in positions.items():
+            row=lookup.get((code,day))
+            mark=float(row.open)*factors_map[(code,day)] if row is not None else lot['last_mark']
+            opening_value+=lot['units']*mark
+        trade_start=len(trades)
         for code,lot in list(positions.items()):
             if day<lot['exit_date']:continue
             executed,reason=fill(code,day,'SELL')
@@ -136,12 +142,15 @@ def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
             else:return failure('UNEXPLAINED_VALUATION_GAP',code,day)
             value+=lot['units']*lot['last_mark']
         if not math.isfinite(value):raise ValueError('Nonfinite equity')
-        equity.append(dict(date=day,cash=cash,equity=value,stale_positions=stale))
+        turnover=sum(t['notional'] for t in trades[trade_start:])/opening_value if opening_value>0 else 0.
+        equity.append(dict(date=day,cash=cash,equity=value,stale_positions=stale,
+            two_sided_turnover=turnover,one_sided_turnover=turnover/2))
     values=np.array([initial_capital,*[r['equity'] for r in equity]])
     metrics=dict(total_return=float(values[-1]/initial_capital-1),final_equity=float(values[-1]),
         max_drawdown=float(np.min(values/np.maximum.accumulate(values)-1)),total_fees=float(sum(t['fee'] for t in trades)),
         n_trades=len(trades),unfilled_orders=len(orders),open_positions=len(positions),
         stale_valuation_days=sum(r['stale_positions']>0 for r in equity),
+        summed_one_sided_turnover=float(sum(r['one_sided_turnover'] for r in equity)),
         traded_notional=float(sum(t['notional'] for t in trades)))
     return dict(status='READY',metrics=metrics,equity=equity,trades=trades,orders=orders,open_positions=positions,
         assumptions=dict(signal='T close',buy='T+1 open',planned_sell='T+6 open',rebalance_sessions=5,

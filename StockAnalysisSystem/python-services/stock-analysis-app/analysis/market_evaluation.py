@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from tasks.artifacts import file_digest,read_json,write_json,_is_link
 from analysis.market_account import run_market_account,execution_readiness
+from analysis.market_diagnostics import score_diagnostics
 
 
 def check_binding(original,current):
@@ -48,6 +49,15 @@ def load_factors(evidence,codes,start,end):
             values[key]=value
     frame=pd.DataFrame([dict(ts_code=c,trade_date=d,adj_factor=v) for (c,d),v in sorted(values.items())],columns=['ts_code','trade_date','adj_factor'])
     return frame,identities
+
+
+def load_limits(store,codes,days):
+    """Keep original broad evidence intact; expose only the frozen SH/SZ pool."""
+    from data_processor.feature_store_contract import validate_stock_code
+    selected={validate_stock_code(c) for c in codes};rows=[]
+    for day in days:
+        rows.extend(row for row in store.load(day) if row['ts_code'] in selected)
+    return pd.DataFrame(rows,columns=['ts_code','trade_date','up_limit','down_limit'])
 
 
 def build_report(prices,scores,factors,limits,calendar,*,account_sink=None,**kwargs):
