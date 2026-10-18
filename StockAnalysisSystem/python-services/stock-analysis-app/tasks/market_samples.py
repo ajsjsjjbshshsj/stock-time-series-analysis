@@ -39,6 +39,16 @@ def _ranges(days,positions):
 
 
 def qualify_stock(snapshot,calendar,absence_proof,request):
+    """Training rows: features plus a mature exact fifth-market-session label."""
+    return _qualify(snapshot,calendar,absence_proof,request,with_labels=True)
+
+
+def qualify_signals(snapshot,calendar,absence_proof,request):
+    """Observed signal-date features, independent of any future label/quote."""
+    return _qualify(snapshot,calendar,absence_proof,request,with_labels=False)
+
+
+def _qualify(snapshot,calendar,absence_proof,request,*,with_labels):
     from data_processor.feature_engineer import FeatureEngineer
     from config.settings import TECHNICAL_INDICATORS
     from data_processor.feature_store_source import SOURCE_COLUMNS
@@ -113,6 +123,8 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
             if not finite[row]:
                 if hist_positions[day]>=max_warmup:raise MarketInputError(code,day,'MATURE_FEATURE_NONFINITE')
                 reason='WARMUP'
+            elif not with_labels:
+                samples.append(dict(ts_code=code,trade_date=pd.Timestamp(day),**dict(zip(names,values))))
             else:
                 target_pos=positions[day]+5
                 if target_pos>=len(opened) or opened[target_pos]>end:reason='UNMATURED_LABEL'
@@ -128,4 +140,5 @@ def qualify_stock(snapshot,calendar,absence_proof,request):
         if reason:reasons[reason]+=1;excluded[reason].append(day)
     coverage=dict(ts_code=code,requested_open_days=len(requested),observed_rows=len(raw),eligible_rows=len(samples),
         reasons=dict(reasons),excluded_ranges={key:_ranges(days,positions) for key,days in excluded.items()},list_date=str(listed),lifecycle=lifecycle)
-    return pd.DataFrame(samples,columns=('ts_code','trade_date','label_target_date','label',*names)),coverage
+    columns=('ts_code','trade_date')+(('label_target_date','label') if with_labels else ())
+    return pd.DataFrame(samples,columns=(*columns,*names)),coverage
