@@ -63,6 +63,8 @@ def load_limits(store,codes,days):
 def build_report(prices,scores,factors,limits,calendar,*,account_sink=None,**kwargs):
     readiness,*_=execution_readiness(prices,factors,limits)
     if readiness['status']!='READY':return readiness
+    stress=kwargs.get('delisting_policy','block')=='zero_recovery_stress'
+    expected_status='STRESS_ONLY' if stress else 'READY'
     scenarios={}
     def compact(name,account):
         if account_sink is None:return account
@@ -72,11 +74,13 @@ def build_report(prices,scores,factors,limits,calendar,*,account_sink=None,**kwa
         strategy=run_market_account(prices,scores,factors,limits,calendar,fee_bps=fee,slippage_bps=slip,**kwargs)
         benchmark=run_market_account(prices,scores.assign(score=0.),factors,limits,calendar,
             fee_bps=fee,slippage_bps=slip,**dict(kwargs,top_n=None))
-        if strategy['status']!='READY' or benchmark['status']!='READY':
+        if strategy['status']!=expected_status or benchmark['status']!=expected_status:
             return dict(status='NOT_READY',missing=strategy.get('missing',[])+benchmark.get('missing',[]))
         scenarios[name]=dict(strategy=compact(name+'/strategy',strategy),benchmark=compact(name+'/benchmark',benchmark))
-    return dict(status='READY',scenarios=scenarios,published=False,
-        warning='Retrospective research on a frozen pool; not live fills or an untouched test set')
+    return dict(status=expected_status,scenarios=scenarios,published=False,
+        scenario_type='DELISTING_ZERO_RECOVERY_STRESS' if stress else 'VERIFIED_EXECUTION_RESEARCH',
+        warning=('Assumed zero recovery at delisting: stress scenario only, NOT verified historical settlement or return' if stress
+                 else 'Retrospective research on a frozen pool; not live fills or an untouched test set'))
 
 
 def seal_evaluation(directory,report):
@@ -113,7 +117,18 @@ def verify_evaluation(directory):
         if path.resolve().parent!=directory.resolve() and not path.resolve().is_relative_to(directory.resolve()):raise ValueError('Evaluation escape')
         if file_digest(path)!=sha:raise ValueError('Evaluation file changed')
     report=read_json(directory/'report.json',max_bytes=128*1024*1024)
-    if report.get('status') not in ('READY','NOT_READY') or report.get('published',False) is not False:
+    if report.get('status') not in ('READY','NOT_READY','STRESS_ONLY') or report.get('published',False) is not False:
         raise ValueError('Invalid evaluation status')
     if report['status']=='NOT_READY' and ('metrics' in report or 'scenarios' in report):raise ValueError('Unready evaluation contains performance')
+    stress=report.get('scenario_type')=='DELISTING_ZERO_RECOVERY_STRESS'
+    if (report['status']=='STRESS_ONLY')!=stress:raise ValueError('Stress evaluation mislabeled')
+    scenarios=report.get('scenarios',{})
+    if stress and set(scenarios)!={'gross','fee3','fee3_slip10'}:raise ValueError('Incomplete stress scenarios')
+    for scenario in scenarios.values():
+        if stress and (not isinstance(scenario,dict) or set(scenario)!={'strategy','benchmark'}):
+            raise ValueError('Incomplete stress accounts')
+        for account in scenario.values():
+            is_stress=account.get('assumptions',{}).get('delisting_policy')=='zero_recovery_stress'
+            if is_stress!=stress or account.get('status')!=report['status']:
+                raise ValueError('Account scenario policy mismatch')
     return report

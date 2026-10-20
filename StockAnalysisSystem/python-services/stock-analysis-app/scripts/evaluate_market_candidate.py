@@ -16,6 +16,9 @@ def main():
     parser.add_argument('--task-id',required=True)
     parser.add_argument('--project-root',type=Path,default=APP.parents[1],help='Runtime/config project root; useful for an isolated checkout')
     parser.add_argument('--output-root',type=Path,default=Path('.runtime/training_tasks/evaluations'))
+    parser.add_argument('--price-precision',choices=('strict','legacy_float32_decimal6'),default='strict')
+    parser.add_argument('--delisting-policy',choices=('block','zero_recovery_stress'),default='block',
+                        help='Explicit stress assumption only; never verified settlement or publication')
     args=parser.parse_args();project=args.project_root.resolve()
     from dotenv import load_dotenv
     load_dotenv(project/'.env',override=True)
@@ -90,21 +93,25 @@ def main():
         backtest_scores=scored[pd.to_datetime(scored.trade_date)<=pd.Timestamp(last)].copy()
         def account_sink(name,account):
             target=folder/'accounts'/name;target.mkdir(parents=True,exist_ok=False)
-            for key in ('equity','trades','orders'):pd.DataFrame(account[key]).to_parquet(target/(key+'.parquet'),index=False)
+            for key in ('equity','trades','orders','writeoffs'):pd.DataFrame(account.get(key,[])).to_parquet(target/(key+'.parquet'),index=False)
             write_json(target/'open_positions.json',account['open_positions'])
         execution_prices=observed[observed.trade_date.astype(str)<=execution_end].copy()
         report=build_report(execution_prices,backtest_scores,factors,limit_frame,calendar,account_sink=account_sink,
-            top_n=10,suspended=suspended,signal_start=begin,signal_end=last)
+            top_n=10,suspended=suspended,signal_start=begin,signal_end=last,price_precision=args.price_precision,
+            delisting_policy=args.delisting_policy,
+            delist_dates={code:life['delist_date'] for code,life in current['lifecycle']['stocks'].items() if life['delist_date'] is not None})
         pd.DataFrame(report.get('missing',[])).to_parquet(folder/'requirements.parquet',index=False)
         # Keep report JSON compact; all missing keys are preserved in the parquet.
         if 'missing' in report:
             report['missing_count']=len(report['missing']);report['missing']=report['missing'][:100]
         report.update(task_id=task['id'],candidate_manifest_sha256=verified['manifest_sha256'],pool_count=current['pool_count'],pool_identity=current['pool_identity'],
             scored_rows=len(scored),scored_stocks=count,signal_start=begin,signal_end=request['end_date'],backtest_signal_end=last,execution_end=execution_end,
-            published=False,elapsed_seconds=time.monotonic()-started)
+            published=False,elapsed_seconds=time.monotonic()-started,
+            execution_policy=dict(price_precision=args.price_precision,delisting_policy=args.delisting_policy))
         report['diagnostics']=score_diagnostics(scored,observed,calendar)
         write_json(folder/'binding.json',dict(training_binding=task['binding'],evaluation_binding=current,factor_references=factor_refs,
-            evaluator_files={p.name:file_digest(p) for p in (APP/'analysis/market_evaluation.py',APP/'analysis/market_account.py',APP/'analysis/market_diagnostics.py',APP/'tasks/market_samples.py',Path(__file__))}))
+            evaluator_files={p.name:file_digest(p) for p in (APP/'analysis/market_evaluation.py',APP/'analysis/market_account.py',APP/'analysis/market_diagnostics.py',APP/'tasks/market_samples.py',Path(__file__))},
+            execution_policy=report['execution_policy']))
         check_binding(task['binding'],source.bind(task['request']))
         if verify_lightgbm(task,candidate_root)!=verified:raise ValueError('Candidate changed during evaluation')
         seal_evaluation(folder,report);verify_evaluation(folder)

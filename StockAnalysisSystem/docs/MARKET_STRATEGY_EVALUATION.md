@@ -20,6 +20,7 @@ python scripts/evaluate_market_candidate.py --task-id cf4f07c0bf0948dba20e281214
 
 - `READY`：三种固定成本场景及同成交规则的可评分全集基线，明细按场景分文件保存。
 - `NOT_READY`：缺数据或持仓估值无法解释，不输出账户收益。完整可补采缺口在 `requirements.parquet`；报告只展示前 100 条和总数。
+- `STRESS_ONLY`：显式选择退市零回收假设的独立压力场景，**不是已核实的历史处置或真实收益**，不得当作 `READY` 或发布模型的依据。
 - `EVALUATION_FAILED`：输入、来源或完整性校验失败；没有完成封存时不得消费部分文件。
 
 评分只使用信号当日以前的特征，**不按未来第 5 日是否有标签筛选**。训练仍保留原来的 T 收盘→SSE 第 5 个交易日收盘标签。评分输入与训练一样先量化为 float32；原始行情和资格校验保持原精度。
@@ -47,6 +48,22 @@ python scripts/collect_execution_evidence.py --requirements ../../.runtime/train
 Tushare 的 `stk_limit` 权限和响应范围以[官方接口说明](https://tushare.pro/document/2?doc_id=183)为准。权限不足或来源冲突时保留证据并停止，不能猜涨跌停价或改写旧数据。非因子/限价缺口（例如无法解释的持仓缺报价）需要独立核对，不可用这个入口伪造补齐。
 
 补采结束后重新运行评估，生成另一个新目录。旧评估与旧候选保持封存。
+
+## 旧精度与退市持仓
+
+默认参数是 `--price-precision strict --delisting-policy block`。已知生命周期中的退市日到达时，未处置持仓会明确返回 `DELISTING_SETTLEMENT_UNCONFIRMED`，不能靠补造后续行情、事后排除该股票或假设卖出而通过验收。跨过退市日的买单只拒绝成交，原分配份额保留现金，不根据未来结果补选股票。
+
+旧行情曾经 float32 降精度再存入六位小数 DECIMAL。可显式选择 `--price-precision legacy_float32_decimal6`：仅当报价**精确等于**限价经 binary32 转换、再按 SQL 六位小数 ROUND_HALF_UP 得到的值时，视为该限价边界。没有宽泛 epsilon，不重写行情或限价，真实越界仍阻断；识别到涨停不买、跌停不卖，滑点后的范围限制不取消。此选项只适用于已确认使用这条历史存储流程的输入。
+
+需要研究退市风险时可单独运行：
+
+```powershell
+python scripts/evaluate_market_candidate.py --task-id cf4f07c0bf0948dba20e281214880e3b --price-precision legacy_float32_decimal6 --delisting-policy zero_recovery_stress
+```
+
+在可信生命周期退市日当日或其后第一个交易日，假定仍持有的该资产回收值为零：删除对应研究单位，现金不增加，单列 `writeoffs.parquet`，不伪造 SELL、成交量、手续费或结算收入。继续停牌但未退市的持仓仍需停牌证据；退市前的缺报价及其他数据异常仍会阻断。原始股票池和信号选择不按未来退市结果过滤。三种成本场景及基线全部标为 `STRESS_ONLY`，报告和封存校验器禁止把压力账户混入普通 `READY` 报告。
+
+所有评估都保存所选执行政策与账本代码哈希；压力场景是新产物，不能覆盖原先的严格 `NOT_READY` 报告，也不改变训练模型、样本或封存评分。
 
 ## 固定首轮研究协议
 
