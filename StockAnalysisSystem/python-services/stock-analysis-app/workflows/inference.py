@@ -42,10 +42,15 @@ def iter_predictions(task,source):
 
 def collect_predictions(task,directory,source,emit,*,keep_prices=False):
     (directory/'scores').mkdir(exist_ok=False);parts=[];count=0;stocks=set();dates=set();exclusions=[];all_scores=[];prices=[];files=0
+    latest=None;latest_parts=[]
     for i,(scores,raw,coverage) in enumerate(iter_predictions(task,source),1):
         if scores.duplicated(['ts_code','trade_date']).any() or not np.isfinite(scores.score.to_numpy(dtype=float)).all():
             raise ValueError('Invalid model score identities/values')
         parts.append(scores);count+=len(scores);stocks.update(scores.ts_code);dates.update(scores.trade_date)
+        if len(scores):
+            day=scores.trade_date.max()
+            if latest is None or day>latest:latest=day;latest_parts=[]
+            if day==latest:latest_parts.append(scores[scores.trade_date==latest])
         if coverage.get('reasons') or coverage.get('excluded_rows'):exclusions.append(coverage)
         if keep_prices:all_scores.append(scores);prices.append(raw)
         if i%100==0:
@@ -53,6 +58,9 @@ def collect_predictions(task,directory,source,emit,*,keep_prices=False):
             emit('progress',phase='INPUT',completed=i,total=task['binding'].get('pool_count',i))
     if parts:pd.concat(parts,ignore_index=True).to_parquet(directory/'scores'/f'{files:05d}.parquet',index=False)
     if not count:raise ValueError('No eligible signals in requested period')
+    ranking=pd.concat(latest_parts,ignore_index=True).sort_values(['score','ts_code'],ascending=[False,True]).reset_index(drop=True)
+    ranking['rank']=np.arange(1,len(ranking)+1)
+    ranking.to_parquet(directory/'latest_scores.parquet',index=False)
     write_json(directory/'eligibility.json',dict(stocks_with_signals=len(stocks),score_rows=count,dates=sorted(dates),exclusions=exclusions))
     return dict(score_rows=count,scored_stocks=len(stocks),signal_start=min(dates),signal_end=max(dates)),all_scores,prices
 

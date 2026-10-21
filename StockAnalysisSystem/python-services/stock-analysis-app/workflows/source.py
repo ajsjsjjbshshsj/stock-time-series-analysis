@@ -29,6 +29,25 @@ def artifact_root():
     return root if root.is_absolute() else PROJECT/root
 
 
+def pipeline_identity(algorithm):
+    from importlib.metadata import version
+    from tasks.source import APP
+    names=['workflows/training.py']
+    if algorithm=='transformer':
+        names+=['workflows/transformer.py',*[f'analysis/transformer_{n}.py' for n in ('trainer','features','model','utils','config','scoring')],
+                'analysis/transformer_portfolio_signals.py','data_processor/probe_selection.py']
+        packages=('torch','lightgbm','numpy','pandas','scikit-learn','TA-Lib')
+    elif algorithm=='lightgbm':
+        names+=['tasks/disk_matrix.py','tasks/market_samples.py','tasks/market_profile.py','analysis/disk_probe.py','data_processor/probe_rules.py']
+        packages=('lightgbm','numpy','pandas','TA-Lib')
+    elif algorithm=='xgboost':
+        names+=['analysis/predictor.py','analysis/pipeline.py','analysis/strategy_samples.py']
+        packages=('xgboost','numpy','pandas','TA-Lib')
+    else:raise ValueError('Unknown model algorithm')
+    return dict(sha256=digest({name:(APP/name).read_text(encoding='utf-8') for name in names}),
+        dependencies={name:version(name) for name in packages})
+
+
 def native_request(request,code=None):
     common=dict(start_date=request['start_date'],end_date=request['end_date'])
     if request['algorithm']=='lightgbm':return dict(kind='lightgbm_all_market',purpose='engineering_smoke',scope='all_shsz_a',profile='bounded_v1',**common)
@@ -53,11 +72,14 @@ class WorkflowSource:
         if request['operation']=='import':
             from .imports import bind_import
             return bind_import(request,self)
+        pipeline=pipeline_identity(request['algorithm'])
         selected=request
         model_sha=None
         if request['operation']!='train':
             row,meta=self.model(request['model_id'])
             if row['algorithm']!=request['algorithm']:raise ValueError('Model algorithm mismatch')
+            if meta['binding'].get('model_pipeline') is not None and meta['binding']['model_pipeline']!=pipeline:
+                raise ValueError('Model algorithm/dependencies changed; explicit retraining required')
             selected=dict(request,ts_code=meta['native']['ts_code'],stock_codes=meta['native']['stock_codes'])
             model_sha=row['manifest_sha256']
             if request['operation']=='backtest':
@@ -92,6 +114,7 @@ class WorkflowSource:
         from tasks.source import APP
         files={p.relative_to(APP).as_posix():p.read_text(encoding='utf-8') for p in sorted((APP/'workflows').glob('*.py'))}
         bound=dict(data=data,workflow_sha256=digest(files),model_manifest_sha256=model_sha)
+        bound['model_pipeline']=pipeline
         if request['operation']=='backtest':bound['execution_end']=selected['end_date']
         for key in ('build_id','source_sha256','source_start','source_cutoff','pool_identity'):
             bound[key]=data[key]
