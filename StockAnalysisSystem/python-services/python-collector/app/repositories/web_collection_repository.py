@@ -194,9 +194,15 @@ class CollectionCommands:
         }
         if table not in columns: raise ValueError('INVALID_TABLE')
         page(limit, 0)
-        order = 'ts_code' if table == 'stock_basic' else 'trade_date DESC,ts_code'
         with transaction(self.session_factory) as session:
+            # LIMIT does not bound a filesort across millions of historical
+            # rows. Probe the existing date index, then sort only that session.
+            day = None
+            if table != 'stock_basic':
+                day = session.execute(text('SELECT MAX(trade_date) FROM '+table)).scalar_one()
+                if day is None: return dict(items=[], table=table, data_date=None)
+            date_filter = '' if table == 'stock_basic' else ' AND trade_date = :day'
             rows = session.execute(text('SELECT '+columns[table]+' FROM '+table+
                 " WHERE (ts_code LIKE '0%.SZ' OR ts_code LIKE '30%.SZ' OR ts_code LIKE '60%.SH' OR ts_code LIKE '68%.SH')"
-                ' ORDER BY '+order+' LIMIT :limit'), dict(limit=limit)).mappings().all()
-            return dict(items=[dict(row) for row in rows], table=table)
+                +date_filter+' ORDER BY ts_code LIMIT :limit'), dict(limit=limit, day=day)).mappings().all()
+            return dict(items=[dict(row) for row in rows], table=table, data_date=str(day) if day is not None else None)
