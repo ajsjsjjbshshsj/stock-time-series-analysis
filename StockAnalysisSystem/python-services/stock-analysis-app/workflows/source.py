@@ -36,7 +36,10 @@ def history_fingerprint(frame,cutoff):
     raw=frame.reindex(columns=SOURCE_COLUMNS).copy()
     raw['trade_date']=pd.to_datetime(raw.trade_date).dt.strftime('%Y-%m-%d')
     raw=raw[raw.trade_date<=cutoff].sort_values(['ts_code','trade_date'])
-    if raw.empty or raw.duplicated(['ts_code','trade_date']).any():raise ValueError('Invalid historical prefix')
+    if raw.duplicated(['ts_code','trade_date']).any():raise ValueError('Invalid historical prefix')
+    # A fixed full-market pool may contain listings after the training cutoff.
+    # Bind their empty prefix too; eligibility/lifecycle validation remains in
+    # qualify_stock, and later history checks still use this exact cutoff.
     digest=hashlib.sha256()
     for row in raw.itertuples(index=False,name=None):
         values={k:(None if pd.isna(v) else (str(v) if k in ('ts_code','trade_date') else float(v))) for k,v in zip(SOURCE_COLUMNS,row)}
