@@ -1,4 +1,5 @@
 """Bounded indexes, artifact reads and publication; no native model imports."""
+import re
 from sqlalchemy import text
 from tasks.contracts import identity,Conflict,NotFound
 from tasks.artifacts import read_json
@@ -6,6 +7,19 @@ from .contracts import normalize_operation
 from .repository import WorkflowRepository
 
 SECTIONS=frozenset(('scores','equity','trades','orders','writeoffs','requirements'))
+
+
+def select_default_transformer_pool(shards,calendar,start,end):
+    """Suggest only a data-complete pilot, never select by model score/returns.
+
+    A suggestion is not permission to alter an already submitted frozen pool.
+    Worker preflight still verifies every explicitly configured member.
+    """
+    opened=[r['cal_date'] for r in calendar['rows'] if r['is_open'] and start<=r['cal_date']<=end]
+    if not opened:return []
+    return sorted({s['ts_code'] for s in shards if re.fullmatch(r'[0-9]{6}\.(SH|SZ)',s.get('ts_code',''))
+        and s.get('first_date')==opened[0] and s.get('last_date')==opened[-1]
+        and type(s.get('row_count')) is int and s['row_count']==len(opened)})[:20]
 
 
 class WorkflowService:
@@ -16,14 +30,14 @@ class WorkflowService:
         self.repo.check_ready();source=self.tasks.source.describe();pool=[]
         from .source import completed_session,MAX_BACKTEST_PRICE_ROWS
         from tasks.source import read_calendar
-        completed=completed_session(read_calendar(self.tasks.source.calendar_path))
+        calendar=read_calendar(self.tasks.source.calendar_path);completed=completed_session(calendar)
         source=dict(source,stored_source_cutoff=source['source_cutoff'],source_cutoff=min(source['source_cutoff'],completed),completed_session=completed)
         try:
             import json
             with self.repo.engine.connect() as c:
                 value=c.execute(text("SELECT source_manifest FROM stock_feature_build WHERE active_slot='traditional_v2' AND state='READY'")).scalar_one()
             body=json.loads(value) if isinstance(value,str) else value
-            pool=sorted(s['ts_code'] for s in body['shards'])[:20]
+            pool=select_default_transformer_pool(body['shards'],calendar,source['source_start'],source['stored_source_cutoff'])
         except Exception:pass  # Source.describe remains the authoritative readiness check.
         from tasks.market_profile import bounded_profile
         slot=self.tasks.slot_status()
