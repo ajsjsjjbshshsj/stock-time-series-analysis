@@ -437,7 +437,7 @@ def evaluate_ranking_model(model, dataloader, criterion, device, config, writer=
 # ============================================================
 
 def run_transformer_training(panel_df=None, feature_path=None, config=None, use_multi_head=True,
-                              num_epochs=None, learning_rate=None, save_name=None,progress_callback=None,create_plots=True):
+                              num_epochs=None, learning_rate=None, save_name=None,progress_callback=None,create_plots=True,pool_validator=None):
     """
     执行 Transformer 训练流程。
 
@@ -502,6 +502,8 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         # administrator's requested training window (including scaler fit).
         all_data.loc[pd.to_datetime(all_data['日期'])<pd.Timestamp(config['training_start_date']),'label']=np.nan
     train_data, val_data, val_source, scaler = prepare_training_data(all_data, features, val_start_date)
+    if pool_validator is not None:
+        pool_validator(val_source,features,stockid2idx,val_start_date,config['sequence_length'])
 
     # 探针法特征筛选：支持在线计算和预计算特征两种训练路径。
     if config.get('use_probe_selection', False):

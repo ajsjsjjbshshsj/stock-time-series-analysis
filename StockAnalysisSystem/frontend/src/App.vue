@@ -92,6 +92,7 @@ async function logout() {
   catch (e) { logoutError.value = `退出失败，当前仍登录：${e.message}` }
 }
 const sourceLabel = computed(() => {
+  if (authState.mode === 'protected' && route.name === 'models') return '受保护模式 · 真实模型工作流 · 显式发布'
   if (authState.mode === 'protected' && route.name === 'training') return '受保护模式 · 真实工程任务 · 不自动发布'
   if (authState.mode === 'protected' && route.name === 'accounts') return '受保护模式 · 真实账户管理'
   if (authState.mode === 'protected' && ['overview', 'collector'].includes(route.name)) return '受保护模式 · 后台功能未就绪'

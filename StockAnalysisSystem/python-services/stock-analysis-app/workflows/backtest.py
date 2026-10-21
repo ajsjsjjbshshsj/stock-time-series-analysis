@@ -8,6 +8,7 @@ from .inference import collect_predictions
 def backtest_operation(task,directory,source,emit):
     emit('stage',stage='INPUT');coverage,score_parts,price_parts=collect_predictions(task,directory,source,emit,keep_prices=True)
     scores=pd.concat(score_parts,ignore_index=True);prices=pd.concat(price_parts,ignore_index=True)
+    score_parts.clear();price_parts.clear()
     prices=prices[['ts_code','trade_date','open','high','low','close','vol']].copy()
     row,metadata=source.model(task['request']['model_id']);native=metadata['native'];r=task['request']
     factors,limits,calendar,halts,proof=source.execution_inputs(task,prices)

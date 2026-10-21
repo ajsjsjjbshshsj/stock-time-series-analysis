@@ -66,4 +66,4 @@ def import_operation(task,directory,source,emit):
         write_json(directory/'reload.json',proof);verify_candidate(original,source.store.root)
     native.update(algorithm=algorithm,ts_code=original['request'].get('ts_code'),stock_codes=None)
     write_json(directory/'native.json',native);verify_native(directory,algorithm)
-    return {k:v for k,v in native.items() if k not in ('params','algorithm','ts_code','stock_codes')}
+    return {k:v for k,v in native.items() if k not in ('params','algorithm')}

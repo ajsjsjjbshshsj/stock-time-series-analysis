@@ -3,7 +3,8 @@
     <section class="card box"><header><div><h1>模型工作台</h1><p>训练 → 保存模型 → 预测 / 回测 → 审核发布。收益不作为功能成功或发布的门槛。</p></div><button class="btn" @click="refresh">刷新</button></header>
       <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
       <p v-if="caps?.execution.quarantined" role="alert">执行槽已隔离。请核查原 worker 后受控恢复，不重复启动 worker。</p>
-      <p v-if="caps" class="muted">真实输入：{{ caps.source.source_start }} → {{ caps.source.source_cutoff }}。只读已核验数据库，不在训练时采集新数据。输入日期可能落后于今天。</p>
+      <p v-if="caps" class="muted">真实输入：{{ caps.source.source_start }} → {{ caps.source.source_cutoff }}。只读已核验数据库，不在训练时采集新数据。输入日期可能落后于今天；16:00前不使用当日行情。</p>
+      <p v-if="draft.operation === 'backtest' && caps" class="muted">本机回测上限 {{ caps.max_backtest_price_rows }} 个价格观测（固定股票数 × 区间交易日数，含执行尾部）。全市场请选择较短区间；超限会在入队前拒绝，不缩股票池。更长回测需后续扩容或流式账本。</p>
       <form class="form" @submit.prevent="submit">
         <label>操作<select v-model="draft.operation"><option v-for="(name,key) in operationLabels" :key="key" :value="key">{{ name }}</option></select></label>
         <label>算法<select v-model="draft.algorithm"><option value="xgboost">XGBoost · 单股方向</option><option value="lightgbm">LightGBM · 全市场排名</option><option value="transformer">Transformer · 小范围</option></select></label>

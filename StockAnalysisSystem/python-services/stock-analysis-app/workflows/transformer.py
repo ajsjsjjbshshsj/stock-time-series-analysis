@@ -4,6 +4,27 @@ import pandas as pd
 from tasks.artifacts import read_json,write_json
 
 
+def validate_pool_context(context,features,mapping,val_start,sequence_length):
+    """Match dataset eligibility without allocating windows or fitting probes.
+
+    Sparse sessions remain legal, but every frozen member must participate in
+    at least one train AND validation cohort of >=10 eligible instruments.
+    """
+    eligible=[];boundary=pd.Timestamp(val_start)
+    for instrument,group in context.groupby('instrument'):
+        group=group.sort_values('日期');finite=np.isfinite(group[features].to_numpy(dtype=float)).all(axis=1)
+        window=pd.Series(finite).rolling(sequence_length,min_periods=sequence_length).sum().eq(sequence_length).to_numpy()
+        mask=window & np.isfinite(group.label.to_numpy(dtype=float))
+        eligible.extend((pd.Timestamp(day),int(instrument)) for day in group.loc[mask,'日期'])
+    frame=pd.DataFrame(eligible,columns=['date','instrument'])
+    inverse={i:code for code,i in mapping.items()};missing={}
+    for phase,mask in [('train',frame.date<boundary),('validation',frame.date>=boundary)]:
+        part=frame.loc[mask];counts=part.groupby('date').instrument.transform('count')
+        seen=set(part.loc[counts>=10,'instrument']);absent=sorted(inverse[i] for i in set(inverse)-seen)
+        if absent:missing[phase]=absent
+    if missing:raise ValueError('Insufficient Transformer pool context: '+str(missing))
+
+
 def train_transformer(task,directory,source,emit):
     import torch
     from analysis.transformer_trainer import run_transformer_training
@@ -23,7 +44,7 @@ def train_transformer(task,directory,source,emit):
         total=torch.cuda.get_device_properties(0).total_memory
         torch.cuda.set_per_process_memory_fraction(min(.8,4*1024**3/total));torch.cuda.reset_peak_memory_stats()
     emit('stage',stage='PROBE');emit('stage',stage='TRAIN')
-    result=run_transformer_training(panel_df=history,config=config,create_plots=False,
+    result=run_transformer_training(panel_df=history,config=config,create_plots=False,pool_validator=validate_pool_context,
         progress_callback=lambda completed,total:emit('progress',phase='TRAIN',completed=completed,total=total))
     config=result['config'];_,meta=load_model_preprocessing(result['model_path'],config)
     from analysis.transformer_model import MultiHeadStockTransformer

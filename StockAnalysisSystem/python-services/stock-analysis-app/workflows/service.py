@@ -14,6 +14,10 @@ class WorkflowService:
 
     def capabilities(self):
         self.repo.check_ready();source=self.tasks.source.describe();pool=[]
+        from .source import completed_session,MAX_BACKTEST_PRICE_ROWS
+        from tasks.source import read_calendar
+        completed=completed_session(read_calendar(self.tasks.source.calendar_path))
+        source=dict(source,stored_source_cutoff=source['source_cutoff'],source_cutoff=min(source['source_cutoff'],completed),completed_session=completed)
         try:
             import json
             with self.repo.engine.connect() as c:
@@ -26,7 +30,7 @@ class WorkflowService:
         return dict(algorithms=['xgboost','lightgbm','transformer'],operations=['train','predict','backtest','import'],
             source=source,default_transformer_stocks=pool,transformer=dict(min_stocks=10,max_stocks=20,num_epochs=1,max_epochs=5,batch_size=1,max_batch_size=2,use_probe_selection=True),
             resource_profile=bounded_profile(),execution=dict(task_id=slot['task_id'],quarantined=slot['quarantined']),
-            purpose='model_workflow',profit_required=False,automatic_publication=False)
+            max_backtest_price_rows=MAX_BACKTEST_PRICE_ROWS,purpose='model_workflow',profit_required=False,automatic_publication=False)
 
     def create(self,actor,value,key):
         value=normalize_operation(value)

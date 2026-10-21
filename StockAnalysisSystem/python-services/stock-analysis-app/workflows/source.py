@@ -8,6 +8,26 @@ from .contracts import normalize_operation
 from .artifacts import ArtifactStore
 from .repository import WorkflowRepository
 
+MAX_BACKTEST_PRICE_ROWS=250000
+
+
+def completed_session(calendar,now=None):
+    """Strictly after Shanghai16:00; never infer exchange sessions from weekdays."""
+    from datetime import datetime,time,timedelta,timezone
+    zone=timezone(timedelta(hours=8));now=now or datetime.now(zone)
+    if now.utcoffset() is None:raise ValueError('Aware request clock required')
+    now=now.astimezone(zone)
+    eligible=[r['cal_date'] for r in calendar['rows'] if r['is_open'] and
+        datetime.combine(datetime.fromisoformat(r['cal_date']).date(),time(16),zone)<now]
+    if not eligible:raise ValueError('No completed session')
+    return eligible[-1]
+
+
+def check_backtest_budget(pool_count,sessions):
+    rows=pool_count*sessions
+    if rows>MAX_BACKTEST_PRICE_ROWS:raise ValueError('Backtest observation budget exceeded; shorten explicit period')
+    return rows
+
 
 def history_fingerprint(frame,cutoff):
     """Canonical raw prefix, not a fitted statistic or an outcome filter."""
@@ -72,6 +92,8 @@ class WorkflowSource:
         if request['operation']=='import':
             from .imports import bind_import
             return bind_import(request,self)
+        calendar=read_calendar(self.calendar_path);completed=completed_session(calendar)
+        if request['end_date']>completed:raise ValueError('Requested session is not completed')
         pipeline=pipeline_identity(request['algorithm'])
         selected=request
         model_sha=None
@@ -84,8 +106,8 @@ class WorkflowSource:
             model_sha=row['manifest_sha256']
             if request['operation']=='backtest':
                 from analysis.strategy_dates import validate_session_calendar
-                opened=validate_session_calendar(read_calendar(self.calendar_path))
-                available=self.base.describe()['source_cutoff'];signals=[d for d in opened if d<=request['end_date']]
+                opened=validate_session_calendar(calendar)
+                available=min(self.base.describe()['source_cutoff'],completed);signals=[d for d in opened if d<=request['end_date']]
                 if not signals:raise ValueError('Backtest outside calendar')
                 last=opened.index(signals[-1])+meta['native']['holding_sessions']+1
                 execution_end=min(available,opened[min(last,len(opened)-1)])
@@ -119,6 +141,9 @@ class WorkflowSource:
         for key in ('build_id','source_sha256','source_start','source_cutoff','pool_identity'):
             bound[key]=data[key]
         bound['pool_count']=data.get('pool_count',len(data['stock_codes']))
+        if request['operation']=='backtest':
+            sessions=sum(r['is_open'] for r in calendar['rows'] if request['start_date']<=r['cal_date']<=selected['end_date'])
+            bound['backtest_price_rows_budget']=check_backtest_budget(bound['pool_count'],sessions)
         return bound
 
     def verify(self,task):

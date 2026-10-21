@@ -42,7 +42,7 @@ def iter_predictions(task,source):
 
 def collect_predictions(task,directory,source,emit,*,keep_prices=False):
     (directory/'scores').mkdir(exist_ok=False);parts=[];count=0;stocks=set();dates=set();exclusions=[];all_scores=[];prices=[];files=0
-    latest=None;latest_parts=[]
+    latest=None;latest_parts=[];price_rows=0
     for i,(scores,raw,coverage) in enumerate(iter_predictions(task,source),1):
         if scores.duplicated(['ts_code','trade_date']).any() or not np.isfinite(scores.score.to_numpy(dtype=float)).all():
             raise ValueError('Invalid model score identities/values')
@@ -52,7 +52,16 @@ def collect_predictions(task,directory,source,emit,*,keep_prices=False):
             if latest is None or day>latest:latest=day;latest_parts=[]
             if day==latest:latest_parts.append(scores[scores.trade_date==latest])
         if coverage.get('reasons') or coverage.get('excluded_rows'):exclusions.append(coverage)
-        if keep_prices:all_scores.append(scores);prices.append(raw)
+        if keep_prices:
+            # The account needs only the requested execution period and prices,
+            # never feature matrices or dependency-history prefixes.
+            r=task['request'];days=pd.to_datetime(raw.trade_date)
+            bounded=raw.loc[days.between(pd.Timestamp(r['start_date']),pd.Timestamp(task['binding'].get('execution_end',r['end_date']))),
+                ['ts_code','trade_date','open','high','low','close','vol']].copy()
+            price_rows+=len(bounded)
+            from .source import MAX_BACKTEST_PRICE_ROWS
+            if price_rows>MAX_BACKTEST_PRICE_ROWS:raise ValueError('Backtest observation budget exceeded')
+            all_scores.append(scores);prices.append(bounded)
         if i%100==0:
             pd.concat(parts,ignore_index=True).to_parquet(directory/'scores'/f'{files:05d}.parquet',index=False);files+=1;parts=[]
             emit('progress',phase='INPUT',completed=i,total=task['binding'].get('pool_count',i))

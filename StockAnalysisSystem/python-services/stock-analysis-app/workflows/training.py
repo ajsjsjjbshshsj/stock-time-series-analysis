@@ -20,11 +20,12 @@ def train_operation(task,directory,source,emit):
         native=train_transformer(task,directory,source,emit)
     elif algorithm=='xgboost':native=_xgboost(task,directory,source,emit)
     else:native=_lightgbm(task,directory,source,emit)
-    native.update(algorithm=algorithm,ts_code=request['ts_code'],stock_codes=request['stock_codes'])
+    native.update(algorithm=algorithm,ts_code=request['ts_code'],stock_codes=request['stock_codes'] or ([request['ts_code']] if request['ts_code'] else None))
     write_json(directory/'native.json',native);verify_native(directory,algorithm)
     # Public metadata is intentionally independent of file paths/full bindings.
     info={key:native[key] for key in ('score_units','horizon','holding_sessions','feature_names','feature_count',
-        'train_start','train_end','seen_through','pool_count','metrics','probe_selected','epochs_completed','rounds','device','peak_vram_bytes','label_definition') if key in native}
+        'train_start','train_end','seen_through','pool_count','metrics','probe_selected','epochs_completed','rounds','device','peak_vram_bytes','label_definition','ts_code','stock_codes') if key in native}
+    info['scope']='all_shsz_a' if algorithm=='lightgbm' else 'fixed_stocks'
     info['parameters']={k:request[k] for k in ('n_estimators','max_depth','num_epochs','batch_size','label','early_metric','patience','use_probe_selection')}
     return info
 
