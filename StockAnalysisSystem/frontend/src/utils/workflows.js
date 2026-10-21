@@ -1,4 +1,16 @@
 export const operationLabels = { train: '训练模型', predict: '生成预测', backtest: '运行回测', import: '导入旧候选' }
+/** Display verified saved metadata only; never infer a date from the clock. */
+export function resultDisplayContext(value = {}) {
+  const context = value.context || {}, report = value.report || {}
+  const count = Number.isInteger(context.pool_count) && context.pool_count > 0 ? context.pool_count : null
+  return {
+    dataCutoff: report.data_cutoff || context.source_cutoff || '未记录',
+    signalEnd: report.signal_end || '未记录',
+    poolLabel: count == null ? '未记录' : `${context.scope === 'all_shsz_a' ? '沪深 A 股全市场' : '固定股票池'} · ${count} 只`,
+    stockCodes: Array.isArray(context.stock_codes) && context.stock_codes.length <= 20 ? context.stock_codes.join('、') : '',
+    provenance: context.provenance === 'sealed_binding' ? '来自已核验封存元数据；源数据截止不等于模型训练截止或信号日期' : '旧报告未记录来源边界',
+  }
+}
 export function scoreLabel(unit) {
   return ({ probability_up_1d: '下一交易日上涨概率（0–1）', daily_rank: '截面排名分数（不是概率）', within_day_centered_rank: '中心化截面排名分数（不是概率）', raw_return_5d: '第5交易日收益预测', return_5d: '第5交易日收益预测' })[unit] || `${unit || '未知量纲'}（不同模型分数不可直接比较）`
 }

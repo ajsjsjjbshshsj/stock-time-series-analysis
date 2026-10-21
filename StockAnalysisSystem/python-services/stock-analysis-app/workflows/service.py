@@ -9,6 +9,35 @@ from .repository import WorkflowRepository
 SECTIONS=frozenset(('scores','equity','trades','orders','writeoffs','requirements'))
 
 
+def sealed_result_context(metadata):
+    """Public display fields from a verified seal, never today's source state."""
+    from datetime import date
+    binding=metadata.get('binding',{});data=binding.get('data',{})
+    codes=data.get('stock_codes');count=binding.get('pool_count',data.get('pool_count'))
+    if codes is not None:
+        if (not isinstance(codes,list) or not codes or len(set(codes))!=len(codes)
+                or any(not isinstance(code,str) or not re.fullmatch(r'[0-9]{6}\.(SH|SZ)',code) for code in codes)):
+            raise ValueError('Invalid sealed pool')
+        if count is None:count=len(codes)
+        if count!=len(codes):raise ValueError('Sealed pool count mismatch')
+    if count is not None and (type(count) is not int or not 1<=count<=10000):
+        raise ValueError('Invalid sealed pool count')
+    result=dict(scope='all_shsz_a' if metadata.get('index',{}).get('algorithm')=='lightgbm' else 'fixed_stocks',
+        pool_count=count,stock_codes=list(codes) if codes is not None and len(codes)<=20 else None,
+        provenance='sealed_binding')
+    for key in ('source_start','source_cutoff'):
+        value=binding.get(key,data.get(key))
+        if value is not None and (not isinstance(value,str) or date.fromisoformat(value).isoformat()!=value):
+            raise ValueError('Invalid sealed source date')
+        result[key]=value
+    for key,size in (('build_id',32),('pool_identity',64)):
+        value=binding.get(key,data.get(key))
+        if value is not None and (not isinstance(value,str) or not re.fullmatch('[0-9a-f]{'+str(size)+'}',value)):
+            raise ValueError('Invalid sealed source identity')
+        result[key]=value
+    return result
+
+
 def select_default_transformer_pool(shards,calendar,start,end):
     """Suggest only a data-complete pilot, never select by model score/returns.
 
@@ -80,6 +109,7 @@ class WorkflowService:
         row=self._verified(self.repo.get_result(id,public=public),'result');folder=self.store.path(id)
         try:
             report=read_json(folder/'report.json',max_bytes=2*1024*1024)
+            context=sealed_result_context(read_json(folder/'metadata.json',max_bytes=8*1024*1024))
             if report.get('status')!=row['metadata']['status']:raise ValueError('Result status differs')
             import pyarrow.dataset as ds
             if ts_code is not None:
@@ -99,7 +129,7 @@ class WorkflowService:
                     values=batch.slice(max(0,after-skipped)).to_pylist();skipped+=batch.num_rows
                     rows.extend(values[:limit+1-len(rows)])
                     if len(rows)>limit:break
-            return dict(**row,report=report,section=section,rows=rows[:limit],next_cursor=after+limit if len(rows)>limit else None)
+            return dict(**row,report=report,context=context,section=section,rows=rows[:limit],next_cursor=after+limit if len(rows)>limit else None)
         except Exception:raise RuntimeError('Workflow result unavailable') from None
 
     def publication(self,actor,id,published):
