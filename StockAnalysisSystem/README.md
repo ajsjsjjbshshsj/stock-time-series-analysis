@@ -1,5 +1,7 @@
 # 股票时间序列分析系统
 
+已配置本机环境后，按 [结果查看与发布速查](docs/LOCAL_RESULTS_QUICKSTART.md) 启动、登录和查看真实结果；不需要为了打开网页重新训练。
+
 首次安装或更换电脑请先阅读 [可迁移安装与完整恢复](docs/PORTABLE_SETUP.md)。`scripts/manage_project.py` 提供只读 `doctor`、显式空库 `init-db --empty-only` 和选定服务 `start`，不自动开启采集/训练。源码可放任意目录；数据库、模型和运行来源需单独交接。
 
 后台三模型入口为 `/#/models`，支持真实 XGBoost、全市场 LightGBM 与10–20只固定池 Transformer 的排队训练、保存模型、预测、回测和显式发布/撤回。用户端 `/#/user` 只读取已发布结果，不触发计算；旧工程验证和历史信号保持兼容。首次运行前需显式迁移工作流索引并启动唯一 worker，操作及资源限制见 [三模型工作流指南](docs/MODEL_WORKFLOWS.md)。不以收益正负作为功能验收门槛，执行数据不足不生成虚假净值。
