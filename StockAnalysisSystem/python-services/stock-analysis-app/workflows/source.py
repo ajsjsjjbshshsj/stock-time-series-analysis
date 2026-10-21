@@ -9,6 +9,21 @@ from .artifacts import ArtifactStore
 from .repository import WorkflowRepository
 
 
+def history_fingerprint(frame,cutoff):
+    """Canonical raw prefix, not a fitted statistic or an outcome filter."""
+    import hashlib,pandas as pd
+    from data_processor.feature_store_source import SOURCE_COLUMNS,canonical_bytes
+    raw=frame.reindex(columns=SOURCE_COLUMNS).copy()
+    raw['trade_date']=pd.to_datetime(raw.trade_date).dt.strftime('%Y-%m-%d')
+    raw=raw[raw.trade_date<=cutoff].sort_values(['ts_code','trade_date'])
+    if raw.empty or raw.duplicated(['ts_code','trade_date']).any():raise ValueError('Invalid historical prefix')
+    digest=hashlib.sha256()
+    for row in raw.itertuples(index=False,name=None):
+        values={k:(None if pd.isna(v) else (str(v) if k in ('ts_code','trade_date') else float(v))) for k,v in zip(SOURCE_COLUMNS,row)}
+        digest.update(canonical_bytes(values)+b'\n')
+    return digest.hexdigest()
+
+
 def artifact_root():
     root=Path(os.getenv('TRAINING_ARTIFACT_ROOT','.runtime/training_tasks/candidates'))
     return root if root.is_absolute() else PROJECT/root
@@ -45,6 +60,14 @@ class WorkflowSource:
             if row['algorithm']!=request['algorithm']:raise ValueError('Model algorithm mismatch')
             selected=dict(request,ts_code=meta['native']['ts_code'],stock_codes=meta['native']['stock_codes'])
             model_sha=row['manifest_sha256']
+            if request['operation']=='backtest':
+                from analysis.strategy_dates import validate_session_calendar
+                opened=validate_session_calendar(read_calendar(self.calendar_path))
+                available=self.base.describe()['source_cutoff'];signals=[d for d in opened if d<=request['end_date']]
+                if not signals:raise ValueError('Backtest outside calendar')
+                last=opened.index(signals[-1])+meta['native']['holding_sessions']+1
+                execution_end=min(available,opened[min(last,len(opened)-1)])
+                selected=dict(selected,end_date=execution_end)
         if selected['algorithm']=='lightgbm':
             data=self.base.bind(native_request(selected))
         elif selected['algorithm']=='xgboost':data=self.base.bind(native_request(selected))
@@ -53,9 +76,23 @@ class WorkflowSource:
             first=next(iter(bindings.values()))
             data={k:first[k] for k in ('build_id','source_sha256','source_start','source_cutoff')}
             data.update(stocks=bindings,stock_codes=selected['stock_codes'],pool_count=len(bindings),pool_identity=digest(selected['stock_codes']))
+        if request['model_id']:
+            frozen=meta['binding']['data']
+            pairs=[(frozen,data)]
+            if 'stocks' in frozen:
+                if set(frozen['stocks'])!=set(data.get('stocks',{})):raise ValueError('Model stock pool changed')
+                pairs.extend((frozen['stocks'][code],data['stocks'][code]) for code in frozen['stocks'])
+            for old,new in pairs:
+                for key in ('storage_contract','algorithm_version','columns_sha256','code_sha256','pool_identity'):
+                    if old.get(key)!=new.get(key):raise ValueError('Model schema or frozen pool changed')
+            if frozen['source_sha256']!=data['source_sha256'] and not (self.store.path(request['model_id'])/'history.json').exists():
+                raise ValueError('Model requires verified historical prefix before source extension')
+            if request['ts_code'] and request['ts_code']!=meta['native']['ts_code']:raise ValueError('Model stock cannot be replaced')
+            if request['stock_codes'] and request['stock_codes']!=meta['native']['stock_codes']:raise ValueError('Model pool cannot be replaced')
         from tasks.source import APP
         files={p.relative_to(APP).as_posix():p.read_text(encoding='utf-8') for p in sorted((APP/'workflows').glob('*.py'))}
         bound=dict(data=data,workflow_sha256=digest(files),model_manifest_sha256=model_sha)
+        if request['operation']=='backtest':bound['execution_end']=selected['end_date']
         for key in ('build_id','source_sha256','source_start','source_cutoff','pool_identity'):
             bound[key]=data[key]
         bound['pool_count']=data.get('pool_count',len(data['stock_codes']))
@@ -72,8 +109,30 @@ class WorkflowSource:
     def load_stock(self,task,code):
         r=task['request'];bound=task['binding']['data']
         data=bound['stocks'][code] if r['algorithm']=='transformer' else bound
-        selected=dict(r,ts_code=code)
-        return self.base.load(dict(request=native_request(selected,code),binding=data))
+        selected=dict(r,ts_code=code,end_date=task['binding'].get('execution_end',r['end_date']))
+        result=self.base.load(dict(request=native_request(selected,code),binding=data))
+        if r['model_id']:
+            dependency=result[0].attrs['feature_store_source_history'].to_frame()
+            self.verify_history(task,code,dependency)
+        return result
+
+    def verify_history(self,task,code,history):
+        path=self.store.path(task['request']['model_id'])/'history.json'
+        if path.exists():
+            proof=read_json(path,max_bytes=4*1024*1024)
+            actual=history_fingerprint(history,proof['cutoff'])
+            if code in proof['prefixes'] and actual!=proof['prefixes'][code] and task['request']['end_date']<proof['cutoff']:
+                # Historical inference may supply only an earlier prefix. Read
+                # the full verified history for integrity, never to score it.
+                actual=history_fingerprint(self.full_history(code),proof['cutoff'])
+            if code not in proof['prefixes'] or actual!=proof['prefixes'][code]:
+                raise ValueError('Model historical raw data changed')
+
+    def full_history(self,code):
+        from database.feature_store_reader import metadata_row,stock_source
+        with self.engine.connect() as c,c.begin():
+            frame,_=stock_source(c,code,metadata_row(c))
+        return frame
 
     def load(self,task):
         import pandas as pd
@@ -92,5 +151,24 @@ class WorkflowSource:
 
     def iter_stocks(self,task):
         from tasks.market_source import MarketSource
-        request=native_request(task['request'])
-        yield from MarketSource(self.engine,self.calendar_path).iter_stocks(dict(request=request,binding=task['binding']['data']))
+        request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
+        for code,snapshot,calendar,proof in MarketSource(self.engine,self.calendar_path).iter_stocks(dict(request=request,binding=task['binding']['data'])):
+            if task['request']['model_id']:self.verify_history(task,code,snapshot.source_history)
+            yield code,snapshot,calendar,proof
+
+    def execution_inputs(self,task,prices):
+        from tasks.market_evidence import SuspensionEvidence
+        from analysis.market_evaluation import load_factors,load_limits
+        from analysis.strategy_dates import validate_session_calendar
+        evidence=SuspensionEvidence(self.engine)
+        # SuspensionEvidence installs the collector's sibling import path.
+        from app.market_data.execution_evidence import ExecutionStore
+        codes=sorted(prices.ts_code.unique());dates=prices.trade_date.astype(str)
+        begin,end=dates.min()[:10],dates.max()[:10];calendar=read_calendar(self.calendar_path)
+        opened=[d for d in validate_session_calendar(calendar) if begin<=d<=end]
+        factors,refs=load_factors(evidence,codes,begin,end);limits=load_limits(ExecutionStore(evidence.store.root),codes,opened)
+        halts=[];reviews=evidence.disclosures.load()
+        for code in codes:
+            proof=evidence.for_stock(code,begin,end,reviews=reviews)
+            halts.extend((code,d) for d in proof['full_days'])
+        return factors,limits,calendar,halts,dict(factor_source_references=len(refs),observed_price_rows=len(prices))

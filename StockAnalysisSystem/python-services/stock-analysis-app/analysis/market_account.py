@@ -60,7 +60,7 @@ def execution_readiness(prices,factors,limits):
 def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
                        initial_capital=1000000.,fee_bps=3.,slippage_bps=10.,suspended=(),
                        signal_start=None,signal_end=None,price_precision='strict',
-                       delist_dates=None,delisting_policy='block'):
+                       delist_dates=None,delisting_policy='block',holding_sessions=5,entry_score_min=None):
     """Five-session cohorts: T+1 open buy, T+6 open planned sale.
 
     top_n=None is the same-rule eligible-universe equal-weight benchmark.
@@ -68,6 +68,9 @@ def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
     capital and retry on later sessions. No outcome-conditioned replacements.
     """
     if top_n is not None and (type(top_n) is not int or not 1<=top_n<=10000):raise ValueError('Invalid top_n')
+    if type(holding_sessions) is not int or not 1<=holding_sessions<=5:raise ValueError('Invalid holding sessions')
+    if entry_score_min is not None and (isinstance(entry_score_min,bool) or not isinstance(entry_score_min,(int,float))
+            or not math.isfinite(entry_score_min)):raise ValueError('Invalid entry score threshold')
     if price_precision not in ('strict','legacy_float32_decimal6'):raise ValueError('Invalid price precision policy')
     if delisting_policy not in ('block','zero_recovery_stress'):raise ValueError('Invalid delisting policy')
     if delist_dates is None:delist_dates={}
@@ -97,13 +100,15 @@ def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
     first=signal_start or scored.trade_date.min();last=signal_end or scored.trade_date.max()
     if first not in position or last not in position or first>last:raise ValueError('Invalid signal interval')
     end=p.trade_date.max();cycles={}
-    for i in range(position[first],position[last]+1,5):
-        if i+6>=len(opened) or opened[i+6]>end:
+    for i in range(position[first],position[last]+1,holding_sessions):
+        exit_index=i+holding_sessions+1
+        if exit_index>=len(opened) or opened[exit_index]>end:
             return dict(status='NOT_READY',missing=[dict(kind='execution_horizon',trade_date=opened[i])])
         group=scored[scored.trade_date==opened[i]].sort_values(['score','ts_code'],ascending=[False,True])
+        if entry_score_min is not None:group=group[group.score>=entry_score_min]
         count=len(group) if top_n is None else top_n
         chosen=group if top_n is None else group.head(top_n)
-        cycles[opened[i+1]]=dict(signal_date=opened[i],exit_date=opened[i+6],codes=chosen.ts_code.tolist(),slots=count)
+        cycles[opened[i+1]]=dict(signal_date=opened[i],exit_date=opened[exit_index],codes=chosen.ts_code.tolist(),slots=count)
     lookup={ (r.ts_code,r.trade_date):r for r in p.itertuples() }
     factors_map={(r.ts_code,r.trade_date):float(r.adj_factor) for r in f.itertuples()}
     limits_map={(r.ts_code,r.trade_date):(float(r.down_limit),float(r.up_limit)) for r in l.itertuples()}
@@ -196,7 +201,8 @@ def run_market_account(prices,scores,factors,limits,calendar,*,top_n=10,
     metrics.update(n_writeoffs=len(writeoffs),writeoff_marked_value=float(sum(w['marked_value_lost'] for w in writeoffs)))
     return dict(status='STRESS_ONLY' if delisting_policy=='zero_recovery_stress' else 'READY',
         metrics=metrics,equity=equity,trades=trades,orders=orders,open_positions=positions,writeoffs=writeoffs,
-        assumptions=dict(signal='T close',buy='T+1 open',planned_sell='T+6 open',rebalance_sessions=5,
+        assumptions=dict(signal='T close',buy='T+1 open',planned_sell=f'T+{holding_sessions+1} open',rebalance_sessions=holding_sessions,
+            entry_score_min=entry_score_min,
             top_n=top_n,fee_bps=fee_bps,slippage_bps=slippage_bps,units='fractional adjusted-return research proxy',
             price_precision=price_precision,delisting_policy=delisting_policy,
             delisting='zero recovery is a stress assumption, not verified settlement or historical return' if delisting_policy=='zero_recovery_stress' else 'unverified held delisting settlement blocks returns',

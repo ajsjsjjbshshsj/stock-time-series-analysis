@@ -32,6 +32,10 @@ def _xgboost(task,directory,source,emit):
     from analysis.strategy_samples import dated_samples,purged_splits
     import pandas as pd
     request=task['request'];frame,calendar,contract=source.load(task)
+    from .source import history_fingerprint
+    dependency=frame.attrs.get('feature_store_source_history')
+    raw=dependency.to_frame() if dependency is not None else frame
+    write_json(directory/'history.json',dict(cutoff=request['end_date'],prefixes={request['ts_code']:history_fingerprint(raw,request['end_date'])}))
     names=contract['feature_names'];emit('stage',stage='TRAIN')
     result=StockPredictor('xgboost').train_dated(frame,feature_names=names,calendar=calendar,model_params=dict(
         n_estimators=request['n_estimators'],max_depth=request['max_depth'],n_jobs=1,random_state=42,tree_method='hist',device='cpu'))
@@ -53,7 +57,14 @@ def _lightgbm(task,directory,source,emit):
     from .source import native_request
     r=task['request'];original=dict(id=task['id'],request=native_request(r),binding=task['binding']['data'])
     work=source.matrix_directory(task) if hasattr(source,'matrix_directory') else directory/'matrix'
-    bundle=build_market_matrix(original,source.iter_stocks(task),work,emit)
+    from .source import history_fingerprint
+    prefixes={}
+    def captured():
+        for code,snapshot,calendar,proof in source.iter_stocks(task):
+            prefixes[code]=history_fingerprint(getattr(snapshot,'source_history',snapshot.raw_prices),r['end_date'])
+            yield code,snapshot,calendar,proof
+    bundle=build_market_matrix(original,captured(),work,emit)
+    write_json(directory/'history.json',dict(cutoff=r['end_date'],prefixes=prefixes))
     emit('stage',stage='PROBE');names,probe=disk_probe(bundle,bundle.feature_names,bounded_profile(),emit)
     write_json(directory/'probe_selection.json',probe)
     train_index=bundle.splits['train'];val_index=bundle.splits['val'];columns=[bundle.feature_names.index(n) for n in names]

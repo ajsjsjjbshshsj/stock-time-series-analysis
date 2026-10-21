@@ -12,6 +12,8 @@ def train_transformer(task,directory,source,emit):
     history=contract['source_history'].copy();history['trade_date']=pd.to_datetime(history.trade_date)
     if sorted(history.ts_code.unique())!=request['stock_codes']:raise ValueError('Transformer source pool changed')
     history=history[history.trade_date<=pd.Timestamp(request['end_date'])].copy()
+    from .source import history_fingerprint
+    write_json(directory/'history.json',dict(cutoff=request['end_date'],prefixes={code:history_fingerprint(group,request['end_date']) for code,group in history.groupby('ts_code')}))
     config=dict(output_dir=str(directory),feature_start_date=str(history.trade_date.min().date()),
         training_start_date=request['start_date'],num_epochs=request['num_epochs'],batch_size=request['batch_size'],
         use_probe_selection=True,probe_n_iter=1,probe_n_noise=10,feature_num='158+39',sequence_length=60,
@@ -56,3 +58,27 @@ def verify_transformer(directory,native):
     if actual.shape!=expected.shape or not np.isfinite(actual).all() or not np.allclose(actual,expected,rtol=1e-5,atol=1e-6):
         raise ValueError('Transformer reload failed')
     return model
+
+
+def transformer_predictions(task,source,model,native):
+    """Build causal features once; every requested window ends on its own day."""
+    import torch
+    from analysis.transformer_features import build_feature_panel,load_model_preprocessing,prepare_inference_data
+    from analysis.transformer_portfolio_signals import history_windows
+    from analysis.transformer_experiment import adjusted_head_scores
+    r=task['request'];frame,_,contract=source.load(task);history=contract['source_history'].copy()
+    config=native['config'];folder=source.store.path(r['model_id'])
+    scaler,meta=load_model_preprocessing(folder/'best_model.pth',config)
+    config=dict(config,feature_start_date=meta['feature_history_start'],stock_history_starts=meta['stock_history_starts'])
+    history['trade_date']=pd.to_datetime(history.trade_date)
+    observed=history[history.trade_date<=pd.Timestamp(r['end_date'])]
+    raw,columns,_,_=build_feature_panel(observed,config,meta['stockid2idx'],include_labels=False)
+    context=prepare_inference_data(raw,columns,scaler)
+    requested=sorted(observed.loc[observed.trade_date>=pd.Timestamp(r['start_date']),'trade_date'].unique())
+    inverse={i:code for code,i in meta['stockid2idx'].items()};rows=[]
+    with torch.no_grad():
+        for day,values,ids in history_windows(context,meta['selected_features'],meta['stockid2idx'],requested,config['sequence_length']):
+            outputs=model(torch.from_numpy(values).unsqueeze(0),return_all_heads=True)
+            _,scores=adjusted_head_scores(outputs,'nonnegative_variance')
+            rows.extend(dict(ts_code=inverse[i],trade_date=str(day.date()),score=float(score)) for i,score in zip(ids,scores))
+    yield pd.DataFrame(rows,columns=['ts_code','trade_date','score']),frame,dict(excluded_rows=0)
