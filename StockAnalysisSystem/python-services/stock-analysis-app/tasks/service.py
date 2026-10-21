@@ -14,9 +14,9 @@ def public(row):
         'started_at','heartbeat_at','finished_at','failure_code')}
     result.update(request=json.loads(row['request']),binding=json.loads(row['binding']),
                   candidate=json.loads(row['candidate']) if row['candidate'] else None)
-    if result['request']['kind']=='lightgbm_all_market':
+    if result['request']['kind'] in ('lightgbm_all_market','model_workflow'):
         binding=result['binding']
-        result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff')}
+        result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff') if k in binding}
         result['progress']=json.loads(row['progress']) if row['progress'] else None
     return result
 
@@ -48,13 +48,23 @@ class TaskService:
         # MySQL installations may use case-insensitive collations. Hash opaque
         # keys so A... and a... retain distinct identities on every supported DB.
         request=normalize_request(request);key=digest(idempotency(idempotency_key));request_hash=digest(request)
-        with self.repo.transaction() as (c,_):
+        def existing(c):
             self._admin(c,actor_id)
             old=c.execute(select(tasks).where(tasks.c.actor_id==actor_id,tasks.c.idempotency_key==key)).mappings().one_or_none()
             if old is not None:
                 if old['request_hash']!=request_hash:raise Conflict('Idempotency conflict')
                 return public(old)
-            binding=self.source.bind(request)
+            return None
+        with self.repo.transaction() as (c,_):
+            old=existing(c)
+            if old is not None:return old
+        # Source binding can hash the complete market and outlive the30s lease.
+        # Never hold the execution-slot (or account) lock during that work.
+        binding=self.source.bind(request)
+        with self.repo.transaction() as (c,_):
+            # Recheck current role and idempotency after the unlocked interval.
+            old=existing(c)
+            if old is not None:return old
             task_id=uuid4().hex
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),
@@ -176,7 +186,7 @@ class TaskService:
         detail=dict(phase=phase,completed=completed,total=total)
         with self.repo.transaction() as (c,slot):
             row=self._owned(c,slot,task_id,worker_id,generation)
-            if json.loads(row['request'])['kind']!='lightgbm_all_market' or row['stage']!=phase:
+            if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow') or row['stage']!=phase:
                 raise Conflict('Progress does not match current stage')
             old=json.loads(row['progress']) if row['progress'] else None
             if old and old['phase']==phase:
@@ -197,7 +207,13 @@ class TaskService:
             if row['state']=='CANCEL_REQUESTED':outcome='CANCELLED'
             if outcome=='SUCCEEDED':
                 request=json.loads(row['request'])
-                if request['kind']=='lightgbm_all_market':
+                if request['kind']=='model_workflow':
+                    from workflows.contracts import validate_summary
+                    from workflows.repository import WorkflowRepository
+                    validate_summary(candidate)
+                    if candidate['task_id']!=task_id:raise ValueError('Workflow identity mismatch')
+                    WorkflowRepository(self.repo.engine).register(c,candidate)
+                elif request['kind']=='lightgbm_all_market':
                     from .lightgbm_artifacts import validate_summary
                     validate_summary(candidate,dict(id=task_id,request=request,binding=json.loads(row['binding'])))
                 else:self._validate_xgboost_candidate(candidate,task_id)

@@ -8,7 +8,7 @@
     <p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="caps?.execution.quarantined" class="task-alert" role="alert">执行槽已隔离：旧进程退出状态尚未确认。新任务不会开始，请在原机器核查后通过受控恢复命令处理。</p>
     <section class="card task-section">
-      <h2>创建工程任务</h2><p class="muted">支持单股 XGBoost 和沪深 A 股全市场 LightGBM；Transformer 尚未接入。只读取已核验数据，不触发采集。</p>
+      <h2>创建工程任务</h2><p class="muted">这是保留的工程验证入口。三模型正式工作流、参数、预测、回测与发布请使用 <RouterLink to="/models">模型工作台</RouterLink>。只读取已核验数据，不触发采集。</p>
       <p v-if="caps?.source" class="muted">可用输入：{{ caps.source.source_start }} → {{ caps.source.source_cutoff }} · 构建 {{ caps.source.build_id || '已配置' }}</p>
       <form class="task-form" @submit.prevent="createJob">
         <label>训练器<select v-model="draft.kind" aria-label="训练器"><option value="xgboost_single">单股 XGBoost · 工程验证</option><option value="lightgbm_all_market" :disabled="!marketCapability?.enabled">全市场 LightGBM · 保留探针筛选</option><option value="transformer" disabled>Transformer · 未接入</option></select></label>
@@ -33,8 +33,8 @@
         <p v-if="listError" role="alert">{{ listError }}</p><p v-if="listLoading" role="status">正在读取任务…</p>
         <div class="task-table"><table><thead><tr><th>股票 / 编号</th><th>状态</th><th>提交时间（北京时间）</th><th>操作</th></tr></thead><tbody>
           <tr v-for="job in jobs" :key="job.id" :class="{ selected: detail.selectedId === job.id }">
-            <td><strong>{{ job.request.kind === 'lightgbm_all_market' ? `全市场 · ${job.binding.pool_count} 只` : job.request.ts_code }}</strong><code>{{ job.id.slice(0, 12) }}</code></td>
-            <td><span class="task-state" :data-state="job.state">{{ stateLabels[job.state] || job.state }}</span></td>
+            <td><strong>{{ job.request.kind === 'model_workflow' ? `${job.request.algorithm} · ${job.request.operation}` : job.request.kind === 'lightgbm_all_market' ? `全市场 · ${job.binding.pool_count} 只` : job.request.ts_code }}</strong><code>{{ job.id.slice(0, 12) }}</code></td>
+            <td><span class="task-state" :data-state="job.state">{{ job.request.kind === 'model_workflow' && job.state === 'SUCCEEDED' ? '工作流已完成' : stateLabels[job.state] || job.state }}</span></td>
             <td>{{ time(job.created_at) }}</td><td><button class="btn btn-sm" @click="control.select(job.id)">查看</button></td>
           </tr>
         </tbody></table></div>
@@ -45,7 +45,8 @@
         <h2>任务详情</h2><p v-if="!detail.selectedId" class="muted">选择左侧任务，查看数据绑定、执行阶段和事件。</p>
         <p v-if="detail.error" role="alert">{{ detail.error }}</p><p v-if="detail.loading && !detail.job" role="status">正在读取详情…</p>
         <template v-if="detail.job">
-          <div class="task-title"><strong>{{ detail.job.request.kind === 'lightgbm_all_market' ? `沪深 A 股全市场 · ${detail.job.binding.pool_count} 只` : detail.job.request.ts_code }}</strong><span class="task-state" :data-state="detail.job.state">{{ stateLabels[detail.job.state] }}</span></div>
+          <div class="task-title"><strong>{{ detail.job.request.kind === 'model_workflow' ? `${detail.job.request.algorithm} · ${detail.job.request.operation}` : detail.job.request.kind === 'lightgbm_all_market' ? `沪深 A 股全市场 · ${detail.job.binding.pool_count} 只` : detail.job.request.ts_code }}</strong><span class="task-state" :data-state="detail.job.state">{{ stateLabels[detail.job.state] }}</span></div>
+          <p v-if="detail.job.request.kind === 'model_workflow'"><RouterLink to="/models">这是模型工作流任务，请在模型工作台查看模型和结果、审核发布。</RouterLink></p>
           <code class="task-id">{{ detail.job.id }}</code>
           <ol class="task-stages"><li v-for="stage in stages" :key="stage" :class="{ active: detail.job.stage === stage }">{{ stageLabels[stage] }}</li></ol>
           <p v-if="formatTaskProgress(detail.job.progress)" role="status">{{ formatTaskProgress(detail.job.progress) }}<span class="muted"> · 服务端已确认计数</span></p>
@@ -71,6 +72,7 @@
 </template>
 <script setup>
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { authState } from '../../stores/auth.js'
 import { trainingApi } from '../../api/training.js'
 import { createTaskController, stateLabels, stageLabels, buildTrainingRequest, formatTaskProgress, failureLabels } from '../../utils/trainingTasks.js'

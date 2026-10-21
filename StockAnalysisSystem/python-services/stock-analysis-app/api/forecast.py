@@ -44,7 +44,7 @@ def _metadata(payload):
 
 
 def create_app(repository=None, evaluation_repository=None, transformer_signals_root=None,
-               auth_service=None,auth_settings=None,task_service=None):
+               auth_service=None,auth_settings=None,task_service=None,workflow_service=None):
     from api.auth.contracts import AuthSettings
     settings=auth_settings or AuthSettings.from_env()
     @asynccontextmanager
@@ -70,6 +70,11 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
             from tasks.source import SourceProvider
             engine=app.state.auth_service.repo.engine
             app.state.task_service=TaskService(TaskRepository(engine),SourceProvider(engine))
+        if workflow_service is None and app.state.task_service is not None:
+            from workflows.service import WorkflowService
+            from workflows.artifacts import ArtifactStore
+            from workflows.source import artifact_root
+            app.state.workflow_service=WorkflowService(app.state.task_service,ArtifactStore(artifact_root()))
         try:
             yield
         finally:
@@ -84,10 +89,13 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     app.state.auth_settings=settings
     app.state.auth_service=auth_service
     app.state.task_service=task_service
+    app.state.workflow_service=workflow_service
     from api.auth.routes import register_auth_routes
     register_auth_routes(app)
     from tasks.routes import register_task_routes
     register_task_routes(app)
+    from workflows.routes import register_workflow_routes
+    register_workflow_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

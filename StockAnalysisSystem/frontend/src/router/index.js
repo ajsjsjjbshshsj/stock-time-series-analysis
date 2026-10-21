@@ -8,6 +8,7 @@ const routes = [
   { path: '/password', name: 'password', component: () => import('../views/LoginView.vue'), meta: { standalone: true } },
   { path: '/accounts', name: 'accounts', component: () => import('../views/admin/AccountsView.vue'), meta: { title: '账户管理', icon: 'users', adminOnly: true } },
   { path: '/training', name: 'training', component: () => import('../views/admin/TrainingTasksView.vue'), meta: { title: '训练任务', icon: 'activity', adminOnly: true } },
+  { path: '/models', name: 'models', component: () => import('../views/admin/ModelWorkflowView.vue'), meta: { title: '模型工作台', icon: 'trend', adminOnly: true } },
   { path: '/', redirect: '/overview' },
   {
     path: '/overview',

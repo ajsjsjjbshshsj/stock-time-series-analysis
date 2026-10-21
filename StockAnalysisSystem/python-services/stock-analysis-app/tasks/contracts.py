@@ -74,6 +74,9 @@ class MarketJobRequest(BaseModel):
 
 
 def normalize_request(value):
+    if isinstance(value,dict) and value.get('kind')=='model_workflow':
+        from workflows.contracts import normalize_operation
+        return normalize_operation(value)
     model=MarketJobRequest if isinstance(value,dict) and value.get('kind')=='lightgbm_all_market' else JobRequest
     return model.model_validate(value).model_dump()
 

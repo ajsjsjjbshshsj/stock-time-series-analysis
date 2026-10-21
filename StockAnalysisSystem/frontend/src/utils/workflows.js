@@ -1,0 +1,47 @@
+export const operationLabels = { train: '训练模型', predict: '生成预测', backtest: '运行回测', import: '导入旧候选' }
+export function scoreLabel(unit) {
+  return ({ probability_up_1d: '下一交易日上涨概率（0–1）', daily_rank: '截面排名分数（不是概率）', within_day_centered_rank: '中心化截面排名分数（不是概率）', raw_return_5d: '第5交易日收益预测', return_5d: '第5交易日收益预测' })[unit] || `${unit || '未知量纲'}（不同模型分数不可直接比较）`
+}
+export function buildWorkflowRequest(d) {
+  const r = { kind: 'model_workflow', operation: d.operation, algorithm: d.algorithm }
+  if (d.operation === 'import') {
+    if (d.import_task_id?.trim()) r.import_task_id = d.import_task_id.trim()
+    if (d.experiment_id?.trim()) { r.experiment_id = d.experiment_id.trim(); r.trial = d.trial }
+    if (Boolean(r.import_task_id) === Boolean(r.experiment_id)) throw new Error('请选择一种导入来源')
+    return r
+  }
+  Object.assign(r, { start_date: d.start_date, end_date: d.end_date })
+  if (!r.start_date || !r.end_date || r.start_date > r.end_date) throw new Error('请检查输入日期')
+  if (d.operation !== 'train') {
+    if (!/^[0-9a-f]{32}$/.test(d.model_id || '')) throw new Error('请选择已保存的模型版本')
+    r.model_id = d.model_id
+    if (d.operation === 'backtest') Object.assign(r, { top_n: d.top_n, initial_capital: d.initial_capital, fee_bps: d.fee_bps, slippage_bps: d.slippage_bps })
+    return r
+  }
+  if (d.algorithm === 'xgboost') Object.assign(r, { ts_code: d.ts_code.trim().toUpperCase(), n_estimators: d.n_estimators, max_depth: d.max_depth })
+  else if (d.algorithm === 'lightgbm') Object.assign(r, { n_estimators: d.n_estimators, label: d.label, early_metric: d.early_metric, patience: d.patience })
+  else if (d.algorithm === 'transformer') {
+    const stocks = d.stock_codes.trim().toUpperCase().split(/[\s,，;；]+/).filter(Boolean)
+    if (stocks.length < 10 || stocks.length > 20 || new Set(stocks).size !== stocks.length || stocks.some(s => !/^[0-9]{6}\.(SH|SZ)$/.test(s))) throw new Error('Transformer 需要10–20只不重复的沪深股票')
+    Object.assign(r, { stock_codes: stocks.sort(), num_epochs: d.num_epochs, batch_size: d.batch_size, use_probe_selection: true })
+  } else throw new Error('训练器无效')
+  return r
+}
+/** Abort + generation ownership prevents late results crossing logout/page changes. */
+export function createWorkflowController(api, state = {}, { enabled = () => true, visible = () => true, poll = false, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  Object.assign(state, { items: [], next_cursor: null, before: null, error: '', loading: false })
+  let generation = 0, request, timer, disposed = false
+  function pause() { generation++; request?.abort(); clearTimer(timer); state.loading = false }
+  function reset() { pause(); Object.assign(state, { items: [], next_cursor: null, before: null, error: '' }) }
+  async function refresh(before = state.before) {
+    pause()
+    if (disposed || !enabled() || !visible()) return
+    const run = generation; request = new AbortController(); state.loading = true; state.before = before
+    try {
+      const data = await api.list({ before, signal: request.signal })
+      if (!disposed && run === generation && enabled()) Object.assign(state, { items: data.items, next_cursor: data.next_cursor, error: '' })
+    } catch (e) { if (!disposed && run === generation && enabled() && e.name !== 'AbortError') { state.items = []; state.error = e.message } }
+    finally { if (!disposed && run === generation) { state.loading = false; if (poll && enabled() && visible()) timer = setTimer(() => refresh(), 5000) } }
+  }
+  return { refresh, pause, reset, dispose() { disposed = true; reset() } }
+}

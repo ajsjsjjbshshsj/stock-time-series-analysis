@@ -9,7 +9,7 @@ export function createAuthClient({ fetchImpl = globalThis.fetch, base = '' } = {
     options.signal?.addEventListener('abort', abort, { once: true })
     // Binding the full immutable pool verifies source identities before enqueue.
     // This is still a bounded HTTP create, never synchronous model training.
-    const timeoutMs = method === 'POST' && path === '/api/admin/training/jobs' && body?.kind === 'lightgbm_all_market' ? 60000 : 10000
+    const timeoutMs = method === 'POST' && (path === '/api/admin/workflows/jobs' || (path === '/api/admin/training/jobs' && body?.kind === 'lightgbm_all_market')) ? 60000 : 10000
     const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
     try {
       const headers = { ...options.headers, Accept: 'application/json' }
@@ -25,6 +25,7 @@ export function createAuthClient({ fetchImpl = globalThis.fetch, base = '' } = {
         const messages = { 400: '输入无效，请检查提交的字段及范围', 401: '账号或密码错误，或会话已失效',
           403: '操作无权限，或会话已变更，请刷新后重试', 429: '尝试过于频繁，请在 15 分钟后重试', 503: '认证服务未就绪，请联系管理员检查配置和数据库迁移' }
         if (path.startsWith('/api/admin/training')) Object.assign(messages, { 404: '任务不存在', 409: '任务状态或重复提交内容冲突，请刷新后重试', 503: '训练服务未就绪，请检查任务表、特征库与交易日历配置' })
+        if (path.startsWith('/api/admin/workflows') || path.startsWith('/api/analysis/published-results')) Object.assign(messages, { 404: '结果或版本不存在，可能已撤回，请刷新列表', 409: '版本状态或重复提交内容冲突，请刷新后重试', 503: '模型服务未就绪，请检查迁移、数据源、封存文件和交易日历配置' })
         const error = new Error(messages[response.status] || `接口返回 HTTP ${response.status}`)
         error.status = response.status
         throw error

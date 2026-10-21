@@ -437,7 +437,7 @@ def evaluate_ranking_model(model, dataloader, criterion, device, config, writer=
 # ============================================================
 
 def run_transformer_training(panel_df=None, feature_path=None, config=None, use_multi_head=True,
-                              num_epochs=None, learning_rate=None, save_name=None):
+                              num_epochs=None, learning_rate=None, save_name=None,progress_callback=None,create_plots=True,pool_validator=None):
     """
     执行 Transformer 训练流程。
 
@@ -497,7 +497,13 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
     history_start = all_data['日期'].min()
     stock_history_starts = all_data.groupby('股票代码')['日期'].min().to_dict()
     num_stocks = len(stockid2idx)
+    if config.get('training_start_date'):
+        # Keep the full causal feature prefix, but never fit/label before the
+        # administrator's requested training window (including scaler fit).
+        all_data.loc[pd.to_datetime(all_data['日期'])<pd.Timestamp(config['training_start_date']),'label']=np.nan
     train_data, val_data, val_source, scaler = prepare_training_data(all_data, features, val_start_date)
+    if pool_validator is not None:
+        pool_validator(val_source,features,stockid2idx,val_start_date,config['sequence_length'])
 
     # 探针法特征筛选：支持在线计算和预计算特征两种训练路径。
     if config.get('use_probe_selection', False):
@@ -632,6 +638,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
             'ratio_pred': eval_metrics.get('ratio_pred', train_metrics.get('ratio_pred', 0.0)),
         }
         history.append(epoch_history)
+        if progress_callback is not None:progress_callback(epoch+1,config['num_epochs'])
 
         current_final_score = eval_metrics.get('final_score', 0.0)
         improved, should_stop = stopping.update(current_final_score)
@@ -656,16 +663,17 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         json.dump(history, f, indent=4, ensure_ascii=False)
 
     # 绘制训练历史图表
-    try:
-        from visualization.plotter import StockPlotter
-        plotter = StockPlotter()
-        plot_dir = os.path.join(output_dir, 'plots')
-        os.makedirs(plot_dir, exist_ok=True)
-        history_save_path = os.path.join(plot_dir, 'training_history.png')
-        plotter.plot_transformer_training_history(history, title='Transformer 训练历史', save_path=history_save_path)
-        logger.info(f"训练历史图表已保存至: {history_save_path}")
-    except Exception as e:
-        logger.warning(f"训练历史图表绘制失败: {e}")
+    if create_plots:
+        try:
+            from visualization.plotter import StockPlotter
+            plotter = StockPlotter()
+            plot_dir = os.path.join(output_dir, 'plots')
+            os.makedirs(plot_dir, exist_ok=True)
+            history_save_path = os.path.join(plot_dir, 'training_history.png')
+            plotter.plot_transformer_training_history(history, title='Transformer 训练历史', save_path=history_save_path)
+            logger.info(f"训练历史图表已保存至: {history_save_path}")
+        except Exception as e:
+            logger.warning(f"训练历史图表绘制失败: {e}")
 
     model_path = os.path.join(output_dir, f'{save_name or "best_model"}.pth')
     if best_epoch < 0:

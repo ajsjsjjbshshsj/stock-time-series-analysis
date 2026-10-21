@@ -62,6 +62,9 @@ class SourceProvider:
 
     def bind(self,request):
         request=normalize_request(request)
+        if request['kind']=='model_workflow':
+            from workflows.source import WorkflowSource
+            return WorkflowSource(self.engine,self.calendar_path).bind(request)
         if request['kind']=='lightgbm_all_market':
             from .market_source import MarketSource
             return MarketSource(self.engine,self.calendar_path).bind(request)
