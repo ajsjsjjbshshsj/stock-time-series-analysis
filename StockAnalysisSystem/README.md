@@ -2,6 +2,8 @@
 
 首次安装或更换电脑请先阅读 [可迁移安装与完整恢复](docs/PORTABLE_SETUP.md)。`scripts/manage_project.py` 提供只读 `doctor`、显式空库 `init-db --empty-only` 和选定服务 `start`，不自动开启采集/训练。源码可放任意目录；数据库、模型和运行来源需单独交接。
 
+后台三模型入口为 `/#/models`，支持真实 XGBoost、全市场 LightGBM 与10–20只固定池 Transformer 的排队训练、保存模型、预测、回测和显式发布/撤回。用户端 `/#/user` 只读取已发布结果，不触发计算；旧工程验证和历史信号保持兼容。首次运行前需显式迁移工作流索引并启动唯一 worker，操作及资源限制见 [三模型工作流指南](docs/MODEL_WORKFLOWS.md)。不以收益正负作为功能验收门槛，执行数据不足不生成虚假净值。
+
 V0.7 新增单股真实 XGBoost 回归预测：显式离线训练及加载模型推理发布、Python 只读 API（8084）、真实预测标签页和独立 Decimal 对账器。GET 不训练、不自动建表；旧 CLI、缓存、原始行情和 Kafka/Flink 链路保持不变。数据截止日不等于今天，未复权收益率和源记录完整性的边界见 [V0.7 运行指南](docs/V0.7_SINGLE_STOCK_PREDICTION.md)。下文 V0.6 的演示占位不再包含预测标签。
 
 V0.6 新增独立 Market API（8083）与 ClickHouse 持久指标。分析概览使用真实股票池、MySQL Kline 和按日期关联的 ClickHouse MA；监控保留原消费 API，其余页面为演示占位。已有 Kafka/Flink 部署只启动新增 ClickHouse，不重建现有服务。安全运行顺序、查询边界、fail-closed 恢复与只读对账见 [V0.6 业务运行指南](docs/V0.6_CLICKHOUSE_MARKET_API.md)。

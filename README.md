@@ -6,6 +6,12 @@
 
 首次克隆到任意目录、环境诊断、空库初始化和完整数据副本恢复，见 [可迁移安装指南](StockAnalysisSystem/docs/PORTABLE_SETUP.md)。新入口 `python scripts/manage_project.py` 从 `StockAnalysisSystem` 运行，不依赖私人启动脚本；服务启动与夜间采集分开，缺少行情/模型不会自动训练或生成假预测。
 
+## 后台模型工作流与用户只读结果
+
+登录管理员后，在 `/#/models` 配置真实 XGBoost、全市场 LightGBM 或小池 Transformer 训练；任务由独立 worker 持久化执行，模型保存后可选择版本预测、回测，再显式发布或撤回结果。普通用户只在 `/#/user` 的“已发布模型结果”读取保存的结果，不触发训练或推理。
+
+完整操作、三张索引表的显式迁移、资源/股票池上限、分数量纲和执行数据缺口处理，见 [三模型工作流指南](StockAnalysisSystem/docs/MODEL_WORKFLOWS.md)。负收益是有效研究结果，不作为功能成功或发布门槛；证据缺失则显示未就绪，不补造收益。此入口与下文保留的历史 V0.7/V0.6 功能并存。
+
 ## V0.7 单股预测
 
 V0.7 新增显式离线 XGBoost 训练/加载推理、Python 只读 API（8084）及真实预测标签页。真实模式开放概览与预测；API 使用小数收益率、页面转换百分比，GET 不训练。冻结测试与最新无标签预测分开显示并比较零收益基线。数据截止日不是今天；未复权收盘价、历史缺口与估值修订的边界见 [V0.7 业务运行指南](StockAnalysisSystem/docs/V0.7_SINGLE_STOCK_PREDICTION.md)。旧管线、缓存和 Kafka/Flink 数据保持不变。下文 V0.6 架构中的演示占位不再包含预测标签。
