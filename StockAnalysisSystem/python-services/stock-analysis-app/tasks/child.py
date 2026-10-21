@@ -58,7 +58,11 @@ def main():
                     source=MarketSource(db.engine)
                     task=TaskService(TaskRepository(db.engine),source).execution_task(payload['task_id'],payload['worker_id'],
                         payload['generation'],payload['expected_task_sha'])
-                    run_lightgbm(task,payload['root'],source,emit)
+                    if task['request']['kind']=='model_workflow':
+                        from workflows.source import WorkflowSource
+                        from workflows.runner import run_operation
+                        run_operation(task,payload['root'],WorkflowSource(db.engine),emit)
+                    else:run_lightgbm(task,payload['root'],source,emit)
                 else:run_xgboost(payload['task'],payload['root'],SourceProvider(db.engine),lambda stage:emit('stage',stage=stage))
         emit('complete');return 0
     except Exception as error:

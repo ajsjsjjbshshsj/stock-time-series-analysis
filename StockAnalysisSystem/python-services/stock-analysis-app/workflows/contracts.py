@@ -54,7 +54,7 @@ class Operation(BaseModel):
                 if self.algorithm=='lightgbm' and (self.ts_code or self.stock_codes):raise ValueError('LightGBM uses fixed full market')
                 if self.algorithm=='transformer':
                     codes=self.stock_codes
-                    if (self.ts_code or not codes or not 2<=len(codes)<=20 or codes!=sorted(set(codes))
+                    if (self.ts_code or not codes or not 10<=len(codes)<=20 or codes!=sorted(set(codes))
                             or any(re.fullmatch(r'[0-9]{6}\.(SH|SZ)',c) is None for c in codes)):
                         raise ValueError('Fixed small Transformer pool required')
         return self

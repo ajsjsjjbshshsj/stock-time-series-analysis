@@ -13,6 +13,7 @@ def main():
     commands=parser.add_subparsers(dest='command',required=True)
     commands.add_parser('migrate',help='Create only training tables, never market data')
     commands.add_parser('migrate-all-market',help='Explicit additive training queue upgrade; stop API/worker first')
+    commands.add_parser('migrate-workflows',help='Create only model/result/publication indexes; no task started')
     run=commands.add_parser('run',help='Run the single-slot worker, protected mode required')
     run.add_argument('--once',action='store_true',help='Attempt at most one queued job')
     commands.add_parser('status',help='Show execution slot status; never starts training')
@@ -27,6 +28,12 @@ def main():
     from tasks.contracts import encoded
     with DatabaseConnector(diagnostic=True) as db:
         repo=TaskRepository(db.engine)
+        if args.command=='migrate-workflows':
+            from workflows.repository import WorkflowRepository
+            repo.check_ready()
+            with repo.transaction() as (_,slot):
+                if slot['task_id'] is not None:raise ValueError('Idle worker required')
+            WorkflowRepository(db.engine).migrate();print('Workflow schema ready; no task started.');return
         if args.command=='migrate-all-market':
             repo.migrate_all_market();print('All-market training queue schema ready; no task started.');return
         if args.command=='migrate':

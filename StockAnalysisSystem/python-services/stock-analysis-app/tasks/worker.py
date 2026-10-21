@@ -22,7 +22,7 @@ class Worker:
         if task is None:return False
         process=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
-        market=task['request']['kind']=='lightgbm_all_market'
+        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow')
         try:
             process=self.process_factory()
             if market:
