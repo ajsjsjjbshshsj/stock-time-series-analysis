@@ -48,13 +48,23 @@ class TaskService:
         # MySQL installations may use case-insensitive collations. Hash opaque
         # keys so A... and a... retain distinct identities on every supported DB.
         request=normalize_request(request);key=digest(idempotency(idempotency_key));request_hash=digest(request)
-        with self.repo.transaction() as (c,_):
+        def existing(c):
             self._admin(c,actor_id)
             old=c.execute(select(tasks).where(tasks.c.actor_id==actor_id,tasks.c.idempotency_key==key)).mappings().one_or_none()
             if old is not None:
                 if old['request_hash']!=request_hash:raise Conflict('Idempotency conflict')
                 return public(old)
-            binding=self.source.bind(request)
+            return None
+        with self.repo.transaction() as (c,_):
+            old=existing(c)
+            if old is not None:return old
+        # Source binding can hash the complete market and outlive the30s lease.
+        # Never hold the execution-slot (or account) lock during that work.
+        binding=self.source.bind(request)
+        with self.repo.transaction() as (c,_):
+            # Recheck current role and idempotency after the unlocked interval.
+            old=existing(c)
+            if old is not None:return old
             task_id=uuid4().hex
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),

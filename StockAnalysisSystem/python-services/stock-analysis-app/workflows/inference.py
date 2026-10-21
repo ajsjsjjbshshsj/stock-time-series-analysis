@@ -44,6 +44,9 @@ def collect_predictions(task,directory,source,emit,*,keep_prices=False):
     (directory/'scores').mkdir(exist_ok=False);parts=[];count=0;stocks=set();dates=set();exclusions=[];all_scores=[];prices=[];files=0
     latest=None;latest_parts=[];price_rows=0
     for i,(scores,raw,coverage) in enumerate(iter_predictions(task,source),1):
+        # pandas propagates private DependencyHistory attrs through selection.
+        # Persist only explicit score columns; lineage has its own sealed files.
+        scores=scores.copy();scores.attrs={}
         if scores.duplicated(['ts_code','trade_date']).any() or not np.isfinite(scores.score.to_numpy(dtype=float)).all():
             raise ValueError('Invalid model score identities/values')
         parts.append(scores);count+=len(scores);stocks.update(scores.ts_code);dates.update(scores.trade_date)
@@ -58,6 +61,7 @@ def collect_predictions(task,directory,source,emit,*,keep_prices=False):
             r=task['request'];days=pd.to_datetime(raw.trade_date)
             bounded=raw.loc[days.between(pd.Timestamp(r['start_date']),pd.Timestamp(task['binding'].get('execution_end',r['end_date']))),
                 ['ts_code','trade_date','open','high','low','close','vol']].copy()
+            bounded.attrs={}
             price_rows+=len(bounded)
             from .source import MAX_BACKTEST_PRICE_ROWS
             if price_rows>MAX_BACKTEST_PRICE_ROWS:raise ValueError('Backtest observation budget exceeded')
