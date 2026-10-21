@@ -59,6 +59,7 @@
           <p>当前可使用账户管理、训练任务、消费监控和用户端真实结果。采集管理尚未接线，不展示模拟任务成功。</p>
           <RouterLink class="btn" to="/accounts">账户管理</RouterLink>
           <RouterLink class="btn" to="/training">训练任务</RouterLink>
+          <RouterLink class="btn" to="/models">模型工作台</RouterLink>
           <RouterLink class="btn" to="/user">查看用户端</RouterLink>
         </section>
         <RouterView v-else :key="dataSource + route.path" />

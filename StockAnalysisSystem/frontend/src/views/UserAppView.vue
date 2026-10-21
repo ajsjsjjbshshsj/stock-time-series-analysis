@@ -115,6 +115,7 @@ import AnalysisOverview from './analysis/AnalysisOverview.vue'
 import AnalysisPrediction from './analysis/AnalysisPrediction.vue'
 import AnalysisRisk from './analysis/AnalysisRisk.vue'
 import AnalysisTransformerSignals from './analysis/AnalysisTransformerSignals.vue'
+import PublishedResults from './analysis/PublishedResults.vue'
 import UserTechnical from './user/UserTechnical.vue'
 import UserStats from './user/UserStats.vue'
 import UserCompare from './user/UserCompare.vue'
@@ -142,6 +143,7 @@ const TABS = [
   { key: 'stats', label: '统计分析', comp: UserStats },
   { key: 'compare', label: '多股对比', comp: UserCompare },
   { key: 'prediction', label: '模型预测', comp: AnalysisPrediction },
+  { key: 'published', label: '已发布模型结果', comp: PublishedResults },
   { key: 'transformer', label: 'Transformer 信号', comp: AnalysisTransformerSignals },
   { key: 'risk', label: '风险提示', comp: AnalysisRisk },
 ]
