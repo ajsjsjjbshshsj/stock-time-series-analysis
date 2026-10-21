@@ -53,6 +53,11 @@ export function createRequestClient({ mode = 'mock', base = '', fetchImpl = glob
         if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('sas-auth-required'))
         const error = new Error(`接口返回 HTTP ${response.status}`)
         error.status = response.status
+        // Preserve only a bounded machine code, never reflect backend error text.
+        try {
+          const body = await response.json()
+          if (typeof body?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(body.code)) error.code = body.code
+        } catch { /* HTML/empty errors remain ordinary HTTP failures. */ }
         throw error
       }
       try { return await response.json() } catch { throw new Error('接口返回的内容不是有效 JSON') }

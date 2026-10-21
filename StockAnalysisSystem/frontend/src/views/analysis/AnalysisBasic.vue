@@ -3,6 +3,9 @@
     <div class="card section">
       <div class="card-title">最新估值快照（stock_daily_basic）</div>
       <div class="card-sub">{{ tsCode }} · {{ basic.trade_date }}</div>
+      <p v-if="basicError" role="alert">{{ basicError }}</p>
+      <p v-else-if="basicLoading" role="status">估值数据加载中…</p>
+      <p v-else-if="basicEmpty" role="status">暂无该股票估值数据；不会自动采集或使用演示数据。</p>
       <div v-if="basic.ts_code" class="grid basic-grid">
         <StatCard label="收盘价" :value="String(basic.close ?? '—')" raw unit="元" />
         <StatCard label="换手率" :value="String(basic.turnover_rate ?? '—')" raw unit="%" />
@@ -16,22 +19,27 @@
 
     <div class="card section">
       <div class="card-title">日线行情（stock_daily，最近 30 个交易日）</div>
+      <p v-if="klineError" role="alert">{{ klineError }}</p>
       <DataTable :columns="dailyColumns" :rows="rows" :page-size="12" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import StatCard from '../../components/StatCard.vue'
 import DataTable from '../../components/DataTable.vue'
 import { getKline, getDailyBasicRow } from '../../api/analysis.js'
 import { fmtCompact, fmtWanToYi } from '../../utils/format.js'
+import { createGenerationGuard, settleDetailRequest } from '../../utils/prediction.js'
+import { valuationErrorMessage } from '../../utils/valuation.js'
 
 const props = defineProps({ tsCode: { type: String, required: true } })
 
 const basic = ref({})
 const rows = ref([])
+const basicError = ref(''), basicEmpty = ref(false), basicLoading = ref(false), klineError = ref('')
+const guard = createGenerationGuard()
 
 const dailyColumns = [
   { key: 'trade_date', label: 'trade_date', width: '100px' },
@@ -47,14 +55,21 @@ const dailyColumns = [
 ]
 
 watch(() => props.tsCode, async (code) => {
-  const [kline, b] = await Promise.all([
-    getKline(code),
-    // live 下该股无估值行时后端回 404：静默降级为空对象（模板 v-if="basic.ts_code" 隐藏网格）
-    getDailyBasicRow(code).catch(() => ({})),
+  const run = guard.next()
+  basic.value = {}; rows.value = []; basicError.value = ''; klineError.value = ''; basicEmpty.value = false; basicLoading.value = true
+  await Promise.all([
+    settleDetailRequest(getKline(code, { signal: run.signal }), run, {
+      success: kline => { rows.value = [...kline.bars].reverse().slice(0, 30) },
+      error: error => { klineError.value = error.message }, settled: () => {},
+    }),
+    settleDetailRequest(getDailyBasicRow(code, undefined, { signal: run.signal }), run, {
+      success: value => { basic.value = value || {}; basicEmpty.value = value === null },
+      error: error => { basicError.value = valuationErrorMessage(error) },
+      settled: () => { basicLoading.value = false },
+    }),
   ])
-  rows.value = [...kline.bars].reverse().slice(0, 30)
-  basic.value = b
 }, { immediate: true })
+onBeforeUnmount(() => guard.cancel())
 </script>
 
 <style scoped>

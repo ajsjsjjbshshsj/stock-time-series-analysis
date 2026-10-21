@@ -64,8 +64,14 @@ export async function getKline(tsCode, options = {}) {
  * GET /api/analysis/daily-basic/:tsCode — 最新估值与换手（stock_daily_basic）。
  * live 模式后端固定返回最近一个交易日的行；演示模式用 tradeDate（默认 FIXED_TODAY）生成。
  */
-export function getDailyBasicRow(tsCode, tradeDate = FIXED_TODAY, options = {}) {
-  return request(() => getDailyBasic(tsCode, tradeDate), `/api/analysis/daily-basic/${tsCode}`, options)
+export async function getDailyBasicRow(tsCode, tradeDate = FIXED_TODAY, options = {}) {
+  if (!STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
+  try {
+    return await request(() => getDailyBasic(tsCode, tradeDate), `/api/analysis/daily-basic/${tsCode}`, options)
+  } catch (error) {
+    if (error.status === 404 && error.code === 'DAILY_BASIC_NOT_FOUND') return null
+    throw error
+  }
 }
 
 /** GET /api/analysis/market/overview — 最新交易日市场聚合（涨跌家数/行业涨跌幅/排行榜） */
