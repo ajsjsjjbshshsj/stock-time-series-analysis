@@ -23,6 +23,9 @@ class TushareClient:
     def suspend_d(self, **kwargs):
         return self.pro.suspend_d(**kwargs)
 
+    def stk_limit(self, **kwargs):
+        return self.pro.stk_limit(**kwargs)
+
     def stock_basic(self, **kwargs):
         return self.pro.stock_basic(**kwargs)
 
