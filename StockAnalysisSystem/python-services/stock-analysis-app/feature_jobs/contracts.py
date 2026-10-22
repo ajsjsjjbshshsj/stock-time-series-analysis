@@ -1,6 +1,6 @@
 """No caller paths, dates, SQL, model settings or publication switches."""
 from typing import Literal
-from pydantic import BaseModel,ConfigDict,Field
+from pydantic import BaseModel,ConfigDict,Field,model_validator
 from datetime import date
 import re
 
@@ -8,11 +8,17 @@ import re
 class FeatureRequest(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True)
     kind:Literal['feature_build']
-    preparation_id:str=Field(pattern=r'^[0-9a-f]{32}$')
+    preparation_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
+    nightly_task_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
+
+    @model_validator(mode='after')
+    def one_origin(self):
+        if bool(self.preparation_id)==bool(self.nightly_task_id):raise ValueError('Exactly one feature origin required')
+        return self
 
 
 def normalize(value):
-    return FeatureRequest.model_validate(value).model_dump()
+    return FeatureRequest.model_validate(value).model_dump(exclude_none=True)
 
 
 def validate_summary(value,task):

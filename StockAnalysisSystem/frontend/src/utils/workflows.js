@@ -29,6 +29,10 @@ export function buildWorkflowRequest(d) {
     return r
   }
   Object.assign(r, { start_date: d.start_date, end_date: d.end_date })
+  if (d.feature_build_id) {
+    if (!/^[0-9a-f]{32}$/.test(d.feature_build_id)) throw new Error('特征版本无效')
+    r.feature_build_id = d.feature_build_id
+  }
   if (!r.start_date || !r.end_date || r.start_date > r.end_date) throw new Error('请检查输入日期')
   if (d.operation !== 'train') {
     if (!/^[0-9a-f]{32}$/.test(d.model_id || '')) throw new Error('请选择已保存的模型版本')

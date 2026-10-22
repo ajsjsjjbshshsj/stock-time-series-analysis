@@ -11,6 +11,11 @@ from .repository import WorkflowRepository
 MAX_BACKTEST_PRICE_ROWS=250000
 
 
+def require_feature_pin(request,data):
+    if request.get('feature_build_id') is not None and request['feature_build_id']!=data['build_id']:
+        raise SourceChanged('Requested feature version is no longer active')
+
+
 def completed_session(calendar,now=None):
     """Strictly after Shanghai16:00; never infer exchange sessions from weekdays."""
     from datetime import datetime,time,timedelta,timezone
@@ -92,6 +97,9 @@ class WorkflowSource:
 
     def bind(self,value):
         request=normalize_operation(value)
+        from automation.repository import publication_pending
+        with self.engine.connect() as c:
+            if publication_pending(c):raise SourceChanged('Feature activation recovery required')
         if request['operation']=='import':
             from .imports import bind_import
             return bind_import(request,self)
@@ -128,6 +136,7 @@ class WorkflowSource:
             first=next(iter(bindings.values()))
             data={k:first[k] for k in ('build_id','source_sha256','source_start','source_cutoff')}
             data.update(stocks=bindings,stock_codes=selected['stock_codes'],pool_count=len(bindings),pool_identity=digest(selected['stock_codes']))
+        require_feature_pin(request,data)
         if request['model_id']:
             frozen=meta['binding']['data']
             pairs=[(frozen,data)]

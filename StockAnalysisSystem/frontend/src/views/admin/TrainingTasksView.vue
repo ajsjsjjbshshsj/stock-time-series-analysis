@@ -1,7 +1,7 @@
 <template>
   <div class="task-page">
     <section class="card task-heading">
-      <div><p class="muted">后台研究与特征任务 · 单任务执行</p><h1>训练与准备任务</h1><p>任务在独立 worker 中执行，关闭页面不影响执行。特征任务只生成未启用暂存；模型任务不会自动发布或覆盖旧模型。</p></div>
+      <div><p class="muted">后台研究与特征任务 · 单任务执行</p><h1>训练与准备任务</h1><p>任务在独立 worker 中执行，关闭页面不影响执行。特征构建只生成暂存，启用/回滚另行确认；模型任务不会自动发布或覆盖旧模型。</p></div>
       <button class="btn" @click="refreshPage">刷新任务与能力</button>
     </section>
     <p v-if="error" class="task-alert" role="alert">{{ error }}</p>
@@ -48,16 +48,19 @@
           <div class="task-title"><strong>{{ taskTitle(detail.job) }}</strong><span class="task-state" :data-state="detail.job.state">{{ taskStatus(detail.job) }}</span></div>
           <p v-if="detail.job.request.kind === 'model_workflow'"><RouterLink to="/models">这是模型工作流任务，请在模型工作台查看模型和结果、审核发布。</RouterLink></p>
           <code class="task-id">{{ detail.job.id }}</code>
+          <div v-if="isFeatureJob && detail.job.state==='SUCCEEDED'" class="task-actions"><button class="btn" :disabled="actionBusy" @click="featureAction('activate')">核验并启用特征</button><button class="btn" :disabled="actionBusy" @click="featureAction('rollback')">回滚至此已归档版本</button></div>
+          <p v-if="detail.job.request.kind==='feature_activate'">特征切换不训练、不发布模型。进入执行后不可取消；中断时执行槽会隔离，禁止盲目重试。</p>
+          <RouterLink v-if="detail.job.request.kind==='feature_activate' && detail.job.state==='SUCCEEDED'" :to="{path:'/models',query:{build:detail.job.candidate.build_id}}">使用此版本进入模型工作台（不会自动提交任务）</RouterLink>
           <ol class="task-stages"><li v-for="stage in stages" :key="stage" :class="{ active: detail.job.stage === stage }">{{ stageText(stage) }}</li></ol>
           <p v-if="formatTaskProgress(detail.job.progress)" role="status">{{ formatTaskProgress(detail.job.progress) }}<span class="muted"> · 服务端已确认计数</span></p>
           <p v-if="failureLabels[detail.job.failure_code]" role="alert">{{ failureLabels[detail.job.failure_code] }}</p>
-          <dl><dt>用途</dt><dd>{{ isFeatureJob ? '特征暂存 · 不启用、不训练' : '工程候选 · 未发布' }}</dd><dt>输入范围</dt><dd>{{ isFeatureJob ? detail.job.binding.source_start : detail.job.request.start_date }} → {{ isFeatureJob ? detail.job.binding.source_cutoff : detail.job.request.end_date }}</dd>
+          <dl><dt>用途</dt><dd>{{ isActivation ? '特征启用 / 回滚 · 不训练模型' : isFeatureJob ? '特征暂存 · 不启用、不训练' : '工程候选 · 未发布' }}</dd><dt>输入范围</dt><dd>{{ isFeatureJob || isActivation ? detail.job.binding.source_start : detail.job.request.start_date }} → {{ isFeatureJob || isActivation ? detail.job.binding.source_cutoff : detail.job.request.end_date }}</dd>
             <dt>特征构建</dt><dd class="task-hash">{{ isFeatureJob ? detail.job.id : detail.job.binding.build_id }}</dd><dt>源摘要</dt><dd class="task-hash">{{ detail.job.candidate?.source_sha256 || detail.job.binding.source_sha256 || '由worker快照后封存' }}</dd>
             <dt>最近心跳</dt><dd>{{ time(detail.job.heartbeat_at) }}</dd><dt v-if="detail.job.failure_code">失败码</dt><dd v-if="detail.job.failure_code">{{ detail.job.failure_code }}</dd></dl>
           <p v-if="detail.job.state === 'QUEUED'" class="muted">等待独立 worker 领取；入队不代表训练已开始。</p>
           <p v-if="detail.job.state === 'CANCEL_REQUESTED'" class="muted">取消已请求，等待 worker 确认执行进程退出。</p>
           <p v-if="detail.job.state === 'INTERRUPTED'" class="task-alert">任务已中断，不会自动重训。请核查执行槽和原 worker。</p>
-          <div v-if="detail.job.candidate" class="task-candidate"><h3>{{ isFeatureJob ? '特征暂存已保存，尚未启用' : '候选完整性已验证' }}</h3><p>{{ isFeatureJob ? '来源快照、暂存元数据与报告已核对；当前特征库不变，未训练模型，也不代表模型就绪。' : '模型已保存并重加载校验；这不代表策略效果合格，也不代表已发布。' }}</p><p v-if="isFeatureJob">{{ detail.job.candidate.stock_count }}只来源股票 · {{ detail.job.candidate.row_count }}行特征。上方准备池只数不是全局构建只数。</p><code>{{ detail.job.candidate.manifest_sha256 }}</code></div>
+          <div v-if="detail.job.candidate" class="task-candidate"><h3>{{ isActivation ? '特征切换已核验' : isFeatureJob ? '特征暂存已保存，尚未启用' : '候选完整性已验证' }}</h3><p>{{ isActivation ? '此次切换已提交；后续任务可能再次改变当前版本，请刷新能力。没有训练或发布模型。' : isFeatureJob ? '来源快照、暂存元数据与报告已核对；不代表当前已启用或模型就绪，请查看后续启用任务。' : '模型已保存并重加载校验；这不代表策略效果合格，也不代表已发布。' }}</p><p v-if="isFeatureJob">{{ detail.job.candidate.stock_count }}只来源股票 · {{ detail.job.candidate.row_count }}行特征。上方准备池只数不是全局构建只数。</p><code>{{ detail.job.candidate.manifest_sha256 }}</code></div>
           <dl v-if="detail.job.candidate?.coverage"><dt>固定池</dt><dd>{{ detail.job.candidate.coverage.pool_count }} 只 · {{ detail.job.candidate.coverage.zero_eligible_stocks }} 只无合格样本</dd>
             <dt>合格样本</dt><dd>{{ detail.job.candidate.coverage.eligible_rows }} 行 · 净化排除 {{ detail.job.candidate.coverage.purged_rows }} 行</dd>
             <dt>分区行数</dt><dd>训练 {{ detail.job.candidate.coverage.splits.train }} / 验证 {{ detail.job.candidate.coverage.splits.val }} / 测试 {{ detail.job.candidate.coverage.splits.test }}</dd>
@@ -75,13 +78,15 @@ import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { authState } from '../../stores/auth.js'
 import { trainingApi } from '../../api/training.js'
+import { preparationApi } from '../../api/preparation.js'
 import { createTaskController, taskTitle, taskStatus, stageLabels, buildTrainingRequest, formatTaskProgress, failureLabels } from '../../utils/trainingTasks.js'
 const caps = ref(null), error = ref(''), notice = ref(''), jobs = ref([]), nextCursor = ref(null), pageBefore = ref(null), listLoading = ref(false), listError = ref(''), actionBusy = ref(false)
 const draft = reactive({ kind: 'xgboost_single', ts_code: '000001.SZ', start_date: '', end_date: '', n_estimators: 20, max_depth: 3 })
 const detail = reactive({})
 const route=useRoute()
 const isFeatureJob=computed(()=>detail.job?.request.kind==='feature_build')
-const stages = computed(() => isFeatureJob.value ? ['PREFLIGHT','INPUT','VERIFY','SAVE'] : detail.job?.request.kind === 'lightgbm_all_market' ? ['PREFLIGHT', 'INPUT', 'PROBE', 'TRAIN', 'VERIFY', 'SAVE'] : ['PREFLIGHT', 'INPUT', 'TRAIN', 'VERIFY', 'SAVE'])
+const isActivation=computed(()=>detail.job?.request.kind==='feature_activate')
+const stages = computed(() => isFeatureJob.value || isActivation.value ? ['PREFLIGHT','INPUT','VERIFY','SAVE'] : detail.job?.request.kind === 'lightgbm_all_market' ? ['PREFLIGHT', 'INPUT', 'PROBE', 'TRAIN', 'VERIFY', 'SAVE'] : ['PREFLIGHT', 'INPUT', 'TRAIN', 'VERIFY', 'SAVE'])
 const stageText=stage=>(isFeatureJob.value&&({INPUT:'构建特征',VERIFY:'核对暂存证据',SAVE:'保存暂存报告',SUCCEEDED:'特征暂存完成 · 未启用'})[stage])||stageLabels[stage]
 const isMarket = computed(() => draft.kind === 'lightgbm_all_market')
 const marketCapability = computed(() => caps.value?.kinds.find(k => k.kind === 'lightgbm_all_market'))
@@ -90,7 +95,15 @@ const enabled = () => authState.mode === 'protected' && authState.user?.role ===
 const visible = () => !document.hidden
 const control = createTaskController(trainingApi, detail, { visible, enabled })
 const canCreate = computed(() => caps.value?.kinds.some(k => k.kind === draft.kind && k.enabled))
-const canCancel = computed(() => ['QUEUED', 'RUNNING'].includes(detail.job?.state))
+const canCancel = computed(() => detail.job?.state==='QUEUED' || detail.job?.state==='RUNNING' && detail.job?.request.kind!=='feature_activate')
+let featureKey='',featureBody=''
+async function featureAction(action){
+  if(actionBusy.value||!enabled()||!window.confirm(action==='activate'?'完整核验后启用此特征版本？旧版本将保留归档，模型不会自动训练。':'确认回滚至此已归档特征版本？只允许已核验归档，模型不会自动训练。'))return
+  actionBusy.value=true;error.value=''
+  try{const body=detail.job.id+action;if(featureBody!==body||!featureKey){featureBody=body;featureKey=crypto.randomUUID().replaceAll('-','')}
+    const job=await preparationApi.activate(detail.job.id,action,featureKey);featureKey='';if(!active||!enabled())return;await Promise.all([loadList(null),control.select(job.id)])
+  }catch(e){if(active&&enabled())error.value=e.message}finally{if(active)actionBusy.value=false}
+}
 let active = true, listRun = 0, listRequest = null, listTimer = null, submitBody = '', submitKey = ''
 const time = value => value ? new Date(value * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—'
 async function loadCaps() {

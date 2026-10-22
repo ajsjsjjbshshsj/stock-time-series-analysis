@@ -52,9 +52,14 @@ def main():
                 if referenced:
                     from .repository import TaskRepository
                     from .service import TaskService
-                    task=TaskService(TaskRepository(db.engine),SourceProvider(db.engine)).execution_task(payload['task_id'],payload['worker_id'],
-                        payload['generation'],payload['expected_task_sha'])
-                    if task['request']['kind']=='feature_build':
+                    control=TaskService(TaskRepository(db.engine),SourceProvider(db.engine))
+                    def owner_guard():
+                        return control.execution_task(payload['task_id'],payload['worker_id'],payload['generation'],payload['expected_task_sha'])
+                    task=owner_guard()
+                    if task['request']['kind']=='feature_activate':
+                        from feature_jobs.activation import run_activation
+                        run_activation(task,payload['root'],db,emit,owner_guard)
+                    elif task['request']['kind']=='feature_build':
                         from feature_jobs.runner import run_build
                         run_build(task,payload['root'],db,emit)
                     elif task['request']['kind']=='model_workflow':

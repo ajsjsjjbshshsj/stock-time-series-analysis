@@ -6,6 +6,7 @@
       <p v-if="caps" class="muted">真实输入：{{ caps.source.source_start }} → {{ caps.source.source_cutoff }}。只读已核验数据库，不在训练时采集新数据。输入日期可能落后于今天；16:00前不使用当日行情。</p>
       <p v-if="draft.operation === 'backtest' && caps" class="muted">本机回测上限 {{ caps.max_backtest_price_rows }} 个价格观测（固定股票数 × 区间交易日数，含执行尾部）。全市场请选择较短区间；超限会在入队前拒绝，不缩股票池。更长回测需后续扩容或流式账本。</p>
       <form class="form" @submit.prevent="submit">
+        <label class="wide" v-if="draft.operation!=='import'">锁定特征版本（留空使用当前版本）<input v-model="draft.feature_build_id" maxlength="32" placeholder="启用任务完成后带入；版本变化会拒绝入队" /></label>
         <label>操作<select v-model="draft.operation"><option v-for="(name,key) in operationLabels" :key="key" :value="key">{{ name }}</option></select></label>
         <label>算法<select aria-label="算法" v-model="draft.algorithm"><option value="xgboost">XGBoost · 单股方向</option><option value="lightgbm">LightGBM · 股票池排名</option><option value="transformer">Transformer · 小范围</option></select></label>
         <template v-if="draft.operation !== 'import'">
@@ -25,11 +26,12 @@
       </form>
       <p class="muted">所有模型共用单执行槽；默认上限：进程树6 GiB、60分钟。全市场构建要求空闲内存≥8 GiB、临时磁盘≥16 GiB。关闭网页不影响任务。模型与旧封存包不会覆盖；发布必须另行确认。</p>
     </section>
+    <DailyPredictionPanel :models="models.items" />
     <div class="columns">
       <section class="card box"><h2>任务队列</h2><p v-if="jobs.error" role="alert">{{ jobs.error }}</p><p v-if="jobs.loading">正在读取…</p><p v-if="!jobs.items.length && !jobs.loading">暂无任务</p>
         <div class="list"><button v-for="j in jobs.items" :key="j.id" class="item" @click="taskControl.select(j.id)"><strong>{{ operationLabels[j.request.operation] || '旧工程训练' }} · {{ j.request.algorithm || j.request.kind }}</strong><span>{{ j.state === 'SUCCEEDED' ? '已完成并保存' : stateLabels[j.state] || j.state }} · {{ j.id.slice(0,12) }}</span></button></div>
         <div class="actions"><button v-if="jobs.next_cursor" class="btn btn-sm" @click="jobControl.refresh(jobs.next_cursor)">更早任务</button><button v-if="jobs.before" class="btn btn-sm" @click="jobControl.refresh(null)">最新任务</button></div>
-        <template v-if="detail.job"><h3>所选任务</h3><code>{{ detail.job.id }}</code><p>{{ detail.job.state === 'SUCCEEDED' ? '完成（不代表已发布或盈利）' : stateLabels[detail.job.state] }} · {{ stageLabels[detail.job.stage] || detail.job.stage }}</p><p>{{ formatTaskProgress(detail.job.progress) }}</p><p v-if="detail.job.failure_code" role="alert">{{ failureLabels[detail.job.failure_code] || detail.job.failure_code }}</p><button v-if="['QUEUED','RUNNING'].includes(detail.job.state)" class="btn" :disabled="busy" @click="cancel">取消任务</button><button class="btn" @click="taskControl.refresh">刷新详情</button><ol class="events"><li v-for="e in detail.events" :key="e.id">{{ stageLabels[e.event] || e.event }} {{ formatTaskProgress(e.detail) }}</li></ol></template><p v-if="detail.error" role="alert">{{ detail.error }}</p>
+        <template v-if="detail.job"><h3>所选任务</h3><code>{{ detail.job.id }}</code><p>{{ detail.job.state === 'SUCCEEDED' ? '完成（不代表已发布或盈利）' : stateLabels[detail.job.state] }} · {{ stageLabels[detail.job.stage] || detail.job.stage }}</p><p>{{ formatTaskProgress(detail.job.progress) }}</p><p v-if="detail.job.failure_code" role="alert">{{ failureLabels[detail.job.failure_code] || detail.job.failure_code }}</p><button v-if="detail.job.state==='QUEUED'||detail.job.state==='RUNNING'&&detail.job.request.kind!=='feature_activate'" class="btn" :disabled="busy" @click="cancel">取消任务</button><button class="btn" @click="taskControl.refresh">刷新详情</button><ol class="events"><li v-for="e in detail.events" :key="e.id">{{ stageLabels[e.event] || e.event }} {{ formatTaskProgress(e.detail) }}</li></ol></template><p v-if="detail.error" role="alert">{{ detail.error }}</p>
       </section>
       <section class="card box"><h2>已保存模型</h2><p v-if="models.error" role="alert">{{ models.error }}</p><p v-if="!models.items.length">尚无可选版本；可先训练或导入旧候选。</p>
         <div v-for="m in models.items" :key="m.id" class="model"><strong>{{ m.algorithm }} · {{ m.title }}</strong><code>{{ m.id }}</code><p>{{ m.metadata.train_start }} → {{ m.metadata.train_end }} · {{ m.metadata.pool_count }} 只 · {{ m.metadata.feature_count }} 特征</p><p>{{ scoreLabel(m.metadata.score_units) }}</p><details><summary>参数 / 实际轮数 / 数据边界</summary><pre>{{ JSON.stringify(m.metadata,null,2) }}</pre></details><div class="actions"><button class="btn btn-sm" @click="choose(m,'predict')">用此模型预测</button><button class="btn btn-sm" @click="choose(m,'backtest')">用此模型回测</button></div></div>
@@ -46,16 +48,20 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { authState } from '../../stores/auth.js'
+import { useRoute } from 'vue-router'
 import { workflowApi } from '../../api/workflows.js'
 import { buildWorkflowRequest, operationLabels, scoreLabel, createWorkflowController } from '../../utils/workflows.js'
 import { createTaskController, stateLabels, stageLabels, formatTaskProgress, failureLabels } from '../../utils/trainingTasks.js'
 import WorkflowReport from '../../components/WorkflowReport.vue'
 import WorkflowPoolSelector from '../../components/WorkflowPoolSelector.vue'
+import DailyPredictionPanel from '../../components/DailyPredictionPanel.vue'
 const poolReady=ref(true)
+const route=useRoute()
 function usePoolMembers(codes){if(draft.algorithm==='transformer'&&draft.pool_version)draft.stock_codes=codes.join(', ')}
 const caps=ref(null),error=ref(''),notice=ref(''),busy=ref(false),jobs=reactive({}),models=reactive({}),results=reactive({}),detail=reactive({})
 const draft=reactive({operation:'train',algorithm:'xgboost',start_date:'',end_date:'',ts_code:'000001.SZ',stock_codes:'',pool_version:'',model_id:'',n_estimators:20,max_depth:3,label:'raw',early_metric:'rmse',patience:30,num_epochs:1,batch_size:1,top_n:10,initial_capital:1000000,fee_bps:3,slippage_bps:10,import_task_id:'',experiment_id:'',trial:'raw_rmse20'})
 const trials=['raw_rmse20','raw_rmse300','raw_rankic300','csrank_rankic300'],sections=[['scores','最新信号排行'],['equity','权益曲线'],['trades','成交'],['orders','未成交'],['writeoffs','退市处理'],['requirements','缺失证据']]
+draft.feature_build_id=/^[0-9a-f]{32}$/.test(route.query.build||'')?route.query.build:''
 const selectedResult=ref(''),preview=ref(null),previewError=ref(''),previewLoading=ref(false),section=ref('scores'),previewAfter=ref(0)
 const enabled=()=>authState.mode==='protected' && authState.user?.role==='admin' && !authState.user.must_change_password
 const visible=()=>!document.hidden

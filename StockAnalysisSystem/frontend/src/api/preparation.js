@@ -7,6 +7,11 @@ function date(value){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(val
 export function createPreparationApi(client=authApi){
   const get=(path,params,options)=>client.request(path+(params?'?'+new URLSearchParams(params):''),'GET',undefined,options)
   return {
+    features:(options)=>get('/api/admin/features',null,options),
+    activate:(value,action,key,options={})=>{
+      if(!['activate','rollback'].includes(action))throw Error('特征操作无效')
+      return client.request(`/api/admin/features/${id(value)}/${action}`,'POST',{}, {...options,headers:{'Idempotency-Key':id(key)}})
+    },
     list:(options={})=>get(BASE,page(options),options),
     get:(value,options)=>get(`${BASE}/${id(value)}`,null,options),
     tasks:(value,options={})=>get(`${BASE}/${id(value)}/tasks`,page(options),options),

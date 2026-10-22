@@ -18,22 +18,26 @@ def inventory(folder):
     return files
 
 
-def verify_build(task,root,engine):
+def verify_build(task,root,engine,*,hash_files=True,states=('BUILDING',),require_inactive=True):
     folder=task_path(root,task['id'])
     manifest=read_json(folder/'manifest.json',max_bytes=4*1024*1024)
-    if manifest!=dict(schema_version=1,purpose='feature_build',task_sha256=task_digest(task),files=inventory(folder)):
+    if (set(manifest)!={'schema_version','purpose','task_sha256','files'} or manifest['schema_version']!=1
+            or manifest['purpose']!='feature_build' or manifest['task_sha256']!=task_digest(task)
+            or not isinstance(manifest['files'],dict) or hash_files and manifest['files']!=inventory(folder)):
         raise ValueError('Feature seal changed')
     sha=file_digest(folder/'manifest.json')
     if read_json(folder/'complete.json')!=dict(manifest_sha256=sha):raise ValueError('Incomplete feature build')
     report=read_json(folder/'report.json',max_bytes=4*1024*1024)
     source=read_json(folder/'source/manifest.json',max_bytes=4*1024*1024)
+    for name in ('report.json','source/manifest.json'):
+        if file_digest(folder/name)!=manifest['files'].get(name):raise ValueError('Feature metadata hash changed')
     if report.get('build_id')!=task['id'] or report.get('published') is not False:
         raise ValueError('Feature report identity changed')
     for field in ('source_sha256','source_start','source_cutoff','row_count','stock_count'):
         if report[field]!=source[field]:raise ValueError('Feature source report changed')
     with engine.connect() as c:
         stored=c.execute(text('SELECT build_id,state,active_slot,source_start,source_cutoff,source_sha256,output_sha256,row_count,stock_count,source_manifest FROM stock_feature_build WHERE build_id=:id'),dict(id=task['id'])).mappings().one_or_none()
-    if stored is None or stored['state']!='BUILDING' or stored['active_slot'] is not None:
+    if stored is None or stored['state'] not in states or require_inactive and stored['active_slot'] is not None:
         raise ValueError('Staging feature build required')
     for key in ('source_start','source_cutoff','source_sha256','output_sha256','row_count','stock_count'):
         actual=str(stored[key]) if key in ('source_start','source_cutoff') else stored[key]

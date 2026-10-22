@@ -14,7 +14,7 @@ def public(row):
         'started_at','heartbeat_at','finished_at','failure_code')}
     result.update(request=json.loads(row['request']),binding=json.loads(row['binding']),
                   candidate=json.loads(row['candidate']) if row['candidate'] else None)
-    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build'):
+    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate'):
         binding=result['binding']
         result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff','preparation_id','pool_version','previous_active_build_id') if k in binding}
         result['progress']=json.loads(row['progress']) if row['progress'] else None
@@ -98,6 +98,8 @@ class TaskService:
         with self.repo.transaction() as (c,_):
             self._admin(c,actor_id);row=self._row(c,task_id)
             if row['state'] in TERMINAL or row['state']=='CANCEL_REQUESTED':return public(row)
+            if json.loads(row['request'])['kind']=='feature_activate' and row['state']!='QUEUED':
+                raise Conflict('Running feature activation cannot be cancelled')
             state='CANCELLED' if row['state']=='QUEUED' else 'CANCEL_REQUESTED'
             values=dict(state=state)
             if state=='CANCELLED':values['finished_at']=int(self.clock())
@@ -128,7 +130,10 @@ class TaskService:
         identity(worker_id)
         with self.repo.transaction() as (c,slot):
             if self._expire(c,slot) or slot['task_id']:return None
-            row=c.execute(select(tasks).where(tasks.c.state=='QUEUED').order_by(tasks.c.seq).limit(1)).mappings().one_or_none()
+            query=select(tasks).where(tasks.c.state=='QUEUED')
+            from automation.repository import publication_pending
+            if publication_pending(c):query=query.where(tasks.c.request.contains('"kind":"feature_activate"'))
+            row=c.execute(query.order_by(tasks.c.seq).limit(1)).mappings().one_or_none()
             if row is None:return None
             generation=slot['generation']+1;now=int(self.clock())
             c.execute(slots.update().where(slots.c.id==1).values(task_id=row['id'],worker_id=worker_id,
@@ -148,6 +153,7 @@ class TaskService:
         with self.repo.transaction() as (c,slot):
             row=self._owned(c,slot,task_id,worker_id,generation)
             if row['state']!='RUNNING':raise LeaseLost('Task execution cancelled')
+            self._admin(c,row['actor_id'])
             task=dict(id=row['id'],request=json.loads(row['request']),binding=json.loads(row['binding']))
             if not isinstance(expected_sha,str) or task_digest(task)!=expected_sha:
                 raise ValueError('Task reference mismatch')
@@ -207,7 +213,14 @@ class TaskService:
             if row['state']=='CANCEL_REQUESTED':outcome='CANCELLED'
             if outcome=='SUCCEEDED':
                 request=json.loads(row['request'])
-                if request['kind']=='feature_build':
+                if request['kind']=='feature_activate':
+                    from feature_jobs.activation import validate_summary
+                    from automation.repository import activations,checked
+                    validate_summary(candidate,dict(id=task_id,request=request,binding=json.loads(row['binding'])))
+                    journal=checked(c.execute(select(activations).where(activations.c.task_id==task_id)).mappings().one())
+                    if journal['state']!='COMMITTED' or journal['build_id']!=candidate['build_id']:
+                        raise ValueError('Feature activation was not committed')
+                elif request['kind']=='feature_build':
                     from feature_jobs.contracts import validate_summary
                     validate_summary(candidate,dict(id=task_id,binding=json.loads(row['binding'])))
                 elif request['kind']=='model_workflow':
@@ -224,7 +237,13 @@ class TaskService:
             c.execute(tasks.update().where(tasks.c.id==task_id).values(state=outcome,stage='DONE',
                 finished_at=int(self.clock()),candidate=encoded(candidate) if candidate else None,
                 failure_code=TaskFailure(failure_code).code if outcome in ('FAILED','INTERRUPTED') else None))
-            self._event(c,task_id,outcome);self._release(c)
+            self._event(c,task_id,outcome)
+            pending=False
+            if json.loads(row['request'])['kind']=='feature_activate':
+                from automation.repository import publication_pending
+                pending=publication_pending(c)
+            if pending:c.execute(slots.update().where(slots.c.id==1).values(quarantined=True))
+            else:self._release(c)
             return public(self._row(c,task_id))
 
     @staticmethod

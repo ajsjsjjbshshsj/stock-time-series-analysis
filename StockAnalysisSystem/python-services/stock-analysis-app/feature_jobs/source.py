@@ -24,6 +24,19 @@ class FeatureSource:
         from api.preparation import production_services
         from tasks.source import read_calendar
         from workflows.source import completed_session
+        if request.get('nightly_task_id'):
+            from automation.gate import NightlyGate
+            with self.engine.connect() as c:
+                day=str(c.execute(text('SELECT trade_date FROM market_update_run WHERE task_id=:id'),dict(id=request['nightly_task_id'])).scalar_one())
+                active=c.execute(text("SELECT build_id,state,source_cutoff FROM stock_feature_build WHERE active_slot='traditional_v2'")).mappings().one_or_none()
+            proof=NightlyGate(self.engine).check(request['nightly_task_id'],day)
+            calendar=read_calendar(self.calendar_path)
+            if (day>completed_session(calendar) or day<calendar['start'] or calendar['start']>'2023-01-01'
+                    or active and (active['state']!='READY' or str(active['source_cutoff'])>day)):
+                raise ValueError('NIGHTLY_FEATURE_BOUNDARY_CHANGED')
+            return dict(nightly_task_id=request['nightly_task_id'],nightly_proof=proof,
+                source_start='2023-01-01',source_cutoff=day,previous_active_build_id=active['build_id'] if active else None,
+                calendar_sha256=digest(calendar),code_sha256=code_identity(),model_ready=False)
         repo,pools,_=production_services(self.engine)
         parent=repo.get(request['preparation_id'])
         if parent['status']!='SUBMITTED' or parent['data_state']!='READY_CORE':

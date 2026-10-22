@@ -104,6 +104,8 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     register_preparation_routes(app)
     from feature_jobs.routes import register_feature_routes
     register_feature_routes(app)
+    from automation.routes import register_daily_routes
+    register_daily_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

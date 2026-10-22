@@ -20,6 +20,7 @@ class Operation(BaseModel):
     stock_codes:list[str]|None=None
     model_id:str|None=None
     pool_version:str|None=Field(default=None,pattern=r'^(pool_[0-9a-f]{32}|csi300_[0-9a-f]{16})$')
+    feature_build_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
     import_task_id:str|None=None
     experiment_id:str|None=None
     trial:Literal['raw_rmse20','raw_rmse300','raw_rankic300','csrank_rankic300']|None=None
@@ -41,6 +42,7 @@ class Operation(BaseModel):
         for value in (self.model_id,self.import_task_id,self.experiment_id):
             if value is not None:identity(value)
         if self.operation=='import':
+            if self.feature_build_id is not None:raise ValueError('Imported model cannot select features')
             if self.pool_version is not None:raise ValueError('Imported model dictates its own pool')
             if self.model_id or bool(self.import_task_id)==bool(self.experiment_id):raise ValueError('One import origin required')
             if self.experiment_id and (self.algorithm!='lightgbm' or self.trial is None):raise ValueError('Validation trial required')
@@ -66,6 +68,7 @@ def normalize_operation(value):
     result=Operation.model_validate(value).model_dump()
     # Absent selections retain the legacy request/digest byte shape.
     if result['pool_version'] is None:result.pop('pool_version')
+    if result['feature_build_id'] is None:result.pop('feature_build_id')
     return result
 
 

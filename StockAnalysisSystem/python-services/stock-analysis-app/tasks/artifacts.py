@@ -52,6 +52,10 @@ def task_digest(task):return digest(dict(id=identity(task['id']),request=normali
 
 
 def verify_candidate(task,root,*,engine=None):
+    if normalize_request(task['request'])['kind']=='feature_activate':
+        if engine is None:raise ValueError('Feature activation metadata connection required')
+        from feature_jobs.activation import verify_activation
+        return verify_activation(task,root,engine)
     if normalize_request(task['request'])['kind']=='feature_build':
         if engine is None:raise ValueError('Feature metadata connection required')
         from feature_jobs.runner import verify_build
