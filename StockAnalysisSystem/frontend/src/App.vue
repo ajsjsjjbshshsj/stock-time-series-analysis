@@ -101,7 +101,7 @@ const sourceLabel = computed(() => {
   if (authState.mode === 'protected' && route.name === 'overview') return '受保护模式 · 总览未就绪'
   if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'
   if (route.name === 'monitor') return '监控接口数据'
-  if (route.name === 'analysis') return '真实行情 · 概览与预测已接入'
+  if (route.name === 'analysis') return '真实行情与已发布结果 · 只读分析'
   return '接入模式 · 本页仍为演示数据'
 })
 
