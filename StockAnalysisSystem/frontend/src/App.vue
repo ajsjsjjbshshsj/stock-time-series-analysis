@@ -96,6 +96,7 @@ const sourceLabel = computed(() => {
   if (authState.mode === 'protected' && route.name === 'models') return '受保护模式 · 真实模型工作流 · 显式发布'
   if (authState.mode === 'protected' && route.name === 'training') return '受保护模式 · 真实工程任务 · 不自动发布'
   if (authState.mode === 'protected' && route.name === 'accounts') return '受保护模式 · 真实账户管理'
+  if (authState.mode === 'protected' && route.name === 'pools') return '受保护模式 · 固定股票池 · 查询不触发采集训练'
   if (authState.mode === 'protected' && route.name === 'collector') return '受保护模式 · 真实缺口补采 · 仅管理员'
   if (authState.mode === 'protected' && route.name === 'overview') return '受保护模式 · 总览未就绪'
   if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'
