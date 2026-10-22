@@ -116,8 +116,17 @@ class Runtime:
         if not nightly:return PreparationWorker(self.tasks,self.service)
         from app.nightly.scheduler import PolicyBoundPreparationService
         scheduler=self.scheduler(run_at=run_at,bootstrap_start=bootstrap_start)
+        from app.repositories.web_collection_repository import CollectionCommands
+        from app.preparation.web_commands import WebCommandProcessor
+        inbox=WebCommandProcessor(CollectionCommands(self.db.Session),self.market_service())
+        class BeforePoll:
+            def tick(self):
+                inbox.tick()
+                scheduler.tick()
+            def next_delay(self):return scheduler.next_delay()
+        before=BeforePoll()
         return PreparationWorker(self.tasks,PolicyBoundPreparationService(self.service),
-            queues=[WorkerQueue('market',self.market_tasks(),self.market_service())],before_poll=scheduler.tick)
+            queues=[WorkerQueue('market',self.market_tasks(),self.market_service())],before_poll=before.tick)
 
     def close(self):
         try:self.db.close()
@@ -138,6 +147,7 @@ def public(value):
 def main(argv=None,dependencies=None):
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='command',required=True)
+    commands.add_parser('web-migrate',help='Explicitly create only the web collection inbox tables')
     commands.add_parser('pool-import-legacy')
     listing=commands.add_parser('pool-list'); listing.add_argument('--pool-id')
     create=commands.add_parser('pool-create')
@@ -198,7 +208,12 @@ def main(argv=None,dependencies=None):
             deps={name:getattr(runtime,name) for name in ('pools','tasks','service','evidence','calendar','pool_sources','worker','market_tasks','market_service','scheduler')}
         else: deps=dependencies
         command=args.command
-        if command=='pool-list': result=deps['pools'].list_versions(args.pool_id)
+        if command=='web-migrate':
+            if runtime is None:raise ValueError('RUNTIME_REQUIRED')
+            from app.repositories.web_collection_repository import migrate
+            migrate(runtime.db.engine)
+            result=dict(status='MIGRATED',collection_started=False)
+        elif command=='pool-list': result=deps['pools'].list_versions(args.pool_id)
         elif command=='pool-import-legacy':
             from app.preparation.pool_sources import import_legacy_pool
             result=deps['pools'].register(import_legacy_pool(ANALYSIS/'models/universes/csi300_fixed/csi300_5739ddc829ad3650'),activate=True)

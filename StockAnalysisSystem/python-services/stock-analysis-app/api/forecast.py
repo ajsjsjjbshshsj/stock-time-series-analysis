@@ -96,6 +96,8 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     register_task_routes(app)
     from workflows.routes import register_workflow_routes
     register_workflow_routes(app)
+    from api.collector import register_collector_routes
+    register_collector_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
