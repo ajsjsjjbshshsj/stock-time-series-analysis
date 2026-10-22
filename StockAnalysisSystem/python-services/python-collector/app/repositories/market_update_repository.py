@@ -32,12 +32,8 @@ def _scheduled(day,value):
     if scheduled.date()!=target or scheduled.second or scheduled.microsecond:raise ValueError('MARKET_SCHEDULE_INVALID')
     return scheduled
 
-def _task(row):
-    value=dict(row)
-    for column,target in (('request_json','request'),('owner_json','owner'),('progress_json','progress'),('result_json','result'),('universe_json','universe')):
-        raw=value.pop(column)
-        value[target]=json.loads(raw) if raw is not None else None
-    for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
+def validate_task_identity(value):
+    """Validate compact immutable request fields without loading universe evidence."""
     request=value['request']
     if (not isinstance(request,dict) or set(request)!={'scope','trade_date','requirements_version','scheduled_for'}
             or request['scope']!=SCOPE or schema_for_version(request['requirements_version']) not in (1,2)
@@ -46,9 +42,18 @@ def _task(row):
             or value['request_sha256']!=identity(request) or value['status'] not in STATUSES
             or value['phase'] not in PHASES or type(value['attempt_no']) is not int or value['attempt_no']<1):
         raise ValueError('MARKET_TASK_IDENTITY_CHANGED')
-    value['trade_date']=str(value['trade_date'])
-    if stamp(_scheduled(request['trade_date'],request['scheduled_for']))!=stamp(value['not_before']):
+    if stamp(_scheduled(request['trade_date'],request['scheduled_for']))!=stamp(utc(value['not_before'])):
         raise ValueError('MARKET_SCHEDULE_CHANGED')
+
+
+def _task(row):
+    value=dict(row)
+    for column,target in (('request_json','request'),('owner_json','owner'),('progress_json','progress'),('result_json','result'),('universe_json','universe')):
+        raw=value.pop(column)
+        value[target]=json.loads(raw) if raw is not None else None
+    for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
+    validate_task_identity(value)
+    value['trade_date']=str(value['trade_date'])
     if value['universe'] is not None:
         validate_market(value['universe'])
         if value['universe']['schema_version']!=schema_for_version(value['requirements_version']):raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')

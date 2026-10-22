@@ -1,12 +1,13 @@
 """Fixed-pool preparation inbox. Explicit DDL, no provider or model operations."""
 from datetime import datetime,timezone
+import json
 from uuid import uuid4
 from sqlalchemy import MetaData,Table,Column,String,Integer,UniqueConstraint,select,func,text
 from sqlalchemy.exc import IntegrityError
 from app.preparation.contracts import identity,validate_pool
 from ._preparation_sql import transaction,stamp
 from .web_collection_repository import identifier,date_range,page,CollectionCommands
-from .market_update_repository import _task as validated_market_task
+from .market_update_repository import validate_task_identity
 
 metadata=MetaData()
 commands=Table('market_pool_preparation_request',metadata,
@@ -20,6 +21,8 @@ commands=Table('market_pool_preparation_request',metadata,
     UniqueConstraint('actor_id','request_key',name='uq_pool_preparation_actor_key'))
 links=Table('market_pool_preparation_day',metadata,Column('request_id',String(32),primary_key=True),Column('task_id',String(32),primary_key=True))
 STATES={'QUEUED','PLANNING','SUBMITTED','WAITING_RETRY','FAILED'}
+CHILD_COLUMNS=('task_id','identity','trade_date','market_scope','requirements_version','request_json',
+    'request_sha256','not_before','status','phase','attempt_no')
 
 
 def migrate(engine):
@@ -45,7 +48,7 @@ class PreparationCommands:
     def _get(self,session,id):
         row=self._row(session,id)
         count=session.execute(select(func.count()).select_from(links).where(links.c.request_id==id)).scalar_one()
-        children=session.execute(text('SELECT r.* '
+        children=session.execute(text('SELECT '+','.join('r.'+name for name in CHILD_COLUMNS)+' '
             'FROM market_pool_preparation_day d JOIN market_update_run r ON r.task_id=d.task_id '
             'WHERE d.request_id=:id'),dict(id=id)).mappings().all()
         if len(children)!=count:raise RuntimeError('PREPARATION_CHILD_MISSING')
@@ -67,9 +70,10 @@ class PreparationCommands:
     @staticmethod
     def _validate_child(parent,row):
         try:
-            task=validated_market_task(row)
+            task=dict(row,request=json.loads(row['request_json']))
+            validate_task_identity(task)
             if (parent['batch_id'] is None or task['requirements_version']!=parent['batch_id']
-                    or not parent['start_date']<=task['trade_date']<=parent['end_date']):
+                    or not parent['start_date']<=str(task['trade_date'])<=parent['end_date']):
                 raise ValueError('OUTSIDE_BINDING')
         except (ValueError,TypeError,KeyError):
             raise RuntimeError('PREPARATION_CHILD_BINDING_CHANGED') from None
@@ -140,7 +144,7 @@ class PreparationCommands:
         identifier(id);identifier(task_id)
         with transaction(self.factory) as session:
             command=self._row(session,id)
-            task=session.execute(text('SELECT * FROM market_update_run WHERE task_id=:id'),dict(id=task_id)).mappings().first()
+            task=session.execute(text('SELECT '+','.join(CHILD_COLUMNS)+' FROM market_update_run WHERE task_id=:id'),dict(id=task_id)).mappings().first()
             if (task is None or command['batch_id'] is None or task['requirements_version']!=command['batch_id']
                     or not command['start_date']<=str(task['trade_date'])<=command['end_date']):
                 raise ValueError('PREPARATION_CHILD_OUTSIDE_BINDING')
@@ -171,7 +175,7 @@ class PreparationCommands:
             parent=self._row(session,id)
             if session.execute(select(links).where(links.c.request_id==id,links.c.task_id==task_id)).first() is None:
                 raise LookupError('PREPARATION_CHILD_NOT_FOUND')
-            task=session.execute(text('SELECT * FROM market_update_run WHERE task_id=:id'),dict(id=task_id)).mappings().first()
+            task=session.execute(text('SELECT '+','.join(CHILD_COLUMNS)+' FROM market_update_run WHERE task_id=:id'),dict(id=task_id)).mappings().first()
             if task is None:raise RuntimeError('PREPARATION_CHILD_BINDING_CHANGED')
             self._validate_child(parent,task)
             return CollectionCommands._task(session,task_id)
