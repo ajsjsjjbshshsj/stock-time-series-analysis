@@ -3,11 +3,17 @@ export const operationLabels = { train: '训练模型', predict: '生成预测',
 export function resultDisplayContext(value = {}) {
   const context = value.context || {}, report = value.report || {}
   const count = Number.isInteger(context.pool_count) && context.pool_count > 0 ? context.pool_count : null
+  const registry = context.scope === 'fixed_registry' && typeof context.pool_version === 'string' && /^(pool_[0-9a-f]{32}|csi300_[0-9a-f]{16})$/.test(context.pool_version)
   return {
     dataCutoff: report.data_cutoff || context.source_cutoff || '未记录',
     signalEnd: report.signal_end || '未记录',
     poolLabel: count == null ? '未记录' : `${context.scope === 'all_shsz_a' ? '沪深 A 股全市场' : '固定股票池'} · ${count} 只`,
     stockCodes: Array.isArray(context.stock_codes) && context.stock_codes.length <= 20 ? context.stock_codes.join('、') : '',
+    poolVersion: registry ? context.pool_version : '',
+    poolProvider: registry ? context.provider || '未记录' : '',
+    poolSnapshotDate: registry ? context.provider_snapshot_date || '无历史成分日期' : '',
+    poolGroup: registry ? context.group_code || '未记录' : '',
+    registryStockCount: registry && Number.isInteger(context.registry_stock_count) ? context.registry_stock_count : null,
     provenance: context.provenance === 'sealed_binding' ? '来自已核验封存元数据；源数据截止不等于模型训练截止或信号日期' : '旧报告未记录来源边界',
   }
 }
