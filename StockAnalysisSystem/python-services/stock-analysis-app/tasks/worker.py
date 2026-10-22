@@ -22,7 +22,7 @@ class Worker:
         if task is None:return False
         process=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
-        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow')
+        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build')
         try:
             process=self.process_factory()
             if market:
@@ -61,7 +61,9 @@ class Worker:
                     if process.poll()!=0 or not complete:raise TaskFailure('PROCESS_FAILED')
                     if not process.stop():raise TaskFailure('PROCESS_FAILED')
                     from .artifacts import verify_candidate
-                    try:candidate=verify_candidate(task,self.root)
+                    try:
+                        options=dict(engine=self.service.repo.engine) if task['request']['kind']=='feature_build' else {}
+                        candidate=verify_candidate(task,self.root,**options)
                     except Exception:raise TaskFailure('CANDIDATE_INVALID') from None
                     self.service.heartbeat(*fence)
                     outcome='SUCCEEDED';break

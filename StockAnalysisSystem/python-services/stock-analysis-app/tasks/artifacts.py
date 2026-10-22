@@ -51,7 +51,11 @@ def read_json(path,*,max_bytes=2*1024*1024):
 def task_digest(task):return digest(dict(id=identity(task['id']),request=normalize_request(task['request']),binding=task['binding']))
 
 
-def verify_candidate(task,root):
+def verify_candidate(task,root,*,engine=None):
+    if normalize_request(task['request'])['kind']=='feature_build':
+        if engine is None:raise ValueError('Feature metadata connection required')
+        from feature_jobs.runner import verify_build
+        return verify_build(task,root,engine)
     if normalize_request(task['request'])['kind']=='model_workflow':
         from workflows.artifacts import ArtifactStore
         return ArtifactStore(root).verify(task['id'],task_sha256=task_digest(task))

@@ -48,22 +48,26 @@ def main():
         with contextlib.redirect_stdout(sys.stderr):
             from database.db_connector import DatabaseConnector
             from .source import SourceProvider,SourceChanged
-            from .runner import run_xgboost
             with DatabaseConnector(diagnostic=True) as db:
                 if referenced:
                     from .repository import TaskRepository
                     from .service import TaskService
-                    from .market_source import MarketSource
-                    from .lightgbm_runner import run_lightgbm
-                    source=MarketSource(db.engine)
-                    task=TaskService(TaskRepository(db.engine),source).execution_task(payload['task_id'],payload['worker_id'],
+                    task=TaskService(TaskRepository(db.engine),SourceProvider(db.engine)).execution_task(payload['task_id'],payload['worker_id'],
                         payload['generation'],payload['expected_task_sha'])
-                    if task['request']['kind']=='model_workflow':
+                    if task['request']['kind']=='feature_build':
+                        from feature_jobs.runner import run_build
+                        run_build(task,payload['root'],db,emit)
+                    elif task['request']['kind']=='model_workflow':
                         from workflows.source import WorkflowSource
                         from workflows.runner import run_operation
                         run_operation(task,payload['root'],WorkflowSource(db.engine),emit)
-                    else:run_lightgbm(task,payload['root'],source,emit)
-                else:run_xgboost(payload['task'],payload['root'],SourceProvider(db.engine),lambda stage:emit('stage',stage=stage))
+                    else:
+                        from .market_source import MarketSource
+                        from .lightgbm_runner import run_lightgbm
+                        run_lightgbm(task,payload['root'],MarketSource(db.engine),emit)
+                else:
+                    from .runner import run_xgboost
+                    run_xgboost(payload['task'],payload['root'],SourceProvider(db.engine),lambda stage:emit('stage',stage=stage))
         emit('complete');return 0
     except Exception as error:
         code='SOURCE_CHANGED' if type(error).__name__=='SourceChanged' else 'INPUT_INVALID' if isinstance(error,ValueError) else 'TRAINING_FAILED'

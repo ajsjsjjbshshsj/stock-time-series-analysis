@@ -16,6 +16,8 @@ export function createPreparationApi(client=authApi){
       return client.request(BASE,'POST',{pool_version:value.pool_version,start,end},{...options,headers:{'Idempotency-Key':id(key)}})
     },
     retry:(value,options)=>client.request(`${BASE}/${id(value)}/retry`,'POST',{},options),
+    featureBuild:(parent,key,options={})=>client.request(`${BASE}/${id(parent)}/feature-build`,'POST',{},
+      {...options,headers:{'Idempotency-Key':id(key)}}),
     retryTask:(parent,task,key,options={})=>client.request(`${BASE}/${id(parent)}/tasks/${id(task)}/retry`,'POST',{},
       {...options,headers:{'Idempotency-Key':id(key)}}),
   }

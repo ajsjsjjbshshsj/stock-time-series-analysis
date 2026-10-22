@@ -74,6 +74,9 @@ class MarketJobRequest(BaseModel):
 
 
 def normalize_request(value):
+    if isinstance(value,dict) and value.get('kind')=='feature_build':
+        from feature_jobs.contracts import normalize
+        return normalize(value)
     if isinstance(value,dict) and value.get('kind')=='model_workflow':
         from workflows.contracts import normalize_operation
         return normalize_operation(value)

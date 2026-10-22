@@ -13,6 +13,8 @@
       <button type="button" class="btn btn-sm" :disabled="busy || detailLoading" @click="loadDetail()">刷新所选任务详情</button>
       <p v-if="detail.pool_version!==poolVersion">正在查看另一固定版本的历史任务；不会随上方选择改变其成员或日期。</p>
       <p>{{ state(detail.data_state) }} · {{ detail.status }} · {{ detail.task_count }}个交易日任务。模型输入仍需独立特征与样本校验。</p>
+      <button v-if="detail.data_state==='READY_CORE'" type="button" class="btn" :disabled="busy" @click="buildFeatures">构建特征暂存（不启用）</button>
+      <p v-if="featureTaskId"><code>{{ featureTaskId }}</code> · <RouterLink :to="{path:'/training',query:{task:featureTaskId}}">查看特征任务</RouterLink></p>
       <p v-if="detail.error_kind" role="alert">{{ detail.error_kind }}<span v-if="detail.retry_not_before"> · 最早重试 {{ detail.retry_not_before }}</span></p>
       <button v-if="['FAILED','WAITING_RETRY'].includes(detail.status)" type="button" class="btn" :disabled="busy" @click="retryParent">重试准备规划</button>
       <p v-if="detailLoading" role="status">读取当日任务…</p>
@@ -28,6 +30,7 @@ import {preparationApi as api} from '../api/preparation.js'
 const props=defineProps({poolVersion:{type:String,default:''},start:{type:String,default:''},end:{type:String,default:''}})
 const requests=ref([]),total=ref(0),offset=ref(0),selected=ref(''),detail=ref(null),tasks=ref([]),taskOffset=ref(0),taskTotal=ref(0)
 const listLoading=ref(false),detailLoading=ref(false),busy=ref(false),listError=ref(''),detailError=ref(''),writeError=ref(''),notice=ref('')
+const featureTaskId=ref('')
 const enabled=()=>authState.mode==='protected'&&authState.user?.role==='admin'&&!authState.user.must_change_password
 const state=value=>({NOT_STARTED:'等待worker规划',RUNNING:'数据任务进行中',READY_CORE:'核心行情已补齐（非模型就绪）',NO_APPLICABLE_SESSIONS:'区间无适用交易日',NEEDS_CHECK:'存在失败或待核对任务',FAILED:'准备失败'}[value]||value)
 let active=true,epoch=0,listRun=0,detailRun=0,listAbort,detailAbort,timer,submitBody='',submitKey=''
@@ -51,7 +54,15 @@ async function loadDetail(next=taskOffset.value){
   catch(error){if(current(e)&&r===detailRun&&error.name!=='AbortError'){detailError.value=error.message;detail.value=null;tasks.value=[]}}
   finally{if(current(e)&&r===detailRun){detailLoading.value=false;if(!document.hidden&&detail.value&&['NOT_STARTED','RUNNING'].includes(detail.value.data_state))timer=setTimeout(()=>loadDetail(),5000)}}
 }
-function choose(id){selected.value=id;detail.value=null;tasks.value=[];taskOffset.value=0;loadDetail(0)}
+function choose(id){selected.value=id;detail.value=null;tasks.value=[];taskOffset.value=0;featureTaskId.value='';loadDetail(0)}
+async function buildFeatures(){
+  if(busy.value||!enabled()||detail.value?.data_state!=='READY_CORE')return
+  if(!window.confirm('构建新的特征暂存？会计算2023年起的全局已入库历史，截止不早于当前特征库；可能耗时较长，不启用、不训练、不发布。'))return
+  const e=epoch,id=detail.value.id,mapKey='feature:'+id;busy.value=true;writeError.value=''
+  if(!retryKeys.has(mapKey))retryKeys.set(mapKey,newKey())
+  try{const value=await api.featureBuild(id,retryKeys.get(mapKey));if(current(e)){retryKeys.delete(mapKey);featureTaskId.value=value.id;notice.value='特征构建已入队；由独立worker执行，完成后仅保留暂存，不会替换当前输入或训练模型。'}}
+  catch(error){if(current(e))writeError.value=error.message}finally{if(current(e))busy.value=false}
+}
 async function submit(){
   if(busy.value||!enabled())return
   const value={pool_version:props.poolVersion,start:props.start,end:props.end}
@@ -75,7 +86,7 @@ async function retryTask(task){
   try{await api.retryTask(id,task,retryKeys.get(mapKey));if(current(e)){retryKeys.delete(mapKey);notice.value='已提交当日任务重试，仍使用原固定批次。';await loadDetail()}}
   catch(error){if(current(e))writeError.value=error.message}finally{if(current(e))busy.value=false}
 }
-function reset(){epoch++;listRun++;detailRun++;listAbort?.abort();detailAbort?.abort();clearTimeout(timer);requests.value=[];selected.value='';detail.value=null;tasks.value=[];total.value=0;busy.value=false;listLoading.value=false;detailLoading.value=false;listError.value='';detailError.value='';writeError.value='';notice.value='';submitBody='';submitKey='';retryKeys.clear()}
+function reset(){epoch++;listRun++;detailRun++;listAbort?.abort();detailAbort?.abort();clearTimeout(timer);requests.value=[];selected.value='';detail.value=null;tasks.value=[];total.value=0;busy.value=false;listLoading.value=false;detailLoading.value=false;listError.value='';detailError.value='';writeError.value='';notice.value='';submitBody='';submitKey='';featureTaskId.value='';retryKeys.clear()}
 function visibility(){if(document.hidden){detailRun++;detailAbort?.abort();clearTimeout(timer);detailLoading.value=false}else if(enabled()){refresh();loadDetail()}}
 watch(()=>[authState.user?.id,authState.user?.role,authState.mode,authState.user?.must_change_password],()=>{reset();if(enabled())refresh(0)},{flush:'sync'})
 onMounted(()=>{refresh(0);document.addEventListener('visibilitychange',visibility)})
