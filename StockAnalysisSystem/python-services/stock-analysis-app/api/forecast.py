@@ -100,6 +100,8 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     register_collector_routes(app)
     from api.pools import register_pool_routes
     register_pool_routes(app)
+    from api.preparation import register_preparation_routes
+    register_preparation_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

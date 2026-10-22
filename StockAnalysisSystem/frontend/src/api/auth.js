@@ -28,6 +28,7 @@ export function createAuthClient({ fetchImpl = globalThis.fetch, base = '' } = {
         if (path.startsWith('/api/admin/workflows') || path.startsWith('/api/analysis/published-results')) Object.assign(messages, { 404: '结果或版本不存在，可能已撤回，请刷新列表', 409: '版本状态或重复提交内容冲突，请刷新后重试', 503: '模型服务未就绪，请检查迁移、数据源、封存文件和交易日历配置' })
         if (path.startsWith('/api/admin/collector')) Object.assign(messages, { 400: '采集参数无效：仅支持2023年起、已经收盘的日期范围', 404: '采集任务不存在，请刷新列表', 409: '任务状态或重复提交内容冲突，请刷新后重试', 503: '采集服务未就绪，请检查采集表迁移、数据库与运行目录配置' })
         if (path.startsWith('/api/admin/pools')) Object.assign(messages, {400:'股票池或日期参数无效，请检查选择及范围',404:'所选股票池尚无完整本地成分或固定版本，不会改用全市场',409:'成员来源已变化，请重新预览后保存',503:'股票池或覆盖查询未就绪，请检查数据库、可信交易日历和来源资料'})
+        if (path.startsWith('/api/admin/preparation')) Object.assign(messages, {400:'固定池或准备日期参数无效',404:'准备任务、固定池或关联交易日不存在',409:'准备任务状态或重复提交内容冲突，请刷新后重试',503:'数据准备服务未就绪，请检查显式迁移、数据库和采集worker'})
         const error = new Error(messages[response.status] || `接口返回 HTTP ${response.status}`)
         error.status = response.status
         throw error

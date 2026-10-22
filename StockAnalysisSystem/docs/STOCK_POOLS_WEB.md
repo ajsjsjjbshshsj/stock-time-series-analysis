@@ -41,3 +41,5 @@ LightGBM读取所选池全部成员，逐股加载特征，不一次加载全市
 指数可指定`as_of=YYYY-MM-DD`；全市场和本地行业只支持今天的分类日期，不能回填成历史成分日期。版本格式仅接受已有`pool_...`或兼容`csi300_...`；不接受文件路径、任意SQL或客户端成员列表。
 
 API与collector配置同一MySQL及`PREPARATION_DATA_ROOT`/`RUNTIME_PATH_MAP_FILE`。覆盖复用本地封存日历、上市资料和停牌来源验证；`TRAINING_CALENDAR_FILE`可提供原可信日历，范围不足时只查本地sealed缓存，不联网刷新。凭据、映射、运行缓存和测试不提交GitHub。
+
+“固定池数据准备任务”面板提供显式补缺、真实任务状态和受控重试，详见[固定池网页补缺](POOL_PREPARATION_WEB.md)。它与上方只读覆盖查询不同，不会自动构建特征或提交训练。
