@@ -30,6 +30,10 @@ export function buildWorkflowRequest(d) {
     if (d.operation === 'backtest') Object.assign(r, { top_n: d.top_n, initial_capital: d.initial_capital, fee_bps: d.fee_bps, slippage_bps: d.slippage_bps })
     return r
   }
+  if (d.pool_version != null && d.pool_version !== '') {
+    if (typeof d.pool_version !== 'string' || !/^(pool_[0-9a-f]{32}|csi300_[0-9a-f]{16})$/.test(d.pool_version)) throw new Error('请选择有效的固定股票池版本')
+    r.pool_version = d.pool_version
+  }
   if (d.algorithm === 'xgboost') Object.assign(r, { ts_code: d.ts_code.trim().toUpperCase(), n_estimators: d.n_estimators, max_depth: d.max_depth })
   else if (d.algorithm === 'lightgbm') Object.assign(r, { n_estimators: d.n_estimators, label: d.label, early_metric: d.early_metric, patience: d.patience })
   else if (d.algorithm === 'transformer') {

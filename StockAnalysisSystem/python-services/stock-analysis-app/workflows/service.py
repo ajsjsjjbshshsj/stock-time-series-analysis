@@ -25,6 +25,15 @@ def sealed_result_context(metadata):
     result=dict(scope='all_shsz_a' if metadata.get('index',{}).get('algorithm')=='lightgbm' else 'fixed_stocks',
         pool_count=count,stock_codes=list(codes) if codes is not None and len(codes)<=20 else None,
         provenance='sealed_binding')
+    if binding.get('registry_pool') is not None:
+        from .pools import validate_selection
+        pool=validate_selection(binding['registry_pool'])
+        if codes is None or not set(codes)<=set(pool['stock_codes']):raise ValueError('Sealed registry members differ')
+        if metadata.get('index',{}).get('algorithm')!='xgboost' and codes!=pool['stock_codes']:
+            raise ValueError('Sealed fixed pool was truncated')
+        result.update(scope='fixed_registry',pool_version=pool['pool_version'],registry_stock_count=pool['stock_count'],
+            member_sha256=pool['member_sha256'],group_type=pool['group_type'],group_code=pool['group_code'],
+            provider=pool['provider'],provider_snapshot_date=pool['provider_snapshot_date'])
     for key in ('source_start','source_cutoff'):
         value=binding.get(key,data.get(key))
         if value is not None and (not isinstance(value,str) or date.fromisoformat(value).isoformat()!=value):

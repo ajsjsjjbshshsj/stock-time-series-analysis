@@ -115,7 +115,12 @@ class WorkflowSource:
                 last=opened.index(signals[-1])+meta['native']['holding_sessions']+1
                 execution_end=min(available,opened[min(last,len(opened)-1)])
                 selected=dict(selected,end_date=execution_end)
-        if selected['algorithm']=='lightgbm':
+        from .pools import PoolSelection,workflow_selection
+        pool=workflow_selection(selected,PoolSelection(self.engine),meta['binding'] if request['model_id'] else None)
+        if selected['algorithm']=='lightgbm' and pool is not None:
+            from tasks.market_source import MarketSource
+            data=MarketSource(self.engine,self.calendar_path,pool=pool).bind(native_request(selected))
+        elif selected['algorithm']=='lightgbm':
             data=self.base.bind(native_request(selected))
         elif selected['algorithm']=='xgboost':data=self.base.bind(native_request(selected))
         else:
@@ -139,6 +144,7 @@ class WorkflowSource:
         from tasks.source import APP
         files={p.relative_to(APP).as_posix():p.read_text(encoding='utf-8') for p in sorted((APP/'workflows').glob('*.py'))}
         bound=dict(data=data,workflow_sha256=digest(files),model_manifest_sha256=model_sha)
+        if pool is not None:bound['registry_pool']=pool
         bound['model_pipeline']=pipeline
         if request['operation']=='backtest':bound['execution_end']=selected['end_date']
         for key in ('build_id','source_sha256','source_start','source_cutoff','pool_identity'):
@@ -203,7 +209,7 @@ class WorkflowSource:
     def iter_stocks(self,task):
         from tasks.market_source import MarketSource
         request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
-        for code,snapshot,calendar,proof in MarketSource(self.engine,self.calendar_path).iter_stocks(dict(request=request,binding=task['binding']['data'])):
+        for code,snapshot,calendar,proof in MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool')).iter_stocks(dict(request=request,binding=task['binding']['data'])):
             if task['request']['model_id']:self.verify_history(task,code,snapshot.source_history)
             yield code,snapshot,calendar,proof
 

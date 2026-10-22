@@ -59,3 +59,22 @@ def select_codes(request,proof):
             raise ValueError('Transformer requires the exact fixed10–20 stock pool')
         return list(codes)
     raise ValueError('Unknown pool algorithm')
+
+
+def workflow_selection(request,resolver,model_binding=None):
+    """New training selects; later operations inherit, never relabel a model."""
+    selected=request.get('pool_version')
+    if request['operation']=='train':
+        proof=resolver.resolve(selected) if selected is not None else None
+    else:
+        frozen=(model_binding or {}).get('registry_pool')
+        if frozen is None:
+            if selected is not None:raise ValueError('Cannot attach a pool to an unbound model')
+            return None
+        validate_selection(frozen)
+        if selected is not None and selected!=frozen['pool_version']:
+            raise ValueError('Cannot replace the saved model pool')
+        proof=resolver.resolve(frozen['pool_version'])
+        if proof!=frozen:raise RuntimeError('Saved model registry pool changed')
+    if proof is not None:select_codes(request,proof)
+    return proof
