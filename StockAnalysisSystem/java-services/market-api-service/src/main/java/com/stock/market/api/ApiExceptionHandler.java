@@ -9,6 +9,12 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    @ExceptionHandler(DailyBasicNotFoundException.class)
+    public ResponseEntity<?> dailyBasicMissing() {
+        return ResponseEntity.status(404).body(Map.of(
+                "code", "DAILY_BASIC_NOT_FOUND", "error", "Daily basic not found"));
+    }
+
     @ExceptionHandler({
         IllegalArgumentException.class,
         org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class

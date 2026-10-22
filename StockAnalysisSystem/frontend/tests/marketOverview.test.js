@@ -107,9 +107,11 @@ test('user market and valuation panels wire into the user app', async () => {
   assert.match(valuation, /fmtWanToYi/) // 总市值 万元 → 亿
   assert.match(valuation, /pe_ttm/)
 
-  // 调试端基本面页对 live 404 静默降级，不再产生未处理拒绝
+  // 估值空数据与接口故障分别处理，不再依赖吞异常的旧写法。
   const basic = await read('../src/views/analysis/AnalysisBasic.vue')
-  assert.match(basic, /getDailyBasicRow\(code\)\.catch/)
+  assert.match(basic, /valuationErrorMessage/)
+  assert.match(basic, /basicEmpty/)
+  assert.doesNotMatch(basic, /\.catch\(\(\) => \(\{\}\)\)/)
 })
 
 /* ── 4. settleDetailRequest 传参契约（防 run.current 运行时 TypeError 回归） ── */

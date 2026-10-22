@@ -59,7 +59,7 @@ public class MarketController {
         known(tsCode);
         Map<String, Object> row = mysql.latestDailyBasic(tsCode);
         if (row == null)
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Daily basic not found");
+            throw new DailyBasicNotFoundException();
         return row;
     }
 
