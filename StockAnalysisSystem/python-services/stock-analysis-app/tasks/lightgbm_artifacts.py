@@ -4,6 +4,7 @@ import numpy as np
 from .artifacts import task_path,task_digest,read_json,file_digest,_is_link
 from .contracts import encoded,digest
 from .market_profile import bounded_profile,parameters
+from .resources import MAX_EXECUTION_SECONDS
 
 FILES=('model.txt','metadata.json','probe.json','coverage.json')
 
@@ -122,7 +123,7 @@ def validate_summary(value,task):
             or set(resources)!={'peak_rss_bytes','elapsed_seconds'}
             or type(resources['peak_rss_bytes']) is not int or not 0<resources['peak_rss_bytes']<=profile['max_tree_rss_bytes']
             or type(resources['elapsed_seconds']) not in (int,float)
-            or not 0<=resources['elapsed_seconds']<=profile['max_seconds']):raise ValueError('Invalid metrics or resources')
+            or not 0<=resources['elapsed_seconds']<=MAX_EXECUTION_SECONDS):raise ValueError('Invalid metrics or resources')
     return value
 
 

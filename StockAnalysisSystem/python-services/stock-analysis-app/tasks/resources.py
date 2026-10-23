@@ -5,6 +5,10 @@ import psutil
 from .contracts import TaskFailure
 from .market_profile import bounded_profile
 
+# Operational wall-clock policy is independent of the sealed bounded_v1
+# training profile. Changing a timeout must not invalidate saved model hashes.
+MAX_EXECUTION_SECONDS=2*60*60
+
 
 def _profile(profile):
     if profile!=bounded_profile():raise ValueError('Unknown resource profile')
@@ -34,7 +38,7 @@ def check_tree(owned_process,profile):
 
 def check_time(elapsed,profile):
     _profile(profile)
-    if elapsed>profile['max_seconds']:raise TaskFailure('TIME_LIMIT')
+    if elapsed>MAX_EXECUTION_SECONDS:raise TaskFailure('TIME_LIMIT')
 
 
 def local_rss():
