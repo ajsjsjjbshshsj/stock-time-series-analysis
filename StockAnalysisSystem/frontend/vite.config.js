@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     proxy: {
       '/api/auth': { target: predictionTarget, changeOrigin: false },
       '/api/admin': { target: predictionTarget, changeOrigin: false },
+      '^/api/analysis/user-predictions(?:/catalog|/[0-9a-f]{64}(?:/scores)?)?(?:\\?|$)': { target: predictionTarget, changeOrigin: false },
       '^/api/analysis/published-results(?:/[0-9a-f]{32})?(?:\\?|$)': { target: predictionTarget, changeOrigin: false },
       '^/api/analysis/evaluations(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
       '^/api/analysis/evaluations/[0-9]{6}\\.(?:SZ|SH|BJ)/eval_[0-9a-f]{32}(?:\\?|$)': { target: predictionTarget, changeOrigin: true },
