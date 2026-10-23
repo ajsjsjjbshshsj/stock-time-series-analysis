@@ -125,11 +125,10 @@ class WorkflowSource:
                 selected=dict(selected,end_date=execution_end)
         from .pools import PoolSelection,workflow_selection
         pool=workflow_selection(selected,PoolSelection(self.engine),meta['binding'] if request['model_id'] else None)
-        if selected['algorithm']=='lightgbm' and pool is not None:
+        if selected['algorithm']=='lightgbm':
             from tasks.market_source import MarketSource
-            data=MarketSource(self.engine,self.calendar_path,pool=pool).bind(native_request(selected))
-        elif selected['algorithm']=='lightgbm':
-            data=self.base.bind(native_request(selected))
+            frozen_codes=meta['binding']['data']['stock_codes'] if request['model_id'] else None
+            data=MarketSource(self.engine,self.calendar_path,pool=pool,frozen_codes=frozen_codes).bind(native_request(selected))
         elif selected['algorithm']=='xgboost':data=self.base.bind(native_request(selected))
         else:
             bindings={code:self.base.bind(native_request(selected,code)) for code in selected['stock_codes']}
@@ -218,7 +217,9 @@ class WorkflowSource:
     def iter_stocks(self,task):
         from tasks.market_source import MarketSource
         request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
-        for code,snapshot,calendar,proof in MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool')).iter_stocks(dict(request=request,binding=task['binding']['data'])):
+        frozen_codes=self.model(task['request']['model_id'])[1]['binding']['data']['stock_codes'] if task['request']['model_id'] else None
+        reader=MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool'),frozen_codes=frozen_codes)
+        for code,snapshot,calendar,proof in reader.iter_stocks(dict(request=request,binding=task['binding']['data'])):
             if task['request']['model_id']:self.verify_history(task,code,snapshot.source_history)
             yield code,snapshot,calendar,proof
 

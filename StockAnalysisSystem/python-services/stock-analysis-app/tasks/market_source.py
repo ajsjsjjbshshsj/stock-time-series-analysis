@@ -23,13 +23,22 @@ def market_identity():
 
 
 class MarketSource:
-    def __init__(self,engine,calendar_path=None,*,evidence_root=None,pool=None):
+    def __init__(self,engine,calendar_path=None,*,evidence_root=None,pool=None,frozen_codes=None):
         self.engine=engine
         self.pool=pool
         if pool is not None:
             from workflows.pools import validate_selection
             from copy import deepcopy
             self.pool=deepcopy(validate_selection(pool))
+        self.frozen_codes=None
+        if frozen_codes is not None:
+            from data_processor.feature_store_contract import validate_stock_code
+            if (not isinstance(frozen_codes,list) or not frozen_codes or len(frozen_codes)>10000
+                    or frozen_codes!=sorted(set(frozen_codes))):raise ValueError('Invalid frozen model pool')
+            for code in frozen_codes:validate_stock_code(code)
+            self.frozen_codes=list(frozen_codes)
+            if self.pool is not None and self.pool['stock_codes']!=self.frozen_codes:
+                raise ValueError('Registry and frozen model pools differ')
         self.calendar_path=SourceProvider(engine,calendar_path).calendar_path
         self.evidence=SuspensionEvidence(engine,evidence_root)
 
@@ -50,7 +59,12 @@ class MarketSource:
             except ValueError:continue  # Other markets are not this A-share pool.
             row['list_date']=str(row['list_date']) if row['list_date'] is not None else None
             selected.append(row)
-        if [r['ts_code'] for r in selected]!=codes:raise ValueError('Master and full feature pool differ')
+        if self.frozen_codes is not None:
+            if not set(self.frozen_codes)<=set(codes):raise ValueError('Frozen model member not in feature source')
+            codes=list(self.frozen_codes);members=set(codes)
+            selected=[row for row in selected if row['ts_code'] in members]
+            if [r['ts_code'] for r in selected]!=codes:raise ValueError('Frozen model member missing from master')
+        elif [r['ts_code'] for r in selected]!=codes:raise ValueError('Master and full feature pool differ')
         if self.pool is not None:
             from workflows.pools import validate_selection
             frozen=validate_selection(self.pool)['stock_codes']
