@@ -24,6 +24,7 @@
     </header>
 
     <main class="user-content">
+      <UserPredictionPanel />
       <section class="hero">
         <h1>股票智能分析</h1>
         <p class="hero-sub muted">选择一只股票，查看行情概览、模型预测与风险提示</p>
@@ -104,7 +105,7 @@
 /**
  * 用户端入口页（/#/user）：与调试端布局完全隔离（见 App.vue 的 isUserApp 分支）。
  * - 只提供精简核心功能：股票模糊搜索 + 市场概览 / 综合概览 / 技术指标 / 统计分析 / 多股对比 / 模型预测 / Transformer 信号 / 风险提示
- * - Transformer 信号为冻结模型封存产物的只读呈现，客户端绝不暴露任何训练/触发计算能力
+ * - 历史封存信号保持只读；用户可运行已审核模型预测，但不能训练、配置模型或采集数据
  * - 不暴露数据模式切换（dataSource 仍由 localStorage / VITE_DATA_SOURCE 决定，演示模式顶部有角标提示）
  * - 股票池加载逻辑与 AnalysisView 相同：AbortController + generation guard 防过期响应
  */
@@ -121,6 +122,7 @@ import UserStats from './user/UserStats.vue'
 import UserCompare from './user/UserCompare.vue'
 import UserMarket from './user/UserMarket.vue'
 import UserValuation from './user/UserValuation.vue'
+import UserPredictionPanel from '../components/UserPredictionPanel.vue'
 import { dataSource } from '../api/client.js'
 import { getStockPool } from '../api/analysis.js'
 import { useThemeStore } from '../stores/theme.js'

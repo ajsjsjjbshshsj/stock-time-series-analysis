@@ -44,7 +44,7 @@ class TaskService:
                                         detail=encoded(detail) if detail is not None else None))
         c.execute(tasks.update().where(tasks.c.id==task_id).values(event_count=row['event_count']+1))
 
-    def create(self,actor_id,request,idempotency_key):
+    def create(self,actor_id,request,idempotency_key,*,on_create=None):
         # MySQL installations may use case-insensitive collations. Hash opaque
         # keys so A... and a... retain distinct identities on every supported DB.
         request=normalize_request(request);key=digest(idempotency(idempotency_key));request_hash=digest(request)
@@ -53,6 +53,7 @@ class TaskService:
             old=c.execute(select(tasks).where(tasks.c.actor_id==actor_id,tasks.c.idempotency_key==key)).mappings().one_or_none()
             if old is not None:
                 if old['request_hash']!=request_hash:raise Conflict('Idempotency conflict')
+                if on_create is not None:on_create(c,old)
                 return public(old)
             return None
         with self.repo.transaction() as (c,_):
@@ -70,6 +71,7 @@ class TaskService:
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),
                 state='QUEUED',stage='QUEUED',created_at=int(self.clock()),event_count=0))
             self._event(c,task_id,'CREATED',actor_id=actor_id)
+            if on_create is not None:on_create(c,self._row(c,task_id))
             return public(self._row(c,task_id))
 
     def get(self,task_id):
@@ -154,6 +156,8 @@ class TaskService:
             row=self._owned(c,slot,task_id,worker_id,generation)
             if row['state']!='RUNNING':raise LeaseLost('Task execution cancelled')
             self._admin(c,row['actor_id'])
+            from prediction_portal.repository import execution_guard
+            execution_guard(c,row)
             task=dict(id=row['id'],request=json.loads(row['request']),binding=json.loads(row['binding']))
             if not isinstance(expected_sha,str) or task_digest(task)!=expected_sha:
                 raise ValueError('Task reference mismatch')

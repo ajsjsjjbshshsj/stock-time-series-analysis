@@ -9,7 +9,7 @@ export function createAuthClient({ fetchImpl = globalThis.fetch, base = '' } = {
     options.signal?.addEventListener('abort', abort, { once: true })
     // Binding the full immutable pool verifies source identities before enqueue.
     // This is still a bounded HTTP create, never synchronous model training.
-    const timeoutMs = method === 'POST' && (path === '/api/admin/workflows/jobs' || (path === '/api/admin/training/jobs' && body?.kind === 'lightgbm_all_market')) ? 60000 : 10000
+    const timeoutMs = method === 'POST' && (path === '/api/analysis/user-predictions' || path === '/api/admin/workflows/jobs' || (path === '/api/admin/training/jobs' && body?.kind === 'lightgbm_all_market')) ? 60000 : 10000
     const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
     try {
       const headers = { ...options.headers, Accept: 'application/json' }

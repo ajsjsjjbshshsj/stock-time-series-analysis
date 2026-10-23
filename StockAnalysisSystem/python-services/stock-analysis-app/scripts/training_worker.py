@@ -15,6 +15,7 @@ def main():
     commands.add_parser('migrate-all-market',help='Explicit additive training queue upgrade; stop API/worker first')
     commands.add_parser('migrate-workflows',help='Create only model/result/publication indexes; no task started')
     commands.add_parser('migrate-automation',help='Explicit feature/daily metadata migration; no jobs or plans started')
+    commands.add_parser('migrate-predictions',help='Explicit user prediction metadata only; no model approved or task started')
     run=commands.add_parser('run',help='Run the single-slot worker, protected mode required')
     run.add_argument('--once',action='store_true',help='Attempt at most one queued job')
     commands.add_parser('status',help='Show execution slot status; never starts training')
@@ -29,12 +30,13 @@ def main():
     from tasks.contracts import encoded
     with DatabaseConnector(diagnostic=True) as db:
         repo=TaskRepository(db.engine)
-        if args.command=='migrate-automation':
+        if args.command in ('migrate-automation','migrate-predictions'):
             repo.check_ready()
             with repo.transaction() as (_,slot):
                 if slot['task_id'] is not None:raise ValueError('Idle execution slot required')
-            from automation.repository import migrate
-            migrate(db.engine);print('Automation metadata ready; no task or plan started.');return
+            if args.command=='migrate-automation':from automation.repository import migrate
+            else:from prediction_portal.repository import migrate
+            migrate(db.engine);print('Control metadata ready; no model approved or task started.');return
         if args.command=='migrate-workflows':
             from workflows.repository import WorkflowRepository
             repo.check_ready()

@@ -27,6 +27,7 @@
       <p class="muted">所有模型共用单执行槽；默认上限：进程树6 GiB、60分钟。全市场构建要求空闲内存≥8 GiB、临时磁盘≥16 GiB。关闭网页不影响任务。模型与旧封存包不会覆盖；发布必须另行确认。</p>
     </section>
     <DailyPredictionPanel :models="models.items" />
+    <ModelReleasePanel :models="models.items" />
     <div class="columns">
       <section class="card box"><h2>任务队列</h2><p v-if="jobs.error" role="alert">{{ jobs.error }}</p><p v-if="jobs.loading">正在读取…</p><p v-if="!jobs.items.length && !jobs.loading">暂无任务</p>
         <div class="list"><button v-for="j in jobs.items" :key="j.id" class="item" @click="taskControl.select(j.id)"><strong>{{ operationLabels[j.request.operation] || '旧工程训练' }} · {{ j.request.algorithm || j.request.kind }}</strong><span>{{ j.state === 'SUCCEEDED' ? '已完成并保存' : stateLabels[j.state] || j.state }} · {{ j.id.slice(0,12) }}</span></button></div>
@@ -55,6 +56,7 @@ import { createTaskController, stateLabels, stageLabels, formatTaskProgress, fai
 import WorkflowReport from '../../components/WorkflowReport.vue'
 import WorkflowPoolSelector from '../../components/WorkflowPoolSelector.vue'
 import DailyPredictionPanel from '../../components/DailyPredictionPanel.vue'
+import ModelReleasePanel from '../../components/ModelReleasePanel.vue'
 const poolReady=ref(true)
 const route=useRoute()
 function usePoolMembers(codes){if(draft.algorithm==='transformer'&&draft.pool_version)draft.stock_codes=codes.join(', ')}
