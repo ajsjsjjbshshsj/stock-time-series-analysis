@@ -1,6 +1,6 @@
 """Restart-safe coordinator; existing owned worker remains the sole executor."""
 from datetime import datetime
-import time
+import time,os
 from tasks.contracts import digest
 from tasks.source import read_calendar
 from .gate import NightlyGate,due_session,TZ
@@ -24,6 +24,7 @@ class DailyScheduler:
         self.tasks=tasks;self.repo=DailyRepository(tasks.repo.engine)
         self.service=service or DailyService(tasks.repo.engine)
         self.gate=gate or NightlyGate(tasks.repo.engine);self.clock=clock or time.time
+        self.next_calendar_refresh=0
 
     def queue(self,actor,request,key):
         return self.tasks.create(actor,request,digest(key)[:32])
@@ -92,7 +93,12 @@ class DailyScheduler:
         if slot['quarantined'] or slot['task_id'] is not None:return
         enabled=[p for p in self.repo.list() if p['enabled']]
         if not enabled:return
-        try:day=due_session(read_calendar(self.tasks.source.calendar_path),clock)
+        try:
+            if os.getenv('NIGHTLY_BOOTSTRAP_START') and now>=self.next_calendar_refresh:
+                self.next_calendar_refresh=now+60
+                from .calendar import refresh_calendar
+                refresh_calendar(self.tasks,clock)
+            day=due_session(read_calendar(self.tasks.source.calendar_path),clock)
         except Exception:
             for plan in enabled:
                 run=self.repo.run(plan,today);state=run['state']
