@@ -63,7 +63,9 @@ python scripts/training_worker.py run
 
 列表 `limit` ≤20、`before` 为服务端返回游标；明细 `section=scores/equity/trades/orders/writeoffs/requirements`，`limit` ≤100、`after` 为服务端返回的行游标，可选沪深 `ts_code`。scores读取worker已保存的最新日排行，不在请求时重算；所有分区先核对完整封存哈希。页面曲线仅代表当前分页，不隐藏未加载区间。接口响应不包含服务器路径和原始异常。
 
-导入只接收已成功旧工程任务的32位ID，或已封存验证实验ID加固定trial：`raw_rmse20/raw_rmse300/raw_rankic300/csrank_rankic300`（LightGBM）。旧研究分支无需qualified为真；必须通过实际父候选/探针/模型绑定校验。禁止传文件路径、上传pickle或任意Python配置。旧导入模型无历史前缀证明时仍绑定原始来源，数据扩展需重训。
+导入只接收已成功旧工程任务的32位ID，或已封存验证实验ID加固定trial：`raw_rmse20/raw_rmse300/raw_rankic300/csrank_rankic300`（LightGBM）。旧研究分支无需qualified为真；必须通过实际父候选/探针/模型绑定校验。禁止传文件路径、上传pickle或任意Python配置。
+
+新导入会读取原候选绑定的特征版本，校验来源、算法、冻结股票池和逐股原始数据摘要，并在新模型中封存训练截止日的历史前缀。这样后续只追加数据时可复用保存模型预测，无需重训；历史被修改、原版本丢失或校验失败则拒绝导入。旧模型和旧封存不被覆盖，已经存在但没有前缀证明的导入模型不会自动获得新证据，需显式重新导入原候选。全市场导入逐股流式验证，会报告进度，但不加载全市场训练矩阵或执行训练。
 
 ## 运行与交付边界
 
