@@ -129,8 +129,13 @@ class Runtime:
                 scheduler.tick()
             def next_delay(self):return scheduler.next_delay()
         before=BeforePoll()
+        market_queue=self.market_tasks()
+        if bootstrap_start is not None:
+            # Scope only execution, never rewrite imported backlog or its seals.
+            from app.repositories.gap_task_repository import GapTaskRepository
+            market_queue=GapTaskRepository(self.db.Session,batch_store=market_queue.batch_store,start_date=bootstrap_start)
         return PreparationWorker(self.tasks,PolicyBoundPreparationService(self.service),
-            queues=[WorkerQueue('market',self.market_tasks(),self.market_service())],before_poll=before.tick)
+            queues=[WorkerQueue('market',market_queue,self.market_service())],before_poll=before.tick)
 
     def close(self):
         try:self.db.close()

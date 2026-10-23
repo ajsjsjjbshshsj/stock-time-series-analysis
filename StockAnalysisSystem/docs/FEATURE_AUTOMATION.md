@@ -28,7 +28,29 @@ python scripts/training_worker.py migrate-automation
 
 同日多个计划共享一次全局特征构建和启用；各模型独立预测。持久化日身份、阶段子任务及稳定幂等键用于进程重启、响应丢失或重复轮询。依赖未就绪至少等待60秒；边界/角色变化和失败子任务显示 BLOCKED。不会自动补跑旧日期。
 
-结果通过既有模型工作流保存为**未发布**，仍需管理员在结果区域审核发布。计划中没有 train、import 或 publish 操作。关闭计划阻止后续阶段，但不撤销已经入队的任务，需单独取消；运行中的特征切换不可取消。
+结果通过既有模型工作流保存为**未公开发布**。用户选择已审核上线的保存模型及兼容股票池时，用户预测接口会核对日期、模型、数据/特征版本及完整输入摘要；完全匹配才复用该封存结果，并给当前请求用户建立访问授权。它不需要逐条结果公开发布，也不会把私有结果无条件推送给所有人。旧“已发布结果”列表仍须管理员另行发布。计划中没有 train、import 或 publish 操作。关闭计划阻止后续阶段，但不撤销已经入队的任务，需单独取消；运行中的特征切换不可取消。
+
+### Windows 持久启动
+
+在项目 `.env` 配置 `NIGHTLY_UPDATE_AT=20:00` 和明确的 `NIGHTLY_BOOTSTRAP_START`（最近已存行情的次日，例如数据库截至2026-10-13时填写2026-10-14）。更新起点同时限制夜间规划和市场队列执行/恢复，旧日期任务保留，不因启动夜间服务而重跑。未指定起点的原CLI行为不变；普通历史补采仍可显式运行。
+
+从项目 `StockAnalysisSystem` 目录先检查配置：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/runtime/start_nightly_services.ps1 -PythonExecutable python -CheckOnly
+```
+
+需要 Python 位于 PATH，或将 `-PythonExecutable` 指定为本机解释器。首次部署确认其他电脑没有采集worker，随后通过 WMI 或 Windows 任务计划程序运行同一入口。加 `-RegisterTask` 显式登记当前用户的每天北京时间20:00和登录恢复触发器；不存储账户密码，不注册系统级账户。当前用户必须已登录且电脑保持开机，休眠/关机期间不执行；恢复后只补实际缺口。任务名为 `StockAnalysis-Nightly`，不覆盖属于其他入口的同名任务。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/runtime/start_nightly_services.ps1 -PythonExecutable python -RegisterTask
+```
+
+入口只保持唯一采集worker和唯一分析worker，不启动训练、不代替管理员启用模型计划，也不代替API/数据库启动。采集仍使用根锁、Tushare原限流、重试截止时间与停牌证据；不删除锁绕过占用。已有采集进程若范围或夜间参数不同，会拒绝启动并要求先安全停止。日志在 `logs/runtime/nightly-*.log`，不把凭据写入任务参数。
+
+### 日期、失败和验收
+
+20:00前或非交易日不会提前创建当天预测。采集尚未完整成功时计划等待；失败特征/不兼容模型明确阻塞，不训练替代模型、不假装成功。重启沿用日期身份、稳定幂等键及阶段任务，不重复计算；已有成功夜间结果仍需完全匹配当前用户请求的输入绑定才能复用。当天未跑完的链路不会在次日冒充当天最新预测。
 
 ## 4. 中断恢复
 
@@ -38,4 +60,4 @@ python scripts/training_worker.py migrate-automation
 
 ## 验收边界
 
-自动化代码和隔离测试不等于生产全市场构建、真实跨夜持续运行或远程部署已验收。旧模型文件保持不动；无服务器时远程安全验收待部署。普通用户入口仍只读已发布结果。
+自动化代码和隔离测试不等于生产全市场构建、真实跨夜持续运行或远程部署已验收。旧模型文件保持不动；无服务器时远程安全验收待部署。普通用户不能训练，只能通过已上线模型的受限预测接口访问自己的封存结果，或读取旧公开发布列表。
