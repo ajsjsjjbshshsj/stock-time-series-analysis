@@ -7,7 +7,7 @@ from .market_profile import bounded_profile
 
 # Operational wall-clock policy is independent of the sealed bounded_v1
 # training profile. Changing a timeout must not invalidate saved model hashes.
-MAX_EXECUTION_SECONDS=2*60*60
+MAX_EXECUTION_SECONDS=3*60*60
 
 
 def _profile(profile):
