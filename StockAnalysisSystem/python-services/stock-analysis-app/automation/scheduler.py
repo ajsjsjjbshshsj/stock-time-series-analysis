@@ -105,7 +105,14 @@ class DailyScheduler:
                 if state.get('status') not in ('COMPLETE','BLOCKED'):
                     self.repo.update(runs,run['id'],state,dict(state,status='WAITING_DEPENDENCY',reason='TRUSTED_CALENDAR_NOT_READY',retry_at=now+60))
             return
-        if day is None:return
+        if day is None:
+            for plan in enabled:
+                run=self.repo.run(plan,today);state=run['state']
+                if state.get('status') in (None,'WAITING_DEPENDENCY','WAITING_SCHEDULE'):
+                    new={k:v for k,v in state.items() if k!='retry_at'}
+                    new.update(status='WAITING_SCHEDULE',reason='NO_DUE_SESSION')
+                    if new!=state:self.repo.update(runs,run['id'],state,new)
+            return
         for plan in enabled:
             # A fresh read means disabling a plan prevents subsequent stages.
             if self.repo.get(plan['id'])['enabled']:self.advance(plan,day,now)

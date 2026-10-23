@@ -17,7 +17,7 @@ import {dailyPredictionApi as api} from '../api/dailyPredictions.js'
 import {authState} from '../stores/auth.js'
 defineProps({models:{type:Array,default:()=>[]}})
 const model=ref(''),items=ref([]),runs=ref([]),busy=ref(false),error=ref('')
-const labels={WAITING_DEPENDENCY:'等待数据或依赖',BUILDING:'构建特征',ACTIVATING:'核验并启用特征',PREDICTING:'生成预测',COMPLETE:'结果已封存 · 可按权限复用',BLOCKED:'阻塞 · 需管理员处理'}
+const labels={WAITING_SCHEDULE:'等待20:00或下一交易日',WAITING_DEPENDENCY:'等待数据或依赖',BUILDING:'构建特征',ACTIVATING:'核验并启用特征',PREDICTING:'生成预测',COMPLETE:'结果已封存 · 可按权限复用',BLOCKED:'阻塞 · 需管理员处理'}
 let live=true,generation=0,request
 const allowed=()=>live&&authState.mode==='protected'&&authState.user?.role==='admin'&&!authState.user.must_change_password
 function reset(){generation++;request?.abort();items.value=[];runs.value=[];error.value='';busy.value=false}

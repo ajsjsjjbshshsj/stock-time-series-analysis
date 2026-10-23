@@ -1,5 +1,6 @@
 """Cache or queue bounded saved-model predictions; never native inference in HTTP."""
 import json,time,re
+from contextlib import nullcontext
 from uuid import uuid4
 from sqlalchemy import select,func
 from tasks.contracts import digest,encoded,Conflict
@@ -118,10 +119,11 @@ class PredictionService:
                 if own>=2:raise Conflict('User prediction queue quota reached')
             c.execute(grants.insert().values(prediction_id=key,user_id=actor,created_at=int(self.clock())))
 
-    def precomputed(self,model,request,binding):
+    def precomputed(self,model,request,binding,connection=None):
         from workflows.repository import results
         from tasks.artifacts import read_json
-        with self.engine.connect() as c:rows=c.execute(select(results).where(results.c.model_id==model).order_by(results.c.seq.desc()).limit(20)).mappings().all()
+        with (self.engine.connect() if connection is None else nullcontext(connection)) as c:
+            rows=c.execute(select(results).where(results.c.model_id==model).order_by(results.c.seq.desc()).limit(20)).mappings().all()
         for raw in rows:
             row=dict(raw);row['metadata']=json.loads(row['metadata'])
             if row['metadata'].get('operation')!='predict' or row['metadata'].get('status')!='COMPLETE':continue
@@ -129,6 +131,16 @@ class PredictionService:
             meta=read_json(self.workflow.store.path(row['id'])/'metadata.json',max_bytes=8*1024*1024)
             old=meta['request']
             if digest(meta['binding'])==digest(binding) and all(old.get(k)==request.get(k) for k in ('model_id','algorithm','start_date','end_date','operation')):return row['id']
+        return None
+
+    def pending(self,c,request,binding,sponsor,exclude=None):
+        linked=select(cache.c.id).where(cache.c.task_id==tasks.c.id).exists()
+        query=select(tasks).where(tasks.c.actor_id==sponsor,tasks.c.request_hash==digest(request),
+            tasks.c.state.in_(['QUEUED','RUNNING']),~linked).order_by(tasks.c.seq).limit(20)
+        if exclude is not None:query=query.where(tasks.c.id!=exclude)
+        sha=digest(binding)
+        for row in c.execute(query).mappings():
+            if json.loads(row['request'])==request and digest(json.loads(row['binding']))==sha:return row
         return None
 
     def submit(self,actor,value):
@@ -151,7 +163,20 @@ class PredictionService:
             existing=self.precomputed(value['model_id'],request,binding)
             if existing:
                 with self.tasks.repo.transaction() as (c,_):self.install(c,None,actor,key,release,selection,request,binding,existing)
-            else:self.tasks.create(release['sponsor_id'],request,key[:32],on_create=lambda c,t:self.install(c,t,actor,key,release,selection,request,binding))
+            else:
+                with self.tasks.repo.transaction() as (c,_):
+                    pending=self.pending(c,request,binding,release['sponsor_id'])
+                    if pending is not None:self.install(c,pending,actor,key,release,selection,request,binding)
+                if pending is None:
+                    def install_new(c,task):
+                        # Another nightly task can arrive while source binding
+                        # runs. Roll back this new task rather than duplicate it;
+                        # an explicit retry will join its task or sealed result.
+                        if c.execute(select(cache.c.id).where(cache.c.id==key)).first() is None:
+                            if self.pending(c,request,binding,release['sponsor_id'],exclude=task['id']) is not None or self.precomputed(value['model_id'],request,binding,c):
+                                raise Conflict('Matching prediction appeared during enqueue; retry to reuse it')
+                        self.install(c,task,actor,key,release,selection,request,binding)
+                    self.tasks.create(release['sponsor_id'],request,key[:32],on_create=install_new)
         return self.get(actor,key)
 
     def authorized(self,actor,key):
