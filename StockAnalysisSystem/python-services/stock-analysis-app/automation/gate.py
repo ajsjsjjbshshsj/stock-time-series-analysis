@@ -30,9 +30,13 @@ class NightlyGate:
         paths=RuntimePaths.from_environment(PROJECT,os.environ)
         task=MarketUpdateRepository(sessionmaker(bind=self.engine)).get(task_id)
         result=task['result'] or {};scheduled=datetime.fromisoformat(task['request']['scheduled_for']).astimezone(TZ)
+        conflicts=result.get('conflicts');missing=result.get('unresolved_keys')
+        # The gap collector seals detailed conflict records, not a count.
+        # Preserve compatibility with historical integer0, never bool/float0.
+        no_conflicts=(type(conflicts) is list and not conflicts) or (type(conflicts) is int and conflicts==0)
         if (task['trade_date']!=day or task['market_scope']!='SH_SZ_A' or task['status']!='SUCCEEDED'
                 or scheduled.date().isoformat()!=day or scheduled.time()!=time(20)
-                or result.get('data_ready') is not True or result.get('unresolved_keys')!=0 or result.get('conflicts')!=0):
+                or result.get('data_ready') is not True or type(missing) is not int or missing!=0 or not no_conflicts):
             raise ValueError('Corresponding full-market nightly completion required')
         batch=GapBatchStore(paths.data_root).load(task['requirements_version']);snapshot=batch['snapshot']
         if snapshot.get('registry_pool') is not None or snapshot['sessions']!=[day]:
