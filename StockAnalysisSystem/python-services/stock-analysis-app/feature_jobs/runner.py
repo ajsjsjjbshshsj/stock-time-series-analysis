@@ -60,6 +60,7 @@ def feature_progress(emit,total):
 
 
 def run_build(task,root,db,emit):
+    from config.logging_config import get_logger
     from .source import FeatureSource
     from tasks import resources
     from tasks.market_profile import bounded_profile
@@ -67,13 +68,24 @@ def run_build(task,root,db,emit):
     folder=task_path(root,task['id']);resources.preflight(folder,bounded_profile())
     folder.mkdir(parents=True,exist_ok=False)
     from data_processor.feature_store_builder import snapshot_source,compute_build
+    from data_processor.build_timings import BuildTimings
+    timings=BuildTimings()
     emit('stage',stage='INPUT')
-    manifest=snapshot_source(db,folder/'source',task['binding']['source_start'],task['binding']['source_cutoff'])
+    with timings.measure('source_snapshot'):
+        manifest=snapshot_source(db,folder/'source',task['binding']['source_start'],task['binding']['source_cutoff'])
     report=compute_build(db,manifest,task['id'],directory=folder/'source',
-        on_progress=feature_progress(emit,manifest['stock_count']))
+        on_progress=feature_progress(emit,manifest['stock_count']),timings=timings)
     emit('stage',stage='VERIFY');source.verify(task)
     write_json(folder/'report.json',report)
-    write_json(folder/'manifest.json',dict(schema_version=1,purpose='feature_build',task_sha256=task_digest(task),files=inventory(folder)))
+    with timings.measure('artifact_inventory'):
+        files=inventory(folder)
+    # Freeze completed phases before sealing; never rewrite a sealed report
+    # to include the time spent verifying its own digest.
+    write_json(folder/'performance.json',timings.snapshot())
+    files['performance.json']=file_digest(folder/'performance.json')
+    write_json(folder/'manifest.json',dict(schema_version=1,purpose='feature_build',task_sha256=task_digest(task),files=files))
     write_json(folder/'complete.json',dict(manifest_sha256=file_digest(folder/'manifest.json')))
-    proof=verify_build(task,root,db.engine)
+    with timings.measure('artifact_verification'):
+        proof=verify_build(task,root,db.engine)
+    get_logger(__name__).info('Feature build timings: %s',timings.snapshot())
     emit('stage',stage='SAVE');return proof
