@@ -32,12 +32,8 @@ def _scheduled(day,value):
     if scheduled.date()!=target or scheduled.second or scheduled.microsecond:raise ValueError('MARKET_SCHEDULE_INVALID')
     return scheduled
 
-def _task(row):
-    value=dict(row)
-    for column,target in (('request_json','request'),('owner_json','owner'),('progress_json','progress'),('result_json','result'),('universe_json','universe')):
-        raw=value.pop(column)
-        value[target]=json.loads(raw) if raw is not None else None
-    for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
+def validate_task_identity(value):
+    """Validate compact immutable request fields without loading universe evidence."""
     request=value['request']
     if (not isinstance(request,dict) or set(request)!={'scope','trade_date','requirements_version','scheduled_for'}
             or request['scope']!=SCOPE or schema_for_version(request['requirements_version']) not in (1,2)
@@ -46,9 +42,18 @@ def _task(row):
             or value['request_sha256']!=identity(request) or value['status'] not in STATUSES
             or value['phase'] not in PHASES or type(value['attempt_no']) is not int or value['attempt_no']<1):
         raise ValueError('MARKET_TASK_IDENTITY_CHANGED')
-    value['trade_date']=str(value['trade_date'])
-    if stamp(_scheduled(request['trade_date'],request['scheduled_for']))!=stamp(value['not_before']):
+    if stamp(_scheduled(request['trade_date'],request['scheduled_for']))!=stamp(utc(value['not_before'])):
         raise ValueError('MARKET_SCHEDULE_CHANGED')
+
+
+def _task(row):
+    value=dict(row)
+    for column,target in (('request_json','request'),('owner_json','owner'),('progress_json','progress'),('result_json','result'),('universe_json','universe')):
+        raw=value.pop(column)
+        value[target]=json.loads(raw) if raw is not None else None
+    for field in ('not_before','created_at','updated_at','lease_until','retry_not_before'):value[field]=utc(value[field])
+    validate_task_identity(value)
+    value['trade_date']=str(value['trade_date'])
     if value['universe'] is not None:
         validate_market(value['universe'])
         if value['universe']['schema_version']!=schema_for_version(value['requirements_version']):raise ValueError('MARKET_UNIVERSE_VERSION_CHANGED')
@@ -58,8 +63,10 @@ def _task(row):
     return value
 
 class MarketUpdateRepository:
-    def __init__(self,session_factory,*,requirements_version=VERSION):
+    def __init__(self,session_factory,*,requirements_version=VERSION,claim_start=None):
         schema_for_version(requirements_version)
+        if claim_start is not None:market_day(claim_start)
+        self.claim_start=claim_start
         self.session_factory=session_factory;self.requirements_version=requirements_version
 
     @staticmethod
@@ -122,10 +129,11 @@ class MarketUpdateRepository:
         if (until<=clock or type(token) is not str or re.fullmatch('[0-9a-f]{32}',token) is None
                 or type(owner.get('pid')) is not int or owner['pid']<=0):raise ValueError('OWNER_OR_LEASE_INVALID')
         stamp(owner['started_at'])
+        lower_bound='AND trade_date>=:claim_start ' if self.claim_start is not None else ''
         with transaction(self.session_factory) as session:
             row=session.execute(text("SELECT task_id FROM market_update_run WHERE market_scope=:scope AND requirements_version=:version AND status IN ('QUEUED','WAITING_RETRY') "
                 'AND not_before<=:now AND (retry_not_before IS NULL OR retry_not_before<=:now) '
-                'ORDER BY trade_date,created_at,task_id LIMIT 1'+current_lock(session)),dict(scope=SCOPE,version=self.requirements_version,now=clock)).first()
+                +lower_bound+'ORDER BY trade_date,created_at,task_id LIMIT 1'+current_lock(session)),dict(scope=SCOPE,version=self.requirements_version,now=clock,claim_start=self.claim_start)).first()
             if row is None:return None
             result=session.execute(text("UPDATE market_update_run SET status='RUNNING',owner_token=:token,owner_json=:owner,lease_until=:until,updated_at=:now "
                 "WHERE task_id=:id AND status IN ('QUEUED','WAITING_RETRY') AND not_before<=:now AND (retry_not_before IS NULL OR retry_not_before<=:now)"),

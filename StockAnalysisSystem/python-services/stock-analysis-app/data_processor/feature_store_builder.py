@@ -8,6 +8,7 @@ import pandas as pd
 from data_processor.feature_store_contract import feature_records, validate_build_id, columns_digest, STORAGE_CONTRACT
 from data_processor.feature_store_source import (SOURCE_COLUMNS, canonical_bytes, file_digest,
     snapshot_frames,snapshot_source,validate_source,verify_snapshot)
+from data_processor.build_timings import measured
 
 
 def algorithm_identity():
@@ -24,11 +25,12 @@ def algorithm_identity():
     return FEATURE_VERSION,hashlib.sha256(canonical_bytes(evidence)).hexdigest(),evidence
 
 
-def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None,on_progress=None):
+def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None,on_progress=None,timings=None):
     """Compute a sealed snapshot; no call here marks READY or changes active input."""
     validate_build_id(build_id)
     directory=Path(directory).resolve()
-    verify_snapshot(manifest,directory)
+    with measured(timings,'snapshot_verification'):
+        verify_snapshot(manifest,directory)
     if repository is None:
         from database.feature_store_repository import FeatureStoreRepository
         repository=FeatureStoreRepository(db)
@@ -36,26 +38,32 @@ def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None
         from data_processor.feature_engineer import FeatureEngineer
         engineer=FeatureEngineer()
     version,code_hash,algorithm=algorithm_identity()
-    repository.start_build(build_id,manifest,version,code_hash)
+    with measured(timings,'metadata_persist'):
+        repository.start_build(build_id,manifest,version,code_hash)
     total=0;digest=hashlib.sha256();stocks=[]
     try:
         for shard in manifest['shards']:
-            source=validate_source(pd.read_parquet(directory/shard['file']),manifest['source_start'],manifest['source_cutoff'])
-            calculation=source.copy(deep=True)
-            for name in SOURCE_COLUMNS[2:]:
-                calculation[name]=pd.to_numeric(calculation[name],errors='raise').astype(float)
-            featured=engineer.calculate_all_features(calculation)
-            before=list(zip(calculation.ts_code,calculation.trade_date))
-            after=list(zip(featured.ts_code,featured.trade_date))
-            if before!=after or len(featured)!=len(source):
-                raise ValueError('Feature source-key coverage mismatch')
-            rows=feature_records(featured,build_id,start_date=manifest['source_start'],cutoff=manifest['source_cutoff'])
-            for offset in range(0,len(rows),1000):
-                batch=rows[offset:offset+1000]
-                if repository.insert_build_rows(build_id,batch)!=len(batch):
-                    raise ValueError('Feature insert count mismatch')
-            for row in rows:
-                digest.update(canonical_bytes(row)+b'\n')
+            with measured(timings,'source_shard_read'):
+                source=validate_source(pd.read_parquet(directory/shard['file']),manifest['source_start'],manifest['source_cutoff'])
+            with measured(timings,'feature_compute'):
+                calculation=source.copy(deep=True)
+                for name in SOURCE_COLUMNS[2:]:
+                    calculation[name]=pd.to_numeric(calculation[name],errors='raise').astype(float)
+                featured=engineer.calculate_all_features(calculation)
+            with measured(timings,'feature_materialize'):
+                before=list(zip(calculation.ts_code,calculation.trade_date))
+                after=list(zip(featured.ts_code,featured.trade_date))
+                if before!=after or len(featured)!=len(source):
+                    raise ValueError('Feature source-key coverage mismatch')
+                rows=feature_records(featured,build_id,start_date=manifest['source_start'],cutoff=manifest['source_cutoff'])
+            with measured(timings,'feature_persist'):
+                for offset in range(0,len(rows),1000):
+                    batch=rows[offset:offset+1000]
+                    if repository.insert_build_rows(build_id,batch)!=len(batch):
+                        raise ValueError('Feature insert count mismatch')
+            with measured(timings,'output_hash'):
+                for row in rows:
+                    digest.update(canonical_bytes(row)+b'\n')
             total+=len(rows)
             stocks.append(dict(ts_code=shard['ts_code'],row_count=len(rows),last_date=shard['last_date']))
             if on_progress is not None:
@@ -67,7 +75,8 @@ def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None
                     source_sha256=manifest['source_sha256'],source_start=manifest['source_start'],
                     source_cutoff=manifest['source_cutoff'],output_sha256=digest.hexdigest(),
                     row_count=total,stock_count=len(stocks),stocks=stocks,published=False)
-        repository.finish_build(build_id,report)
+        with measured(timings,'metadata_persist'):
+            repository.finish_build(build_id,report)
         with (directory.parent/('build_'+build_id+'.json')).open('x',encoding='utf-8') as stream:
             json.dump(report,stream,ensure_ascii=False,indent=2,allow_nan=False)
         return report

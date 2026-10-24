@@ -119,14 +119,23 @@ class Runtime:
         from app.repositories.web_collection_repository import CollectionCommands
         from app.preparation.web_commands import WebCommandProcessor
         inbox=WebCommandProcessor(CollectionCommands(self.db.Session),self.market_service())
+        from app.repositories.web_preparation_repository import PreparationCommands
+        from app.preparation.pool_commands import PoolCommandProcessor
+        pool_inbox=PoolCommandProcessor(PreparationCommands(self.db.Session),self.market_service(),self.pools)
         class BeforePoll:
             def tick(self):
                 inbox.tick()
+                pool_inbox.tick()
                 scheduler.tick()
             def next_delay(self):return scheduler.next_delay()
         before=BeforePoll()
+        market_queue=self.market_tasks()
+        if bootstrap_start is not None:
+            # Scope only execution, never rewrite imported backlog or its seals.
+            from app.repositories.gap_task_repository import GapTaskRepository
+            market_queue=GapTaskRepository(self.db.Session,batch_store=market_queue.batch_store,start_date=bootstrap_start)
         return PreparationWorker(self.tasks,PolicyBoundPreparationService(self.service),
-            queues=[WorkerQueue('market',self.market_tasks(),self.market_service())],before_poll=before.tick)
+            queues=[WorkerQueue('market',market_queue,self.market_service())],before_poll=before.tick)
 
     def close(self):
         try:self.db.close()
@@ -212,6 +221,8 @@ def main(argv=None,dependencies=None):
             if runtime is None:raise ValueError('RUNTIME_REQUIRED')
             from app.repositories.web_collection_repository import migrate
             migrate(runtime.db.engine)
+            from app.repositories.web_preparation_repository import migrate as migrate_pool_preparation
+            migrate_pool_preparation(runtime.db.engine)
             result=dict(status='MIGRATED',collection_started=False)
         elif command=='pool-list': result=deps['pools'].list_versions(args.pool_id)
         elif command=='pool-import-legacy':

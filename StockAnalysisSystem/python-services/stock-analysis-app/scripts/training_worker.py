@@ -14,6 +14,8 @@ def main():
     commands.add_parser('migrate',help='Create only training tables, never market data')
     commands.add_parser('migrate-all-market',help='Explicit additive training queue upgrade; stop API/worker first')
     commands.add_parser('migrate-workflows',help='Create only model/result/publication indexes; no task started')
+    commands.add_parser('migrate-automation',help='Explicit feature/daily metadata migration; no jobs or plans started')
+    commands.add_parser('migrate-predictions',help='Explicit user prediction metadata only; no model approved or task started')
     run=commands.add_parser('run',help='Run the single-slot worker, protected mode required')
     run.add_argument('--once',action='store_true',help='Attempt at most one queued job')
     commands.add_parser('status',help='Show execution slot status; never starts training')
@@ -28,6 +30,13 @@ def main():
     from tasks.contracts import encoded
     with DatabaseConnector(diagnostic=True) as db:
         repo=TaskRepository(db.engine)
+        if args.command in ('migrate-automation','migrate-predictions'):
+            repo.check_ready()
+            with repo.transaction() as (_,slot):
+                if slot['task_id'] is not None:raise ValueError('Idle execution slot required')
+            if args.command=='migrate-automation':from automation.repository import migrate
+            else:from prediction_portal.repository import migrate
+            migrate(db.engine);print('Control metadata ready; no model approved or task started.');return
         if args.command=='migrate-workflows':
             from workflows.repository import WorkflowRepository
             repo.check_ready()
@@ -61,7 +70,12 @@ def main():
         root=Path(os.getenv('TRAINING_ARTIFACT_ROOT','.runtime/training_tasks/candidates'))
         if not root.is_absolute():root=PROJECT/root
         task_path(root,'0'*32)
-        worker=Worker(service,root)
+        from automation.scheduler import DailyScheduler
+        scheduler=DailyScheduler(service)
+        def before_poll():
+            try:scheduler.tick()
+            except Exception:pass  # Optional daily dependency failure never claims readiness.
+        worker=Worker(service,root,before_poll=before_poll)
         if args.once:worker.run_once()
         else:worker.run()
 

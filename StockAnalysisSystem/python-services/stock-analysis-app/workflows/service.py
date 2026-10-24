@@ -25,6 +25,15 @@ def sealed_result_context(metadata):
     result=dict(scope='all_shsz_a' if metadata.get('index',{}).get('algorithm')=='lightgbm' else 'fixed_stocks',
         pool_count=count,stock_codes=list(codes) if codes is not None and len(codes)<=20 else None,
         provenance='sealed_binding')
+    if binding.get('registry_pool') is not None:
+        from .pools import validate_selection
+        pool=validate_selection(binding['registry_pool'])
+        if codes is None or not set(codes)<=set(pool['stock_codes']):raise ValueError('Sealed registry members differ')
+        if metadata.get('index',{}).get('algorithm')!='xgboost' and codes!=pool['stock_codes']:
+            raise ValueError('Sealed fixed pool was truncated')
+        result.update(scope='fixed_registry',pool_version=pool['pool_version'],registry_stock_count=pool['stock_count'],
+            member_sha256=pool['member_sha256'],group_type=pool['group_type'],group_code=pool['group_code'],
+            provider=pool['provider'],provider_snapshot_date=pool['provider_snapshot_date'])
     for key in ('source_start','source_cutoff'):
         value=binding.get(key,data.get(key))
         if value is not None and (not isinstance(value,str) or date.fromisoformat(value).isoformat()!=value):
@@ -103,9 +112,14 @@ class WorkflowService:
         for row in value['items']:self._verified(row,'result')
         return value
 
-    def result(self,id,*,public=False,section='scores',limit=50,after=0,ts_code=None):
+    def result(self,id,*,public=False,section='scores',limit=50,after=0,ts_code=None,stock_codes=None):
         if section not in SECTIONS or type(limit) is not int or not 1<=limit<=100 or type(after) is not int or not 0<=after<=10000000:
             raise ValueError('Invalid result page')
+        if stock_codes is not None:
+            from data_processor.feature_store_contract import validate_stock_code
+            if section!='scores' or not stock_codes or len(stock_codes)>10000 or stock_codes!=sorted(set(stock_codes)):
+                raise ValueError('Invalid frozen score selection')
+            for code in stock_codes:validate_stock_code(code)
         row=self._verified(self.repo.get_result(id,public=public),'result');folder=self.store.path(id)
         try:
             report=read_json(folder/'report.json',max_bytes=2*1024*1024)
@@ -123,6 +137,9 @@ class WorkflowService:
             if paths:
                 dataset=ds.dataset([str(p) for p in paths],format='parquet')
                 condition=ds.field('ts_code')==ts_code if ts_code is not None and 'ts_code' in dataset.schema.names else None
+                if stock_codes is not None:
+                    selected=ds.field('ts_code').isin(stock_codes)
+                    condition=selected if condition is None else condition & selected
                 scanner=dataset.scanner(filter=condition,batch_size=1024)
                 for batch in scanner.to_batches():
                     if skipped+batch.num_rows<=after:skipped+=batch.num_rows;continue

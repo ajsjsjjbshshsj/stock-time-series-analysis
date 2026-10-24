@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from itertools import groupby
 
 import numpy as np
 import pandas as pd
@@ -14,14 +15,20 @@ from data_processor.feature_store_contract import date_only, validate_stock_code
 
 SOURCE_COLUMNS = ('ts_code','trade_date','open','high','low','close','vol','amount',
                   'pre_close','change','pct_chg','turnover_rate')
-SOURCE_SQL = """SELECT d.ts_code,d.trade_date,d.open,d.high,d.low,d.close,d.vol,d.amount,
+_SOURCE_SELECT = """SELECT d.ts_code,d.trade_date,d.open,d.high,d.low,d.close,d.vol,d.amount,
  d.pre_close,d.`change`,d.pct_chg,b.turnover_rate,
  b.ts_code AS basic_code,m.ts_code AS master_code
  FROM stock_daily d LEFT JOIN stock_daily_basic b
  ON d.ts_code=b.ts_code AND d.trade_date=b.trade_date
- LEFT JOIN stock_basic m ON d.ts_code=m.ts_code
+ LEFT JOIN stock_basic m ON d.ts_code=m.ts_code"""
+SOURCE_SQL = _SOURCE_SELECT + """
  WHERE d.ts_code=:code AND d.trade_date BETWEEN :start AND :cutoff
  ORDER BY d.trade_date"""
+SOURCE_RANGE_SQL = _SOURCE_SELECT + """
+ WHERE d.ts_code BETWEEN :first_code AND :last_code
+ AND d.trade_date BETWEEN :start AND :cutoff
+ ORDER BY d.ts_code,d.trade_date"""
+SOURCE_STOCK_BATCH_SIZE=64
 
 
 def json_value(value):
@@ -84,9 +91,11 @@ def validate_source(frame,start,cutoff):
     return result.sort_values('trade_date').reset_index(drop=True)
 
 
-def update_source_digest(digest,frame):
+def update_source_digest(digest,frame,*,additional_digests=()):
+    targets=(digest,*additional_digests)
     for row in frame.loc[:,SOURCE_COLUMNS].itertuples(index=False,name=None):
-        digest.update(canonical_bytes(dict(zip(SOURCE_COLUMNS,row)))+b'\n')
+        payload=canonical_bytes(dict(zip(SOURCE_COLUMNS,row)))+b'\n'
+        for target in targets:target.update(payload)
 
 
 def snapshot_frames(frames,directory,start_date,cutoff):
@@ -102,8 +111,7 @@ def snapshot_frames(frames,directory,start_date,cutoff):
         if code<=previous: raise ValueError('Source stocks must be unique and sorted')
         previous=code;filename=code+'.parquet';path=directory/filename
         frame.to_parquet(path,index=False)
-        stock_hash=hashlib.sha256();update_source_digest(stock_hash,frame)
-        update_source_digest(digest,frame)
+        stock_hash=hashlib.sha256();update_source_digest(stock_hash,frame,additional_digests=(digest,))
         shards.append(dict(ts_code=code,file=filename,sha256=file_digest(path),
             source_sha256=stock_hash.hexdigest(),row_count=len(frame),
             first_date=str(frame.trade_date.iloc[0]),last_date=str(frame.trade_date.iloc[-1])))
@@ -130,7 +138,7 @@ def verify_snapshot(manifest,directory):
         previous=code
         if file_digest(path)!=shard['sha256']: raise ValueError('Source shard hash mismatch')
         frame=validate_source(pd.read_parquet(path),manifest['source_start'],manifest['source_cutoff'])
-        local=hashlib.sha256();update_source_digest(local,frame);update_source_digest(digest,frame)
+        local=hashlib.sha256();update_source_digest(local,frame,additional_digests=(digest,))
         if (set(frame.ts_code)!={code} or len(frame)!=shard['row_count']
                 or local.hexdigest()!=shard['source_sha256']
                 or str(frame.trade_date.iloc[0])!=shard['first_date']
@@ -142,22 +150,56 @@ def verify_snapshot(manifest,directory):
     return manifest
 
 
-def source_frames(connection,start,cutoff):
-    codes=connection.execute(text('SELECT DISTINCT ts_code FROM stock_daily WHERE trade_date BETWEEN :start AND :cutoff ORDER BY ts_code'),
-                             dict(start=start,cutoff=cutoff)).scalars().all()
-    for code in codes:
-        validate_stock_code(code)
-        rows=connection.execute(text(SOURCE_SQL),dict(code=code,start=start,cutoff=cutoff)).mappings().all()
-        if any(row['basic_code'] is None or row['master_code'] is None for row in rows):
+def _source_codes(connection,start,cutoff):
+    with connection.execute(text('SELECT DISTINCT ts_code FROM stock_daily WHERE trade_date BETWEEN :start AND :cutoff ORDER BY ts_code'),
+                            dict(start=start,cutoff=cutoff)) as result:
+        codes=list(result.scalars())
+    for code in codes:validate_stock_code(code)
+    return codes
+
+
+def _source_frame(rows):
+    values=[]
+    for row in rows:
+        if row['basic_code'] is None or row['master_code'] is None:
             raise ValueError('Missing market reference or daily-basic counterpart')
-        yield pd.DataFrame([{name:row[name] for name in SOURCE_COLUMNS} for row in rows],columns=SOURCE_COLUMNS)
+        values.append({name:row[name] for name in SOURCE_COLUMNS})
+    return pd.DataFrame(values,columns=SOURCE_COLUMNS)
+
+
+def source_frames(connection,start,cutoff):
+    """Close each stock result before yielding so callers may interleave SQL."""
+    for code in _source_codes(connection,start,cutoff):
+        with connection.execute(text(SOURCE_SQL),dict(code=code,start=start,cutoff=cutoff)) as result:
+            frame=_source_frame(result.mappings())
+        yield frame
+
+
+def stream_source_frames(connection,start,cutoff):
+    """Snapshot-only stream: the consumer must not issue SQL on this connection.
+
+    Bounded stock ranges avoid per-stock round trips and a global filesort.
+    Publication uses source_frames instead, preserving its interleaved queries
+    within the same consistent read transaction.
+    """
+    codes=_source_codes(connection,start,cutoff)
+    statement=text(SOURCE_RANGE_SQL).execution_options(yield_per=1000)
+    for offset in range(0,len(codes),SOURCE_STOCK_BATCH_SIZE):
+        batch=codes[offset:offset+SOURCE_STOCK_BATCH_SIZE];members=set(batch)
+        params=dict(start=start,cutoff=cutoff,first_code=batch[0],last_code=batch[-1])
+        with connection.execute(statement,params) as result:
+            for code,rows in groupby(result.mappings(),key=lambda row:row['ts_code']):
+                if code not in members:raise ValueError('Source stock inventory changed')
+                yield _source_frame(rows)
 
 
 def snapshot_source(db,directory,start_date,cutoff):
     start,cutoff=date_only(start_date),date_only(cutoff)
     with db.engine.connect().execution_options(isolation_level='REPEATABLE READ') as connection:
         connection.exec_driver_sql('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+        frames=stream_source_frames(connection,start,cutoff)
         try:
-            return snapshot_frames(source_frames(connection,start,cutoff),directory,start,cutoff)
+            return snapshot_frames(frames,directory,start,cutoff)
         finally:
-            connection.rollback()
+            try:frames.close()  # Close an unbuffered result before rollback on errors.
+            finally:connection.rollback()

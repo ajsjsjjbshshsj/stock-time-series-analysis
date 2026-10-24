@@ -46,7 +46,13 @@ class GapUpdateService:
             return bundle
         return latest_local_reference(self.data_root,self.paths)
 
-    def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True):
+    def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True,pool=None):
+        if pool is not None:
+            from copy import deepcopy
+            from app.preparation.contracts import validate_pool
+            from app.nightly.contracts import is_a_share
+            pool=deepcopy(validate_pool(pool))
+            if any(not is_a_share(code) for code in pool['codes']):raise ValueError('POOL_SCOPE_INVALID')
         first, last = market_day(start), market_day(end)
         local = now.astimezone(TZ)
         cutoff = local.date() if local.time() > daytime(16) else local.date()-timedelta(days=1)
@@ -67,6 +73,10 @@ class GapUpdateService:
         calendar = self.calendar.get(start, end, now, acquire=acquire_reference)
         if calendar is None:raise ValueError('LOCAL_VERIFIED_CALENDAR_REQUIRED')
         members = reference_rows(bundle['rows'])
+        if pool is not None:
+            selected=set(pool['codes'])
+            if not selected<={row['ts_code'] for row in members}:raise ValueError('POOL_REFERENCE_REQUIRED')
+            members=[row for row in members if row['ts_code'] in selected]
         codes = sorted({row['ts_code'] for row in members if row['ts_code'].endswith(('.SH', '.SZ'))
             and row['ts_code'][:1] in '036'})
         # make_coverage_snapshot validates/classifies the full reference; scans
@@ -77,6 +87,7 @@ class GapUpdateService:
             self.coverage.iter_keys('stock_daily', codes, start, end),
             self.coverage.iter_keys('stock_daily_basic', codes, start, end),
             reference_sha256=bundle['manifest_sha256'], acquired_at=bundle['acquired_at'])
+        if pool is not None:snapshot['registry_pool']=pool
         valid = eligible_bits(snapshot)
         missing_keys=((code,day) for code,bits in valid.items() for i,day in enumerate(snapshot['sessions'])
             if bits & (1 << i) and not int(snapshot['daily_bits'][code],16) & (1 << i))
@@ -99,6 +110,7 @@ class GapUpdateService:
             missing_daily=missing_daily, missing_basic=missing_basic, request_segments=len(daily)+len(basic),
             verified_no_quote=len(no_quote_sources),
             api_requests=0, verification_mode='missing-only', existing_data_revalidated=False, model_ready=False)
+        if pool is not None:summary.update(pool_version=pool['pool_version'],registry_stock_count=pool['stock_count'])
         if not persist:return summary
         batch = self.batch_store.create_or_load(snapshot, daily)
         reference_path=Path(batch['path'])/'reference.json'

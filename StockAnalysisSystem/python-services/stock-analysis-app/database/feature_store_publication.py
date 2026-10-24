@@ -78,27 +78,40 @@ def restore_pair(connection,incoming,previous,candidate):
     connection.commit()
 
 
-def publish(db,build_id,rollback=False):
+def publish(db,build_id,rollback=False,*,managed=None):
     validate_build_id(build_id)
     with owned_lock(db) as connection:
+        incoming=archive_table_name(build_id) if rollback else build_table_name(build_id)
+        if managed is not None:
+            managed.owner_guard()
+            managed.recover(connection,incoming)
         meta=metadata_row(connection,build_id)
         required='READY' if rollback else 'BUILDING'
+        previous=active_metadata(connection)
+        if managed is not None and previous and previous['build_id']==build_id:
+            # A lost commit acknowledgement is reconciled, never re-RENAME'd.
+            verify_build(connection,meta,CANONICAL_TABLE);connection.rollback()
+            managed.owner_guard();managed.prepare();managed.finish('COMMITTED')
+            return dict(build_id=build_id,published=True,reconciled_commit=True)
         if meta['state']!=required or meta['active_slot'] is not None:
             raise FeatureStoreUnavailable('Candidate is not an inactive eligible build')
-        incoming=archive_table_name(build_id) if rollback else build_table_name(build_id)
-        previous=active_metadata(connection)
+        if managed is not None:managed.require_previous(previous)
         # Consistent snapshot, no raw writes. Named lock spans validation + DDL.
         connection.commit()
         connection.exec_driver_sql('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
         verify_build(connection,meta,incoming)
         connection.rollback()
+        if managed is not None:
+            managed.owner_guard();managed.prepare()
         try:
+            if managed is not None:managed.owner_guard()
             rename_pair(connection,incoming,previous)
             connection.commit()
             with connection.begin():
                 connection.execute(text('UPDATE stock_feature_build SET active_slot=NULL WHERE active_slot=:slot'),dict(slot=ACTIVE_SLOT))
                 result=connection.execute(text("UPDATE stock_feature_build SET state='READY',active_slot=:slot,verified_at=CURRENT_TIMESTAMP WHERE build_id=:id AND state=:state AND active_slot IS NULL"),dict(slot=ACTIVE_SLOT,id=build_id,state=required))
                 if result.rowcount!=1:raise FeatureStoreUnavailable('Activation state changed')
+            if managed is not None:managed.finish('COMMITTED')
             return dict(build_id=build_id,published=True,previous_build_id=previous['build_id'] if previous else None)
         except Exception:
             connection.rollback()
@@ -106,6 +119,7 @@ def publish(db,build_id,rollback=False):
             current=active_metadata(connection);connection.commit()
             if current and current['build_id']==build_id and current['state']=='READY':
                 validate_table(connection,CANONICAL_TABLE,build_id)
+                if managed is not None:managed.finish('COMMITTED')
                 return dict(build_id=build_id,published=True,reconciled_commit=True)
             if (current and (not previous or current['build_id']!=previous['build_id'])) or (previous and not current):
                 raise FeatureStoreUnavailable('Publication recovery requires operator inspection') from None
@@ -122,7 +136,8 @@ def publish(db,build_id,rollback=False):
                 if previous:validate_table(connection,CANONICAL_TABLE,previous['build_id'])
                 elif schema.has_table(CANONICAL_TABLE):
                     raise FeatureStoreUnavailable('Unknown physical publication state; operator recovery required') from None
-            if not rollback:
+            if managed is not None:managed.finish('ABORTED')
+            if not rollback and managed is None:
                 connection.execute(text("UPDATE stock_feature_build SET state='FAILED',failure_code='PUBLICATION_FAILED' WHERE build_id=:id AND state='BUILDING' AND active_slot IS NULL"),dict(id=build_id))
                 connection.commit()
             raise FeatureStoreUnavailable('Publication failed; previous dataset retained, evidence preserved') from None

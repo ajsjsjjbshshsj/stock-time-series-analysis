@@ -105,6 +105,9 @@ class NightlyScheduler:
         starts=[s for s in (body['start_date'],self.bootstrap_start,earliest) if s is not None]
         if starts:start=min(starts)
         else:start=max(market_day(START),last-timedelta(days=365)).isoformat()
+        # An explicit operational boundary must not be pulled backwards by
+        # imported historical jobs or a prior scheduler origin. Rows stay intact.
+        if self.bootstrap_start is not None:start=max(start,self.bootstrap_start)
         if self.bootstrap_start is not None and market_day(self.bootstrap_start)>local.date():
             raise ValueError('BOOTSTRAP_IN_FUTURE')
         if market_day(start)>last:calendar=dict(source='tushare.trade_cal',rows=[]);days=[]
@@ -116,12 +119,17 @@ class NightlyScheduler:
             start=days[-1];days=days[-1:]
         body.update(start_date=start,run_at=self.run_at,retry_not_before=None,last_scan_at=now.isoformat())
         self._save(body) # Persist the origin before submitting any date.
-        existing={r['trade_date']:r for r in self.tasks.list_runs(start,days[-1])} if days else {}
+        def list_runs():
+            if not days:return []
+            if hasattr(self.tasks,'list_nightly_runs'):
+                return self.tasks.list_nightly_runs(start,days[-1],run_at=self.run_at)
+            return self.tasks.list_runs(start,days[-1])
+        existing={r['trade_date']:r for r in list_runs()}
         pending=[day for day in days if day not in existing]
         for day in pending[:31]:
             scheduled=datetime.combine(market_day(day),at,TZ).isoformat()
             self.tasks.submit(day,scheduled_for=scheduled,now=now.isoformat())
-        runs={r['trade_date']:r for r in self.tasks.list_runs(start,days[-1])} if days else {}
+        runs={r['trade_date']:r for r in list_runs()}
         continuous=None
         for day in days:
             if day not in runs or runs[day]['status']!='SUCCEEDED':break

@@ -9,20 +9,22 @@ from .processes import OwnedProcess
 
 
 class Worker:
-    def __init__(self,service,root,*,process_factory=None):
+    def __init__(self,service,root,*,process_factory=None,before_poll=None):
         self.service=service;self.root=Path(root).absolute();self.worker_id=uuid4().hex
         self.process_factory=process_factory or self._process
+        self.before_poll=before_poll
 
     def _process(self):
         env=dict(os.environ,OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1')
         return OwnedProcess([sys.executable,'-m','tasks.child'],cwd=Path(__file__).resolve().parents[1],env=env)
 
     def run_once(self):
+        if self.before_poll is not None:self.before_poll()
         task=self.service.claim(self.worker_id)
         if task is None:return False
         process=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
-        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow')
+        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate')
         try:
             process=self.process_factory()
             if market:
@@ -61,7 +63,9 @@ class Worker:
                     if process.poll()!=0 or not complete:raise TaskFailure('PROCESS_FAILED')
                     if not process.stop():raise TaskFailure('PROCESS_FAILED')
                     from .artifacts import verify_candidate
-                    try:candidate=verify_candidate(task,self.root)
+                    try:
+                        options=dict(engine=self.service.repo.engine) if task['request']['kind'] in ('feature_build','feature_activate') else {}
+                        candidate=verify_candidate(task,self.root,**options)
                     except Exception:raise TaskFailure('CANDIDATE_INVALID') from None
                     self.service.heartbeat(*fence)
                     outcome='SUCCEEDED';break

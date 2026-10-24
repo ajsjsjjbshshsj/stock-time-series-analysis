@@ -1,6 +1,6 @@
 <template>
   <div class="pool-manager">
-    <header class="heading"><div><h1>股票池管理</h1><p class="muted">从已入库数据选择固定成员，查询覆盖情况。不采集、不训练、不发布。</p></div><button class="btn" :disabled="busy || loading" @click="refresh">刷新目录</button></header>
+    <header class="heading"><div><h1>股票池管理</h1><p class="muted">从已入库数据选择固定成员。预览与查询不采集；补缺需显式提交，不训练或发布。</p></div><button class="btn" :disabled="busy || loading" @click="refresh">刷新目录</button></header>
     <p v-if="!enabled" role="alert">此页面仅向受保护模式下的管理员开放。</p>
     <template v-else>
       <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
@@ -55,6 +55,7 @@
           <div class="pager"><button class="btn btn-sm" :disabled="coverageLoading || coverageOffset===0" @click="queryCoverage(coverageOffset-20)">上一页覆盖</button><span>{{ coverageOffset+1 }} / {{ coverage.total }}</span><button class="btn btn-sm" :disabled="coverageLoading || coverageOffset+20>=coverage.total" @click="queryCoverage(coverageOffset+20)">下一页覆盖</button></div>
         </template>
       </section>
+      <PoolPreparationPanel :pool-version="selected" :start="start" :end="end" />
     </template>
   </div>
 </template>
@@ -62,6 +63,7 @@
 <script setup>
 import {computed,reactive,ref,watch,onMounted,onBeforeUnmount} from 'vue'
 import DataTable from '../../components/DataTable.vue'
+import PoolPreparationPanel from '../../components/PoolPreparationPanel.vue'
 import {poolApi as api} from '../../api/pools.js'
 import {authState} from '../../stores/auth.js'
 const enabled=computed(()=>authState.mode==='protected'&&authState.user?.role==='admin'&&!authState.user.must_change_password)
@@ -94,7 +96,7 @@ async function loadCandidate(){
 async function save(){
   if(busy.value||!candidate.value||!candidateSelector||!enabled.value)return
   const e=epoch,s={...candidateSelector,expected_version:candidate.value.pool.pool_version};busy.value=true;notice.value='';candidateError.value=''
-  try{const v=await api.save(s);if(!current(e))return;selected.value=v.pool.pool_version;versionOffset.value=0;notice.value='固定成员已保存；没有采集、训练或修改默认版本。';await refresh();await changeVersion()}
+  try{const v=await api.save(s);if(!current(e))return;selected.value=v.pool.pool_version;versionOffset.value=0;clearCandidate();notice.value='固定成员已保存；没有采集、训练或修改默认版本。';await refresh();await changeVersion()}
   catch(err){if(current(e))candidateError.value=err.message}
   finally{if(current(e))busy.value=false}
 }
