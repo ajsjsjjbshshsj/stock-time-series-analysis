@@ -150,12 +150,39 @@ def verify_snapshot(manifest,directory):
     return manifest
 
 
-def source_frames(connection,start,cutoff):
-    """Bounded stock ranges avoid both per-stock queries and a global filesort."""
+def _source_codes(connection,start,cutoff):
     with connection.execute(text('SELECT DISTINCT ts_code FROM stock_daily WHERE trade_date BETWEEN :start AND :cutoff ORDER BY ts_code'),
                             dict(start=start,cutoff=cutoff)) as result:
         codes=list(result.scalars())
     for code in codes:validate_stock_code(code)
+    return codes
+
+
+def _source_frame(rows):
+    values=[]
+    for row in rows:
+        if row['basic_code'] is None or row['master_code'] is None:
+            raise ValueError('Missing market reference or daily-basic counterpart')
+        values.append({name:row[name] for name in SOURCE_COLUMNS})
+    return pd.DataFrame(values,columns=SOURCE_COLUMNS)
+
+
+def source_frames(connection,start,cutoff):
+    """Close each stock result before yielding so callers may interleave SQL."""
+    for code in _source_codes(connection,start,cutoff):
+        with connection.execute(text(SOURCE_SQL),dict(code=code,start=start,cutoff=cutoff)) as result:
+            frame=_source_frame(result.mappings())
+        yield frame
+
+
+def stream_source_frames(connection,start,cutoff):
+    """Snapshot-only stream: the consumer must not issue SQL on this connection.
+
+    Bounded stock ranges avoid per-stock round trips and a global filesort.
+    Publication uses source_frames instead, preserving its interleaved queries
+    within the same consistent read transaction.
+    """
+    codes=_source_codes(connection,start,cutoff)
     statement=text(SOURCE_RANGE_SQL).execution_options(yield_per=1000)
     for offset in range(0,len(codes),SOURCE_STOCK_BATCH_SIZE):
         batch=codes[offset:offset+SOURCE_STOCK_BATCH_SIZE];members=set(batch)
@@ -163,19 +190,14 @@ def source_frames(connection,start,cutoff):
         with connection.execute(statement,params) as result:
             for code,rows in groupby(result.mappings(),key=lambda row:row['ts_code']):
                 if code not in members:raise ValueError('Source stock inventory changed')
-                values=[]
-                for row in rows:
-                    if row['basic_code'] is None or row['master_code'] is None:
-                        raise ValueError('Missing market reference or daily-basic counterpart')
-                    values.append({name:row[name] for name in SOURCE_COLUMNS})
-                yield pd.DataFrame(values,columns=SOURCE_COLUMNS)
+                yield _source_frame(rows)
 
 
 def snapshot_source(db,directory,start_date,cutoff):
     start,cutoff=date_only(start_date),date_only(cutoff)
     with db.engine.connect().execution_options(isolation_level='REPEATABLE READ') as connection:
         connection.exec_driver_sql('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
-        frames=source_frames(connection,start,cutoff)
+        frames=stream_source_frames(connection,start,cutoff)
         try:
             return snapshot_frames(frames,directory,start,cutoff)
         finally:
