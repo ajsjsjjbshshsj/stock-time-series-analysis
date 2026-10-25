@@ -21,13 +21,15 @@ from app.market_data.retry_policy import RETRYABLE_TASK_ERRORS
 
 class GapUpdateService:
     def __init__(self, tasks, coverage, imports, calendar, universe, acquirer,
-                 reference_loader, batch_store, data_root, *, clock=time.time,paths=None):
+                 reference_loader, batch_store, data_root, *, clock=time.time,paths=None,
+                 on_verified_suspensions=None):
         self.tasks, self.coverage, self.imports = tasks, coverage, imports
         self.calendar, self.universe, self.acquirer = calendar, universe, acquirer
         self.reference_loader, self.batch_store = reference_loader, batch_store
         self.data_root, self.clock = Path(data_root).resolve(), clock
         self.tasks.prepare_batch = self.prepare_batch
         self.paths=paths
+        self.on_verified_suspensions=on_verified_suspensions
 
     def _verified_reference(self,pinned):
         directory=resolve_reference(pinned['source_directory'],self.paths)
@@ -158,10 +160,11 @@ class GapUpdateService:
         plan=plan_basic(snapshot,new_keys,include_existing=False)
         return self.batch_store.store_followup_plan(batch,request['id'],plan)
 
-    def _verify_no_quote(self,state,folder,daily_missing):
+    def _verify_no_quote(self,state,folder,daily_missing,*,registrar=None,owner_guard=None):
         keys={tuple(key) for key in state['verified_no_quote']}
         if not keys<=daily_missing:raise ValueError('NO_QUOTE_OUTSIDE_TARGET')
         native_sources={}
+        verified_rows={}
         for code,day in sorted(keys):
             proof=state['no_quote_sources'].get(code)
             if proof is None:raise ValueError('NO_QUOTE_PROOF_REQUIRED')
@@ -182,7 +185,18 @@ class GapUpdateService:
                 if (shard['raw_sha256']!=proof['raw_sha256'] or shard['manifest_sha256']!=proof['manifest_sha256']
                         or not events or not all(row['suspend_type']=='S' and row['suspend_timing'] is None for row in events)):
                     raise ValueError('NO_QUOTE_NATIVE_PROOF_CHANGED')
+                verified_rows.setdefault(source_key,{}).setdefault(code,events)
             else:raise ValueError('NO_QUOTE_PROOF_KIND_INVALID')
+        # Only export after EVERY native/registry proof has passed. The full
+        # market response stays sealed in its original directory; the canonical
+        # registry receives only this task's proven, full-day suspended members.
+        # Replaying a checkpoint reuses the content-addressed registration.
+        if registrar is not None:
+            for (_,day),by_code in sorted(verified_rows.items()):
+                registrar(dict(kind='suspend_d',provider='tushare.suspend_d',
+                    start_date=day,end_date=day,expected_codes=sorted(by_code),
+                    rows=[row for code in sorted(by_code) for row in by_code[code]]),
+                    owner_guard=owner_guard)
         return keys
 
     def execute(self, task, *, owner_token):
@@ -330,7 +344,8 @@ class GapUpdateService:
         self._stage(task, token, 'VERIFY')
         if self.batch_store.load(batch['batch_id']) != batch:
             raise ValueError('GAP_BATCH_BINDING_CHANGED')
-        noquote=self._verify_no_quote(state,folder,daily_missing)
+        noquote=self._verify_no_quote(state,folder,daily_missing,
+            registrar=self.on_verified_suspensions,owner_guard=guard)
         self.imports.owner_guard=guard
         try:
             for request,candidates,table in verified_receipts:

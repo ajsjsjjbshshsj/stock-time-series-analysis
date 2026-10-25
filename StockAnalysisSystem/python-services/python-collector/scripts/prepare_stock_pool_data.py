@@ -99,7 +99,8 @@ class Runtime:
                 GapImportRepository(self.db.Session),self.calendar,
                 MarketUniverseProvider(self.client,self.acquirer.requests,schema_version=2),
                 GapAcquirer(self.client,self.acquirer.requests,source_store=self.evidence,paths=self.paths),
-                SnapshotReferenceWriter(self.db.Session),GapBatchStore(self.data_root),self.data_root,paths=self.paths)
+                SnapshotReferenceWriter(self.db.Session),GapBatchStore(self.data_root),self.data_root,paths=self.paths,
+                on_verified_suspensions=self.evidence.register_verified)
         return self._market_service
 
     def scheduler(self,*,run_at='20:00',bootstrap_start=None):
