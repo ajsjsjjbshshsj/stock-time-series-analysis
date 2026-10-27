@@ -7,6 +7,45 @@ from tasks.artifacts import task_path,read_json,file_digest,write_json,verify_ca
 from .training import verify_native
 
 
+def capture_import_history(original,directory,source,emit):
+    """Certify only the original immutable source, not today's replacement.
+
+    Legacy candidates predate workflow prefix receipts. Reconstruct a receipt
+    from their bound feature build and recheck each raw shard before trusting it.
+    A missing/corrupt original source fails the import; it never requests data.
+    """
+    from database.feature_store_reader import metadata_row,validate_metadata,stock_source
+    from data_processor.feature_store_contract import date_only,validate_stock_code
+    from tasks.contracts import digest
+    from .source import history_fingerprint
+    bound=original['binding'];codes=bound['stock_codes']
+    if (not isinstance(codes,list) or not codes or len(codes)>10000
+            or codes!=sorted(set(codes)) or digest(codes)!=bound['pool_identity']):
+        raise ValueError('Original frozen pool identity changed')
+    for code in codes:validate_stock_code(code)
+    cutoff=date_only(original['request']['end_date']);prefixes={}
+    with source.engine.connect() as c,c.begin():
+        meta=metadata_row(c,bound['build_id']);validate_metadata(meta)
+        keys=('build_id','storage_contract','algorithm_version','columns_sha256',
+              'code_sha256','source_sha256','source_start','source_cutoff')
+        if (meta['state']!='READY' or any(str(meta[k])!=str(bound[k]) for k in keys)
+                or not date_only(meta['source_start'])<=cutoff<=date_only(meta['source_cutoff'])
+                or not set(codes)<={s['ts_code'] for s in meta['source_manifest']['shards']}):
+            raise ValueError('Original feature source identity changed')
+        manifest_sha=bound.get('source_manifest_sha256')
+        if manifest_sha is not None:
+            if manifest_sha!=digest(meta['source_manifest']):raise ValueError('Original source manifest changed')
+        elif len(codes)!=1 or not isinstance(bound.get('source_evidence'),dict):
+            raise ValueError('Original source proof required')
+        for i,code in enumerate(codes,1):
+            frame,evidence=stock_source(c,code,meta)
+            if manifest_sha is None and evidence!=bound['source_evidence']:
+                raise ValueError('Original stock source evidence changed')
+            prefixes[code]=history_fingerprint(frame,str(cutoff))
+            if i%100==0:emit('progress',phase='INPUT',completed=i,total=len(codes))
+    write_json(directory/'history.json',dict(cutoff=str(cutoff),prefixes=prefixes))
+
+
 def bind_import(request,source):
     if request['import_task_id']:
         parent_id=request['import_task_id'];folder=task_path(source.store.root,parent_id)
@@ -64,6 +103,7 @@ def import_operation(task,directory,source,emit):
             model=XGBClassifier();model.load_model(directory/filename)
             proof=dict(values=proof['values'],predictions=model.predict_proba(pd.DataFrame(proof['values'],columns=names))[:,1].tolist())
         write_json(directory/'reload.json',proof);verify_candidate(original,source.store.root)
+    capture_import_history(original,directory,source,emit)
     native.update(algorithm=algorithm,ts_code=original['request'].get('ts_code'),stock_codes=None)
     write_json(directory/'native.json',native);verify_native(directory,algorithm)
     return {k:v for k,v in native.items() if k not in ('params','algorithm')}

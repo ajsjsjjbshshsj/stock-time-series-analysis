@@ -71,12 +71,8 @@ class CalendarStore:
             write(path,body,exclusive=True); write(proof,dict(sha256=digest(path)),exclusive=True)
         return body
 
-    def get(self,start,end,now,*,acquire=False):
-        start,end=iso(start),iso(end)
-        local=now.astimezone(TZ)
-        candidate=local.date() if local.time()>time(16) else local.date()-timedelta(days=1)
-        upper=min(end,candidate)
-        lower=start if start<=upper else upper-timedelta(days=31)
+    def cached(self):
+        """Read verified local rows only; never initialize or call a provider."""
         keyed={}
         for path in (self.root/'calendar').glob('*.json'):
             if path.name.endswith('.proof.json'): continue
@@ -88,6 +84,15 @@ class CalendarStore:
                 day=row['cal_date']
                 if day in keyed and keyed[day]!=row['is_open']: raise ValueError('CALENDAR_SOURCE_CONFLICT')
                 keyed[day]=row['is_open']
+        return dict(source='tushare.trade_cal',rows=[dict(cal_date=day,is_open=keyed[day]) for day in sorted(keyed)])
+
+    def get(self,start,end,now,*,acquire=False):
+        start,end=iso(start),iso(end)
+        local=now.astimezone(TZ)
+        candidate=local.date() if local.time()>time(16) else local.date()-timedelta(days=1)
+        upper=min(end,candidate)
+        lower=start if start<=upper else upper-timedelta(days=31)
+        keyed={row['cal_date']:row['is_open'] for row in self.cached()['rows']}
         required=[lower+timedelta(days=i) for i in range((upper-lower).days+1)]
         missing=[day for day in required if day.isoformat() not in keyed]
         if missing and not acquire: return None

@@ -84,6 +84,11 @@ def validate_coverage(snapshot):
             or snapshot.get('coverage_sha256') != identity({
                 key: value for key, value in snapshot.items() if key != 'coverage_sha256'})):
         raise ValueError('GAP_COVERAGE_HASH_INVALID')
+    if snapshot.get('registry_pool') is not None:
+        from app.preparation.contracts import validate_pool
+        pool=validate_pool(snapshot['registry_pool'])
+        if any(row['ts_code'] not in pool['codes'] for row in snapshot['members']):
+            raise ValueError('GAP_OUTSIDE_FIXED_POOL')
     return snapshot
 
 
@@ -123,7 +128,7 @@ def _make_request(method, mode, codes, expected_keys, snapshot, valid, index):
         params = dict(ts_code=codes[0], start_date=start.replace('-', ''),
                       end_date=end.replace('-', ''), fields=','.join(fields))
     else:
-        if (start != end or any(int(bits, 16) & (1 << index[start]) for bits in present.values())
+        if (snapshot.get('registry_pool') is not None or start != end or any(int(bits, 16) & (1 << index[start]) for bits in present.values())
                 or len(keys) >= 6000):
             raise ValueError('GAP_FULL_DATE_NOT_ENTIRELY_MISSING')
         params = dict(trade_date=start.replace('-', ''), fields=','.join(fields))
@@ -147,7 +152,7 @@ def _plan(snapshot, method, missing, valid):
         flag = 1 << i
         if not relevant & flag:continue
         targets = [code for code in sorted(missing) if missing[code] & flag]
-        if (targets and len(targets) < 6000
+        if (snapshot.get('registry_pool') is None and targets and len(targets) < 6000
                 and not any(int(bits, 16) & flag for bits in present.values())):
             result.append(_make_request(method, 'full_date', targets,
                 [(code, day) for code in targets], snapshot, valid, index))

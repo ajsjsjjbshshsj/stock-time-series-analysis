@@ -89,6 +89,9 @@ def freeze_pool(metadata: dict, members: list[dict]) -> dict:
 def validate_pool(pool: dict) -> dict:
     if not isinstance(pool, dict):
         raise ValueError('POOL_REQUIRED')
+    if type(pool.get('schema_version')) is int and pool['schema_version'] == 2:
+        from .local_pools import validate_local
+        return validate_local(pool)
     expected = freeze_pool({k: pool[k] for k in META}, pool['members'])
     if 'legacy_source_manifest_sha256' in pool:
         source_sha = pool['legacy_source_manifest_sha256']

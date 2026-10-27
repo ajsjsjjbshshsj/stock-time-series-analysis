@@ -62,6 +62,15 @@ class SourceProvider:
 
     def bind(self,request):
         request=normalize_request(request)
+        if request['kind']=='feature_activate':
+            from feature_jobs.activation import ActivationSource
+            return ActivationSource(self.engine).bind(request)
+        from automation.repository import publication_pending
+        with self.engine.connect() as c:
+            if publication_pending(c):raise SourceChanged('Feature publication recovery required')
+        if request['kind']=='feature_build':
+            from feature_jobs.source import FeatureSource
+            return FeatureSource(self.engine,self.calendar_path).bind(request)
         if request['kind']=='model_workflow':
             from workflows.source import WorkflowSource
             return WorkflowSource(self.engine,self.calendar_path).bind(request)

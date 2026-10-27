@@ -11,6 +11,11 @@ from .repository import WorkflowRepository
 MAX_BACKTEST_PRICE_ROWS=250000
 
 
+def require_feature_pin(request,data):
+    if request.get('feature_build_id') is not None and request['feature_build_id']!=data['build_id']:
+        raise SourceChanged('Requested feature version is no longer active')
+
+
 def completed_session(calendar,now=None):
     """Strictly after Shanghai16:00; never infer exchange sessions from weekdays."""
     from datetime import datetime,time,timedelta,timezone
@@ -92,6 +97,9 @@ class WorkflowSource:
 
     def bind(self,value):
         request=normalize_operation(value)
+        from automation.repository import publication_pending
+        with self.engine.connect() as c:
+            if publication_pending(c):raise SourceChanged('Feature activation recovery required')
         if request['operation']=='import':
             from .imports import bind_import
             return bind_import(request,self)
@@ -115,14 +123,19 @@ class WorkflowSource:
                 last=opened.index(signals[-1])+meta['native']['holding_sessions']+1
                 execution_end=min(available,opened[min(last,len(opened)-1)])
                 selected=dict(selected,end_date=execution_end)
+        from .pools import PoolSelection,workflow_selection
+        pool=workflow_selection(selected,PoolSelection(self.engine),meta['binding'] if request['model_id'] else None)
         if selected['algorithm']=='lightgbm':
-            data=self.base.bind(native_request(selected))
+            from tasks.market_source import MarketSource
+            frozen_codes=meta['binding']['data']['stock_codes'] if request['model_id'] else None
+            data=MarketSource(self.engine,self.calendar_path,pool=pool,frozen_codes=frozen_codes).bind(native_request(selected))
         elif selected['algorithm']=='xgboost':data=self.base.bind(native_request(selected))
         else:
             bindings={code:self.base.bind(native_request(selected,code)) for code in selected['stock_codes']}
             first=next(iter(bindings.values()))
             data={k:first[k] for k in ('build_id','source_sha256','source_start','source_cutoff')}
             data.update(stocks=bindings,stock_codes=selected['stock_codes'],pool_count=len(bindings),pool_identity=digest(selected['stock_codes']))
+        require_feature_pin(request,data)
         if request['model_id']:
             frozen=meta['binding']['data']
             pairs=[(frozen,data)]
@@ -139,6 +152,7 @@ class WorkflowSource:
         from tasks.source import APP
         files={p.relative_to(APP).as_posix():p.read_text(encoding='utf-8') for p in sorted((APP/'workflows').glob('*.py'))}
         bound=dict(data=data,workflow_sha256=digest(files),model_manifest_sha256=model_sha)
+        if pool is not None:bound['registry_pool']=pool
         bound['model_pipeline']=pipeline
         if request['operation']=='backtest':bound['execution_end']=selected['end_date']
         for key in ('build_id','source_sha256','source_start','source_cutoff','pool_identity'):
@@ -203,7 +217,9 @@ class WorkflowSource:
     def iter_stocks(self,task):
         from tasks.market_source import MarketSource
         request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
-        for code,snapshot,calendar,proof in MarketSource(self.engine,self.calendar_path).iter_stocks(dict(request=request,binding=task['binding']['data'])):
+        frozen_codes=self.model(task['request']['model_id'])[1]['binding']['data']['stock_codes'] if task['request']['model_id'] else None
+        reader=MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool'),frozen_codes=frozen_codes)
+        for code,snapshot,calendar,proof in reader.iter_stocks(dict(request=request,binding=task['binding']['data'])):
             if task['request']['model_id']:self.verify_history(task,code,snapshot.source_history)
             yield code,snapshot,calendar,proof
 

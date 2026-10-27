@@ -6,7 +6,9 @@ from app.nightly.contracts import GAP_VERSION, market_day, schema_for_version
 
 
 class GapTaskRepository:
-    def __init__(self, session_factory, *, batch_store=None, prepare_batch=None):
+    def __init__(self, session_factory, *, batch_store=None, prepare_batch=None, start_date=None):
+        if start_date is not None:market_day(start_date)
+        self.start_date=start_date
         self.session_factory, self.batch_store = session_factory, batch_store
         self.prepare_batch = prepare_batch
         self.reader = MarketUpdateRepository(session_factory)
@@ -21,7 +23,7 @@ class GapTaskRepository:
         if self.batch_store is None:
             raise ValueError('GAP_BATCH_STORE_REQUIRED')
         self.batch_store.check_version(version)
-        return MarketUpdateRepository(self.session_factory, requirements_version=version)
+        return MarketUpdateRepository(self.session_factory, requirements_version=version,claim_start=self.start_date)
 
     def submit_bound(self, day, batch, *, scheduled_for, now):
         stored = self.batch_store.load(batch['batch_id'])
@@ -37,9 +39,14 @@ class GapTaskRepository:
         return self.submit_bound(day, batch, scheduled_for=scheduled_for, now=now)
 
     def _selected(self, suffix='', params=None):
+        values=dict(params or {})
+        lower_bound=''
+        if self.start_date is not None:
+            lower_bound='AND trade_date>=:worker_start '
+            values['worker_start']=self.start_date
         with transaction(self.session_factory) as session:
             return [dict(row) for row in session.execute(text(
-                "SELECT * FROM market_update_run WHERE market_scope='SH_SZ_A' AND requirements_version LIKE 'market-gap-v1:%' "+suffix), params or {}).mappings().all()]
+                "SELECT * FROM market_update_run WHERE market_scope='SH_SZ_A' AND requirements_version LIKE 'market-gap-v1:%' "+lower_bound+suffix), values).mappings().all()]
 
     def claim(self, owner, *, now, lease_until):
         rows = self._selected("AND status IN ('QUEUED','WAITING_RETRY') AND not_before<=:now "
@@ -79,6 +86,23 @@ class GapTaskRepository:
             error_kind=row['error_kind'], requirements_version=row['requirements_version'],
             created_at=utc(row['created_at']), not_before=utc(row['not_before']), retry_not_before=utc(row['retry_not_before']))
             for row in self._selected('AND trade_date BETWEEN :start AND :end ORDER BY trade_date,created_at,task_id', dict(start=start, end=end))]
+
+    def list_nightly_runs(self,start,end,*,run_at):
+        """Only corresponding single-day full-market runs satisfy the scheduler.
+
+        A selected pool or multi-day backfill can share a date and even20:00,
+        but must not suppress creation of the nightly proof required downstream.
+        """
+        from datetime import datetime
+        from app.nightly.contracts import parse_run_at
+        from app.preparation.contracts import TZ
+        at=parse_run_at(run_at);result=[]
+        for row in self.list_runs(start,end):
+            scheduled=datetime.fromisoformat(row['not_before']).astimezone(TZ)
+            if scheduled.date().isoformat()!=row['trade_date'] or scheduled.time()!=at:continue
+            snapshot=self.batch_store.load(row['requirements_version'])['snapshot']
+            if snapshot.get('registry_pool') is None and snapshot['sessions']==[row['trade_date']]:result.append(row)
+        return result
 
     def next_retry(self):
         rows = self._selected("AND status IN ('QUEUED','WAITING_RETRY')")

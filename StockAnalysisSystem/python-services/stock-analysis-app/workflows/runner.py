@@ -25,6 +25,10 @@ def run_operation(task,root,source,emit):
     emit('stage',stage='VERIFY');source.verify(task)
     native=read_json(folder/'native.json',max_bytes=8*1024*1024) if kind=='model' else None
     info=dict(info,status=info.get('status','COMPLETE'),operation=operation)
+    if task['binding'].get('registry_pool') is not None:
+        from .pools import validate_selection
+        pool=validate_selection(task['binding']['registry_pool'])
+        info.update(scope='fixed_registry',pool_version=pool['pool_version'],registry_stock_count=pool['stock_count'])
     index=dict(artifact_kind=kind,algorithm=request['algorithm'],model_id=model_id,created_at=int(time.time()),
         title=f"{request['algorithm']} · {info.get('ts_code') or operation} · {request['end_date'] or request['import_task_id'] or request['experiment_id']}",metadata=info)
     proof=store.seal(task['id'],dict(schema_version=1,task_sha256=task_digest(task),index=index,native=native,

@@ -3,6 +3,20 @@ export const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'INTE
 export const stateLabels = { QUEUED: '等待领取', RUNNING: '执行中', CANCEL_REQUESTED: '等待取消确认', CANCELLED: '已取消', SUCCEEDED: '工程候选已验证', FAILED: '执行失败', INTERRUPTED: '执行中断' }
 export const stageLabels = { CREATED: '已入队', QUEUED: '排队', PREFLIGHT: '预检', INPUT: '准备输入', PROBE: '探针筛选', PROGRESS: '进度', TRAIN: '训练', VERIFY: '重加载验证', SAVE: '候选已保存', DONE: '结束', RECOVERED: '执行槽已恢复', ...stateLabels }
 
+export function taskTitle(job) {
+  if (job.request.kind === 'feature_activate') return `特征${job.request.action === 'rollback' ? '回滚' : '启用'} · 不训练模型`
+  if (job.request.kind === 'feature_build') return job.request.nightly_task_id ? '夜间全市场特征暂存构建' : `特征暂存构建 · 准备池 ${job.binding.pool_count} 只`
+  if (job.request.kind === 'model_workflow') return `${job.request.algorithm} · ${job.request.operation}`
+  if (job.request.kind === 'lightgbm_all_market') return `沪深 A 股全市场 · ${job.binding.pool_count} 只`
+  return job.request.ts_code
+}
+export function taskStatus(job) {
+  if (job.state === 'SUCCEEDED' && job.request.kind === 'feature_activate') return '特征切换完成 · 未训练模型'
+  if (job.state === 'SUCCEEDED' && job.request.kind === 'feature_build') return '特征暂存完成 · 未启用'
+  if (job.state === 'SUCCEEDED' && job.request.kind === 'model_workflow') return '工作流已完成'
+  return stateLabels[job.state] || job.state
+}
+
 export function buildTrainingRequest(draft) {
   const common = { kind: draft.kind, purpose: 'engineering_smoke', start_date: draft.start_date, end_date: draft.end_date }
   if (draft.kind === 'lightgbm_all_market') return { ...common, scope: 'all_shsz_a', profile: 'bounded_v1' }

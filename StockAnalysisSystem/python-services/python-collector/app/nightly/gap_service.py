@@ -21,13 +21,15 @@ from app.market_data.retry_policy import RETRYABLE_TASK_ERRORS
 
 class GapUpdateService:
     def __init__(self, tasks, coverage, imports, calendar, universe, acquirer,
-                 reference_loader, batch_store, data_root, *, clock=time.time,paths=None):
+                 reference_loader, batch_store, data_root, *, clock=time.time,paths=None,
+                 on_verified_suspensions=None):
         self.tasks, self.coverage, self.imports = tasks, coverage, imports
         self.calendar, self.universe, self.acquirer = calendar, universe, acquirer
         self.reference_loader, self.batch_store = reference_loader, batch_store
         self.data_root, self.clock = Path(data_root).resolve(), clock
         self.tasks.prepare_batch = self.prepare_batch
         self.paths=paths
+        self.on_verified_suspensions=on_verified_suspensions
 
     def _verified_reference(self,pinned):
         directory=resolve_reference(pinned['source_directory'],self.paths)
@@ -46,7 +48,13 @@ class GapUpdateService:
             return bundle
         return latest_local_reference(self.data_root,self.paths)
 
-    def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True):
+    def prepare_batch(self, start, end, *, now, pinned_reference=None, acquire_reference=True, persist=True,pool=None):
+        if pool is not None:
+            from copy import deepcopy
+            from app.preparation.contracts import validate_pool
+            from app.nightly.contracts import is_a_share
+            pool=deepcopy(validate_pool(pool))
+            if any(not is_a_share(code) for code in pool['codes']):raise ValueError('POOL_SCOPE_INVALID')
         first, last = market_day(start), market_day(end)
         local = now.astimezone(TZ)
         cutoff = local.date() if local.time() > daytime(16) else local.date()-timedelta(days=1)
@@ -67,6 +75,10 @@ class GapUpdateService:
         calendar = self.calendar.get(start, end, now, acquire=acquire_reference)
         if calendar is None:raise ValueError('LOCAL_VERIFIED_CALENDAR_REQUIRED')
         members = reference_rows(bundle['rows'])
+        if pool is not None:
+            selected=set(pool['codes'])
+            if not selected<={row['ts_code'] for row in members}:raise ValueError('POOL_REFERENCE_REQUIRED')
+            members=[row for row in members if row['ts_code'] in selected]
         codes = sorted({row['ts_code'] for row in members if row['ts_code'].endswith(('.SH', '.SZ'))
             and row['ts_code'][:1] in '036'})
         # make_coverage_snapshot validates/classifies the full reference; scans
@@ -77,6 +89,7 @@ class GapUpdateService:
             self.coverage.iter_keys('stock_daily', codes, start, end),
             self.coverage.iter_keys('stock_daily_basic', codes, start, end),
             reference_sha256=bundle['manifest_sha256'], acquired_at=bundle['acquired_at'])
+        if pool is not None:snapshot['registry_pool']=pool
         valid = eligible_bits(snapshot)
         missing_keys=((code,day) for code,bits in valid.items() for i,day in enumerate(snapshot['sessions'])
             if bits & (1 << i) and not int(snapshot['daily_bits'][code],16) & (1 << i))
@@ -99,6 +112,7 @@ class GapUpdateService:
             missing_daily=missing_daily, missing_basic=missing_basic, request_segments=len(daily)+len(basic),
             verified_no_quote=len(no_quote_sources),
             api_requests=0, verification_mode='missing-only', existing_data_revalidated=False, model_ready=False)
+        if pool is not None:summary.update(pool_version=pool['pool_version'],registry_stock_count=pool['stock_count'])
         if not persist:return summary
         batch = self.batch_store.create_or_load(snapshot, daily)
         reference_path=Path(batch['path'])/'reference.json'
@@ -146,10 +160,11 @@ class GapUpdateService:
         plan=plan_basic(snapshot,new_keys,include_existing=False)
         return self.batch_store.store_followup_plan(batch,request['id'],plan)
 
-    def _verify_no_quote(self,state,folder,daily_missing):
+    def _verify_no_quote(self,state,folder,daily_missing,*,registrar=None,owner_guard=None):
         keys={tuple(key) for key in state['verified_no_quote']}
         if not keys<=daily_missing:raise ValueError('NO_QUOTE_OUTSIDE_TARGET')
         native_sources={}
+        verified_rows={}
         for code,day in sorted(keys):
             proof=state['no_quote_sources'].get(code)
             if proof is None:raise ValueError('NO_QUOTE_PROOF_REQUIRED')
@@ -170,7 +185,18 @@ class GapUpdateService:
                 if (shard['raw_sha256']!=proof['raw_sha256'] or shard['manifest_sha256']!=proof['manifest_sha256']
                         or not events or not all(row['suspend_type']=='S' and row['suspend_timing'] is None for row in events)):
                     raise ValueError('NO_QUOTE_NATIVE_PROOF_CHANGED')
+                verified_rows.setdefault(source_key,{}).setdefault(code,events)
             else:raise ValueError('NO_QUOTE_PROOF_KIND_INVALID')
+        # Only export after EVERY native/registry proof has passed. The full
+        # market response stays sealed in its original directory; the canonical
+        # registry receives only this task's proven, full-day suspended members.
+        # Replaying a checkpoint reuses the content-addressed registration.
+        if registrar is not None:
+            for (_,day),by_code in sorted(verified_rows.items()):
+                registrar(dict(kind='suspend_d',provider='tushare.suspend_d',
+                    start_date=day,end_date=day,expected_codes=sorted(by_code),
+                    rows=[row for code in sorted(by_code) for row in by_code[code]]),
+                    owner_guard=owner_guard)
         return keys
 
     def execute(self, task, *, owner_token):
@@ -318,7 +344,8 @@ class GapUpdateService:
         self._stage(task, token, 'VERIFY')
         if self.batch_store.load(batch['batch_id']) != batch:
             raise ValueError('GAP_BATCH_BINDING_CHANGED')
-        noquote=self._verify_no_quote(state,folder,daily_missing)
+        noquote=self._verify_no_quote(state,folder,daily_missing,
+            registrar=self.on_verified_suspensions,owner_guard=guard)
         self.imports.owner_guard=guard
         try:
             for request,candidates,table in verified_receipts:

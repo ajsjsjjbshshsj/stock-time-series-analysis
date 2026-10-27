@@ -1,6 +1,6 @@
 """Read-only V0.7 forecast API."""
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, ExitStack
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,6 +17,14 @@ def _production_repository():
     config = dict(DATABASE_CONFIG, connect_timeout=5, read_timeout=5,
                   write_timeout=5, pool_timeout=5)
     return ForecastRepository(DatabaseConnector(config))
+
+
+def _production_task_connector(config):
+    # Full-market identity queries must not inherit the legacy five-second
+    # forecast/auth budget. Keep the same database and bounded pool admission.
+    from database.db_connector import DatabaseConnector
+    return DatabaseConnector(dict(config, connect_timeout=5, read_timeout=30,
+                                  write_timeout=10, pool_timeout=5))
 
 
 def _query(request, allowed):
@@ -49,37 +57,40 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     settings=auth_settings or AuthSettings.from_env()
     @asynccontextmanager
     async def lifespan(app):
-        if repository is None:
-            try:
-                app.state.repository = _production_repository()
-            except Exception:
-                app.state.repository = None
-        if evaluation_repository is None and app.state.repository is not None:
-            try:
-                from analysis.evaluation.repository import EvaluationRepository
-                app.state.evaluation_repository = EvaluationRepository(app.state.repository.connector)
-            except Exception:
-                app.state.evaluation_repository = None
-        if settings.mode=='protected' and auth_service is None and app.state.repository is not None:
-            from api.auth.repository import AuthRepository
-            from api.auth.service import AuthService
-            app.state.auth_service=AuthService(AuthRepository(app.state.repository.connector.engine),secret=settings.secret)
-        if settings.mode=='protected' and task_service is None and app.state.auth_service is not None:
-            from tasks.repository import TaskRepository
-            from tasks.service import TaskService
-            from tasks.source import SourceProvider
-            engine=app.state.auth_service.repo.engine
-            app.state.task_service=TaskService(TaskRepository(engine),SourceProvider(engine))
-        if workflow_service is None and app.state.task_service is not None:
-            from workflows.service import WorkflowService
-            from workflows.artifacts import ArtifactStore
-            from workflows.source import artifact_root
-            app.state.workflow_service=WorkflowService(app.state.task_service,ArtifactStore(artifact_root()))
-        try:
+        with ExitStack() as owned:
+            if repository is None:
+                try:
+                    app.state.repository = _production_repository()
+                except Exception:
+                    app.state.repository = None
+                if app.state.repository is not None:
+                    owned.callback(app.state.repository.connector.close)
+            if evaluation_repository is None and app.state.repository is not None:
+                try:
+                    from analysis.evaluation.repository import EvaluationRepository
+                    app.state.evaluation_repository = EvaluationRepository(app.state.repository.connector)
+                except Exception:
+                    app.state.evaluation_repository = None
+            if settings.mode=='protected' and auth_service is None and app.state.repository is not None:
+                from api.auth.repository import AuthRepository
+                from api.auth.service import AuthService
+                app.state.auth_service=AuthService(AuthRepository(app.state.repository.connector.engine),secret=settings.secret)
+            if settings.mode=='protected' and task_service is None and app.state.auth_service is not None:
+                from tasks.repository import TaskRepository
+                from tasks.service import TaskService
+                from tasks.source import SourceProvider
+                engine=app.state.auth_service.repo.engine
+                if repository is None and auth_service is None:
+                    connector=_production_task_connector(app.state.repository.connector.config)
+                    owned.callback(connector.close)
+                    engine=connector.engine
+                app.state.task_service=TaskService(TaskRepository(engine),SourceProvider(engine))
+            if workflow_service is None and app.state.task_service is not None:
+                from workflows.service import WorkflowService
+                from workflows.artifacts import ArtifactStore
+                from workflows.source import artifact_root
+                app.state.workflow_service=WorkflowService(app.state.task_service,ArtifactStore(artifact_root()))
             yield
-        finally:
-            if repository is None and app.state.repository is not None:
-                app.state.repository.connector.close()
 
     app = FastAPI(lifespan=lifespan,docs_url=None if settings.mode=='protected' else '/docs',
                   redoc_url=None if settings.mode=='protected' else '/redoc',
@@ -96,6 +107,18 @@ def create_app(repository=None, evaluation_repository=None, transformer_signals_
     register_task_routes(app)
     from workflows.routes import register_workflow_routes
     register_workflow_routes(app)
+    from api.collector import register_collector_routes
+    register_collector_routes(app)
+    from api.pools import register_pool_routes
+    register_pool_routes(app)
+    from api.preparation import register_preparation_routes
+    register_preparation_routes(app)
+    from feature_jobs.routes import register_feature_routes
+    register_feature_routes(app)
+    from automation.routes import register_daily_routes
+    register_daily_routes(app)
+    from prediction_portal.routes import register_prediction_routes
+    register_prediction_routes(app)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

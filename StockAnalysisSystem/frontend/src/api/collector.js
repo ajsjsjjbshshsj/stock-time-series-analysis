@@ -1,62 +1,32 @@
-/**
- * 数据采集接口层（对齐 python-collector）。
- * 后端目前只有 CLI，无 REST API；以下路径为设计约定，
- * 未来可由 collector 增加 FastAPI/Flask 薄封装实现。
- */
-import { request } from './client'
-import * as mock from '../mock/collector'
-
-/** GET /api/collector/commands — CLI 命令定义 */
-export function getCommandDefs() {
-  return request(() => mock.COMMAND_DEFS, '/api/collector/commands')
+/** Real administrator collection control plane; never falls back to mock. */
+import { authApi } from './auth.js'
+const BASE = '/api/admin/collector'
+function identity(id) {
+  if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw new Error('采集任务编号无效')
+  return id
 }
-
-/** GET /api/collector/output-modes — COLLECTOR_OUTPUT_MODE 说明 */
-export function getOutputModes() {
-  return request(
-    () => ({ current: mock.CURRENT_OUTPUT_MODE, modes: mock.OUTPUT_MODES }),
-    '/api/collector/output-modes',
-  )
+function page(client, path, { limit = 20, offset = 0, request_id, signal } = {}) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50 || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000) throw new Error('采集分页参数无效')
+  const query = new URLSearchParams({ limit, offset })
+  if (request_id) query.set('request_id', identity(request_id))
+  return client.request(`${BASE}/${path}?${query}`, 'GET', undefined, { signal })
 }
-
-/** GET /api/collector/tasks — collection_task 列表 */
-export function listTasks() {
-  return request(() => mock.listTasks(), '/api/collector/tasks')
+export function createCollectorApi(client = authApi) {
+  return {
+    capabilities: options => client.request(`${BASE}/capabilities`, 'GET', undefined, options),
+    summary: options => client.request(`${BASE}/summary`, 'GET', undefined, options),
+    requests: options => page(client, 'requests', options),
+    tasks: options => page(client, 'tasks', options),
+    task: (id, options) => client.request(`${BASE}/tasks/${identity(id)}`, 'GET', undefined, options),
+    submit: (body, key, options = {}) => {
+      if (typeof body?.start !== 'string' || typeof body?.end !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.start) || !/^\d{4}-\d{2}-\d{2}$/.test(body.end) || body.start > body.end) throw new Error('请检查采集起止日期')
+      return client.request(`${BASE}/requests`, 'POST', body, { ...options, headers: { 'Idempotency-Key': identity(key) } })
+    },
+    retry: (id, key, options = {}) => client.request(`${BASE}/tasks/${identity(id)}/retry`, 'POST', {}, { ...options, headers: { 'Idempotency-Key': identity(key) } }),
+    preview: (table, options) => {
+      if (!['stock_basic', 'stock_daily', 'stock_daily_basic'].includes(table)) throw new Error('数据表无效')
+      return client.request(`${BASE}/preview/${table}?limit=20`, 'GET', undefined, options)
+    },
+  }
 }
-
-/** GET /api/collector/tasks/summary — 任务状态汇总 */
-export function getTaskSummary() {
-  return request(() => mock.taskSummary(), '/api/collector/tasks/summary')
-}
-
-/** POST /api/collector/tasks — 提交采集任务（body: {cmd, params, source}） */
-export function submitTask(cmd, params) {
-  return request(
-    () => mock.submitTask(cmd, params),
-    '/api/collector/tasks',
-    { method: 'POST', body: JSON.stringify({ cmd, params }) },
-  )
-}
-
-/** POST /api/collector/tasks/retry-failed — 重试当前数据源全部失败任务 */
-export function retryFailedTasks(source) {
-  return request(
-    () => mock.retryFailedTasks(source),
-    '/api/collector/tasks/retry-failed',
-    { method: 'POST', body: JSON.stringify({ source }) },
-  )
-}
-
-/** POST /api/collector/tasks/:id/retry — 单任务重试 */
-export function retryTask(id) {
-  return request(
-    () => mock.retryTask(id),
-    `/api/collector/tasks/${id}/retry`,
-    { method: 'POST' },
-  )
-}
-
-/** GET /api/collector/tables/:table — 四张数据表预览 */
-export function getTableData(table) {
-  return request(() => mock.getTableData(table), `/api/collector/tables/${table}`)
-}
+export const collectorApi = createCollectorApi()

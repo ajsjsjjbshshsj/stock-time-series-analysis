@@ -6,6 +6,8 @@
       <dt>实际信号截止</dt><dd>{{ displayContext.signalEnd }}</dd>
       <dt>数据源截止</dt><dd>{{ displayContext.dataCutoff }}</dd><dt>模型已见数据</dt><dd>{{ value.report.seen_through || '见模型记录' }}</dd>
       <dt>股票池</dt><dd>{{ displayContext.poolLabel }}<template v-if="displayContext.stockCodes"><br />{{ displayContext.stockCodes }}</template></dd>
+      <template v-if="displayContext.poolVersion"><dt>固定池版本</dt><dd><code>{{ displayContext.poolVersion }}</code></dd>
+        <dt>股票池来源</dt><dd>{{ displayContext.poolGroup }} · {{ displayContext.poolProvider }} · {{ displayContext.poolSnapshotDate }}<template v-if="displayContext.registryStockCount != null"> · 归属池 {{ displayContext.registryStockCount }}只</template></dd></template>
       <dt v-if="value.report.scored_stocks != null">实际参与评分</dt><dd v-if="value.report.scored_stocks != null">{{ value.report.scored_stocks }} 只；可能因逐日资格与固定池数量不同</dd>
       <dt>分数量纲</dt><dd>{{ scoreLabel(value.report.score_units) }}</dd><dt>持有周期</dt><dd>{{ value.report.holding_sessions }} 交易日 · 标签偏移 {{ value.report.horizon }}</dd>
       <dt>样本属性</dt><dd>{{ value.report.sample_relation === 'post_model_selection' ? '模型选定后的样本' : '历史研究结果（不等于独立样本外验证）' }}</dd></dl>
