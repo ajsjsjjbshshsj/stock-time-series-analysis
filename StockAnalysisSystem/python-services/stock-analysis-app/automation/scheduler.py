@@ -1,11 +1,12 @@
 """Restart-safe coordinator; existing owned worker remains the sole executor."""
 from datetime import datetime
 import time,os
-from tasks.contracts import digest
+from tasks.contracts import digest,TaskFailure
 from tasks.source import read_calendar
 from .gate import NightlyGate,due_session,TZ
 from .repository import DailyRepository,cycles,runs
 from .service import DailyService
+from .admission import check_resources,retry_state,retryable_preflight,attempt_key,RETRY_SECONDS
 
 TERMINAL={'FAILED','CANCELLED','INTERRUPTED'}
 
@@ -27,26 +28,30 @@ class DailyScheduler:
         self.next_calendar_refresh=0
 
     def queue(self,actor,request,key):
+        check_resources()
         return self.tasks.create(actor,request,digest(key)[:32])
 
     def cycle(self,cycle):
         state=cycle['state'];day=cycle['day'];actor=cycle['actor_id'];key=dict(day=day,proof=cycle['proof_sha256'])
         self.service.admin(actor)
-        if state.get('status') in ('READY','BLOCKED'):return cycle
-        new=dict(state)
+        now=int(self.clock())
+        if state.get('status') in ('READY','BLOCKED') or state.get('retry_at',0)>now:return cycle
+        new={k:v for k,v in state.items() if k not in ('reason','retry_at')}
         if not state.get('build_task'):
-            job=self.queue(actor,dict(kind='feature_build',nightly_task_id=cycle['proof']['task_id']),dict(key,step='build'))
+            job=self.queue(actor,dict(kind='feature_build',nightly_task_id=cycle['proof']['task_id']),attempt_key(dict(key,step='build'),state,'build_task'))
             new.update(build_task=job['id'],status='BUILDING')
         else:
             build=self.tasks.get(state['build_task'])
-            if build['state'] in TERMINAL:new.update(status='BLOCKED',reason='FEATURE_BUILD_FAILED')
+            if build['state'] in TERMINAL:
+                new=retry_state(self.tasks.repo.engine,state,'build_task',build,now) or dict(new,status='BLOCKED',reason='FEATURE_BUILD_FAILED')
             elif build['state']=='SUCCEEDED':
                 if not state.get('activation_task'):
-                    job=self.queue(actor,dict(kind='feature_activate',feature_task_id=build['id'],action='activate'),dict(key,step='activate'))
+                    job=self.queue(actor,dict(kind='feature_activate',feature_task_id=build['id'],action='activate'),attempt_key(dict(key,step='activate'),state,'activation_task'))
                     new.update(activation_task=job['id'],status='ACTIVATING')
                 else:
                     activation=self.tasks.get(state['activation_task'])
-                    if activation['state'] in TERMINAL:new.update(status='BLOCKED',reason='FEATURE_ACTIVATION_FAILED')
+                    if activation['state'] in TERMINAL:
+                        new=retry_state(self.tasks.repo.engine,state,'activation_task',activation,now) or dict(new,status='BLOCKED',reason='FEATURE_ACTIVATION_FAILED')
                     elif activation['state']=='SUCCEEDED':new.update(status='READY',build_id=activation['candidate']['build_id'])
         self.repo.update(cycles,day,state,new)
         return self.repo.cycle(day,cycle['proof'],actor)
@@ -54,12 +59,14 @@ class DailyScheduler:
     def advance(self,plan,day,now):
         run=self.repo.run(plan,day);state=run['state']
         if state.get('status') in ('COMPLETE','BLOCKED') or state.get('retry_at',0)>now:return
-        new=dict(state)
+        new={k:v for k,v in state.items() if k not in ('reason','retry_at')}
         try:
             self.service.validate(plan)
             if state.get('prediction_task'):
                 job=self.tasks.get(state['prediction_task'])
-                new.update(prediction_outcome(job))
+                retry=retry_state(self.tasks.repo.engine,state,'prediction_task',job,now)
+                if retry is not None:new=retry
+                else:new.update(prediction_outcome(job))
             else:
                 proof=self.gate.current(day)
                 cycle=self.cycle(self.repo.cycle(day,proof,plan['actor_id']))
@@ -68,9 +75,16 @@ class DailyScheduler:
                     # Explicit saved model + exact active feature pin, never train/import.
                     job=self.queue(plan['actor_id'],dict(kind='model_workflow',operation='predict',algorithm=plan['proof']['algorithm'],
                         model_id=plan['model_id'],start_date=day,end_date=day,feature_build_id=cycle['state']['build_id']),
-                        dict(plan=plan['id'],day=day,proof=plan['proof_sha256'],step='predict'))
+                        attempt_key(dict(plan=plan['id'],day=day,proof=plan['proof_sha256'],step='predict'),state,'prediction_task'))
                     new.update(status='PREDICTING',prediction_task=job['id'])
-                else:new.update(status=cycle['state'].get('status','WAITING_FEATURES'))
+                else:
+                    new.update(status=cycle['state'].get('status','WAITING_FEATURES'))
+                    for field in ('reason','retry_at'):
+                        if field in cycle['state']:new[field]=cycle['state'][field]
+        except TaskFailure as error:
+            if error.code=='RESOURCE_UNAVAILABLE':
+                new.update(status='WAITING_DEPENDENCY',reason=error.code,retry_at=now+RETRY_SECONDS)
+            else:new.update(status='BLOCKED',reason=error.code)
         except (ValueError,PermissionError):new.update(status='BLOCKED',reason='BOUNDARY_OR_ROLE_CHANGED')
         except Exception:new.update(status='WAITING_DEPENDENCY',reason='DEPENDENCY_NOT_READY',retry_at=now+60)
         self.repo.update(runs,run['id'],state,new)
@@ -85,7 +99,10 @@ class DailyScheduler:
             state=run['state']
             if state.get('status') in ('COMPLETE','BLOCKED'):continue
             if state.get('prediction_task'):
-                outcome=prediction_outcome(self.tasks.get(state['prediction_task']))
+                job=self.tasks.get(state['prediction_task'])
+                if (run['day']==today and self.repo.get(run['plan_id'])['enabled']
+                        and retryable_preflight(self.tasks.repo.engine,job)):continue
+                outcome=prediction_outcome(job)
                 if outcome:self.repo.update(runs,run['id'],state,dict(state,**outcome))
                 continue
             if run['day']<today:self.repo.update(runs,run['id'],state,dict(state,status='BLOCKED',reason='SESSION_EXPIRED'))
