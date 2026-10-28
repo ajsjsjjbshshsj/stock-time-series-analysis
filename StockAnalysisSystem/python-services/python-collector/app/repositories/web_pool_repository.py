@@ -78,11 +78,36 @@ class WebPools:
                 if not rows: raise PoolUnavailable('POOL_EMPTY')
                 members = [dict(ts_code=r['ts_code'],weight=None) for r in rows]
                 source_rows = rows
+        return self._freeze(kind,code,requested,now,source_date,members,source_rows)
+
+    @staticmethod
+    def _freeze(kind,code,requested,now,source_date,members,source_rows):
         provider = 'local.stock_constituent' if kind=='index' else 'local.stock_basic'
         display = {'market':'沪深A股全市场','index':{'000300.SH':'沪深300','000852.SH':'中证1000'}.get(code),'industry':code}[kind]
         metadata = dict(pool_id=kind+':'+code,display_name=display,group_type=kind,group_code=code,provider=provider,
             requested_as_of=requested,provider_snapshot_date=source_date,acquired_at=now.isoformat())
         return freeze_local(metadata,members,identity(dict(provider=provider,date=source_date,rows=source_rows)))
+
+    def prediction_candidates(self):
+        """Read existing classifications once; never acquire data or save versions.
+
+        Current industry membership is deliberately not historical PIT membership.
+        Content identities let submit reject a classification changed since GET.
+        """
+        now=self.clock().astimezone(TZ);day=now.date().isoformat()
+        with transaction(self.factory) as session:basic=self._basic(session)
+        groups={}
+        for row in basic:
+            if row['industry']:groups.setdefault(row['industry'],[]).append(row)
+        candidates=[]
+        for kind,code,rows in [('market','SH_SZ_A',basic)]+[('industry',k,v) for k,v in sorted(groups.items())]:
+            if rows:
+                candidates.append(self._freeze(kind,code,day,now,None,
+                    [dict(ts_code=r['ts_code'],weight=None) for r in rows],rows))
+        for code in INDEX_COUNTS:
+            try:candidates.append(self.candidate('index',code,as_of=day))
+            except PoolUnavailable:continue  # Missing/partial index is not a substitute market pool.
+        return candidates
 
     def get(self, selected):
         version(selected)

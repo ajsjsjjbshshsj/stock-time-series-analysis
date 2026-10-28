@@ -5,8 +5,17 @@
     <p v-if="!allowed()" role="status">请登录后使用已上线模型；不提供训练功能。</p>
     <p v-else-if="!models.length&&!busy&&!error" role="status">暂时没有上线的预测模型。请联系管理员在模型工作台审核上线；系统不会用演示结果替代。</p>
     <p v-if="error" role="alert">{{error}}</p>
-    <form @submit.prevent="submit"><label>股票池<select aria-label="股票池" v-model="pool" :disabled="busy||!models.length" required><option value="">请选择固定股票池</option><option v-for="p in pools" :key="p.pool_version" :value="p.pool_version">{{p.display_name}} · {{p.stock_count}}只</option></select></label><label>预测模型<select aria-label="预测模型" v-model="model" :disabled="busy||!pool" required><option value="">请选择支持此池的模型</option><option v-for="m in compatible" :key="m.id" :value="m.id">{{m.algorithm}} · {{m.title}} · {{m.id.slice(0,8)}}</option></select></label><button class="btn btn-primary" :disabled="busy||!model||!pool">{{busy?'正在处理…':'开始预测'}}</button></form>
-    <p class="muted">只展示模型支持的完整股票池。沪深300、中证1000或行业池需有固定版本和兼容模型；不自动换池、缩池或补造数据。</p>
+    <form @submit.prevent="submit">
+      <label>股票池类型<select aria-label="股票池类型" v-model="kind" :disabled="busy||!models.length"><option value="model">模型固定池</option><option value="index">指数股票池</option><option value="industry">行业股票池</option><option value="market">沪深A股全市场</option></select></label>
+      <label v-if="kind==='industry'">搜索行业<input aria-label="搜索行业" v-model="search" placeholder="例如：银行、电气设备" :disabled="busy" /></label>
+      <label>股票池<select aria-label="股票池" v-model="pool" :disabled="busy||!models.length" required><option value="">请选择股票池</option><option v-for="p in pools" :key="p.pool_version" :value="p.pool_version">{{p.display_name}} · {{p.stock_count}}只{{p.provider_snapshot_date?' · '+p.provider_snapshot_date:''}} · {{p.pool_version.slice(-8)}}</option></select></label>
+      <label>预测模型<select aria-label="预测模型" v-model="model" :disabled="busy||!pool" required><option value="">请选择支持此池的模型</option><option v-for="m in modelChoices" :key="m.id" :value="m.id" :disabled="!m.compatible">{{m.algorithm}} · 冻结{{m.inference_pool_count}}只 · {{m.id.slice(0,8)}}{{m.compatible?'':' · '+incompatibilityLabel(m)}}</option></select></label>
+      <button class="btn btn-primary" :disabled="busy||!model||!pool||!compatible.some(m=>m.id===model)">{{busy?'正在处理…':'开始预测'}}</button>
+    </form>
+    <div v-if="selectedPool" class="pool-proof"><strong>{{selectedPool.display_name}} · 完整成员 {{selectedPool.stock_count}}只</strong><span>{{poolSourceLabel(selectedPool)}}</span><code>版本 {{selectedPool.pool_version}}</code></div>
+    <p v-if="!pools.length&&models.length" role="status">{{kind==='industry'?'没有匹配的本地行业，请调整搜索词。':'本地尚无可用的此类股票池；请联系管理员检查成分快照。'}}</p>
+    <p v-if="pool&&!compatible.length" role="status">暂无支持此完整股票池的已上线模型。可以选择模型固定池，或请管理员训练、上线兼容模型；系统不会偷偷缩池。</p>
+    <p class="muted">行业直接来自本地 stock_basic 分类。指数使用已有成分快照；不自动采集、换池或补造数据。模型固定池与当前沪深全市场成员数可能不同。</p>
     <div v-if="job" class="prediction-status" aria-live="polite"><strong>{{labels[job.state]||job.state}}</strong><span>信号日期 {{job.signal_date}} · 模型 {{job.model_id.slice(0,12)}} · 所选池 {{job.selection.stock_count}}只</span><button class="btn btn-sm" :disabled="busy" @click="refreshJob">刷新状态</button></div>
     <p v-if="job&&['FAILED','CANCELLED','INTERRUPTED','NOT_READY'].includes(job.state)" role="alert">未得到完整结果，请联系管理员核查数据或任务。再次点击不会偷偷重训或反复重试。</p>
     <template v-if="result"><div class="result-heading"><h3>预测排行</h3><span class="muted">数据截止 {{result.report.data_cutoff}} · {{scoreLabel(result.report.score_units)}}</span></div><p v-if="result.report.sample_relation!=='post_model_selection'" class="research-note">这是历史研究结果，不等于独立样本外验证，也不是实时行情预测。</p><p class="muted">模型按原冻结池 {{job.inference_pool_count}}只计算，这里仅筛选所选池。停牌、上市时间或数据资格可能导致部分股票无分数；原模型排名不因筛选而重新归一化。</p>
@@ -19,10 +28,14 @@ import {computed,ref,watch,onMounted,onBeforeUnmount} from 'vue'
 import {authState} from '../stores/auth.js'
 import {userPredictionApi as api} from '../api/userPredictions.js'
 import {scoreLabel} from '../utils/workflows.js'
+import {poolOptions,modelOptions,incompatibilityLabel,poolSourceLabel} from '../utils/poolSelection.js'
 import DataTable from './DataTable.vue'
 import ChartBox from './ChartBox.vue'
 const models=ref([]),pool=ref(''),model=ref(''),job=ref(null),result=ref(null),error=ref(''),busy=ref(false),after=ref(0)
-const pools=computed(()=>[...new Map(models.value.flatMap(m=>m.pools).map(p=>[p.pool_version,p])).values()])
+const catalogPools=ref([]),kind=ref('model'),search=ref('')
+const pools=computed(()=>poolOptions(catalogPools.value,kind.value,search.value))
+const selectedPool=computed(()=>catalogPools.value.find(p=>p.pool_version===pool.value))
+const modelChoices=computed(()=>modelOptions(models.value,pool.value))
 const compatible=computed(()=>models.value.filter(m=>m.pools.some(p=>p.pool_version===pool.value)))
 const labels={QUEUED:'等待后台计算',RUNNING:'正在预测',CANCEL_REQUESTED:'后台正在停止任务',SUCCEEDED:'预测结果已保存',FAILED:'预测失败',CANCELLED:'任务已取消',INTERRUPTED:'执行中断',NOT_READY:'结果未就绪'}
 const pending=()=>job.value&&['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(job.value.state)
@@ -37,15 +50,17 @@ function begin(){pause();request=new AbortController();busy.value=true;error.val
 async function loadScores(run,cursor=0){const data=await api.scores(job.value.id,{after:cursor,signal:request.signal});if(current(run)){result.value=data;after.value=cursor}}
 function schedule(run){if(current(run)&&pending()&&!document.hidden)timer=setTimeout(refreshJob,3000)}
 async function catalog(){if(!allowed())return;const run=begin();job.value=null;result.value=null
-  try{const value=await api.catalog({signal:request.signal});if(current(run)){models.value=value.models;if(!models.value.some(m=>m.id===model.value)){pool.value='';model.value=''}}}catch(e){if(current(run)&&e.name!=='AbortError'){models.value=[];error.value=e.message}}finally{if(current(run))busy.value=false}}
-async function submit(){if(busy.value||!allowed()||!model.value||!pool.value)return;const run=begin();result.value=null;job.value=null
+  try{const value=await api.catalog({signal:request.signal});if(current(run)){models.value=value.models;catalogPools.value=value.pools||[...new Map(value.models.flatMap(m=>m.pools).map(p=>[p.pool_version,p])).values()];if(!pools.value.some(p=>p.pool_version===pool.value))pool.value='';if(!compatible.value.some(m=>m.id===model.value))model.value=''}}catch(e){if(current(run)&&e.name!=='AbortError'){models.value=[];catalogPools.value=[];error.value=e.message}}finally{if(current(run))busy.value=false}}
+async function submit(){if(busy.value||!allowed()||!compatible.value.some(m=>m.id===model.value)||!pool.value)return;const run=begin();result.value=null;job.value=null
   try{const value=await api.submit({model_id:model.value,pool_version:pool.value},{signal:request.signal});if(!current(run))return;job.value=value;if(value.result_ready)await loadScores(run);schedule(run)}catch(e){if(current(run)&&e.name!=='AbortError')error.value=e.message}finally{if(current(run))busy.value=false}}
 async function refreshJob(){if(!allowed()||!job.value)return;const id=job.value.id,run=begin()
   try{const value=await api.status(id,{signal:request.signal});if(!current(run))return;job.value=value;if(value.result_ready)await loadScores(run);schedule(run)}catch(e){if(current(run)&&e.name!=='AbortError'){result.value=null;error.value=e.message}}finally{if(current(run))busy.value=false}}
 async function scores(cursor){if(!allowed()||!job.value||busy.value)return;const run=begin();try{await loadScores(run,cursor)}catch(e){if(current(run)&&e.name!=='AbortError'){result.value=null;error.value=e.message}}finally{if(current(run))busy.value=false}}
 watch(pool,()=>{clear();if(!compatible.value.some(m=>m.id===model.value))model.value=''},{flush:'sync'})
 watch(model,clear,{flush:'sync'})
-watch(()=>[authState.mode,authState.user?.id,authState.user?.role,authState.user?.must_change_password],()=>{clear();models.value=[];pool.value='';model.value='';catalog()},{flush:'sync'})
+watch(kind,()=>{search.value='';pool.value='';model.value='';clear()},{flush:'sync'})
+watch(search,()=>{if(!pools.value.some(p=>p.pool_version===pool.value)){pool.value='';model.value='';clear()}},{flush:'sync'})
+watch(()=>[authState.mode,authState.user?.id,authState.user?.role,authState.user?.must_change_password],()=>{clear();models.value=[];catalogPools.value=[];pool.value='';model.value='';catalog()},{flush:'sync'})
 function visibility(){if(document.hidden)pause();else if(job.value)refreshJob()}
 onMounted(()=>{catalog();document.addEventListener('visibilitychange',visibility)})
 onBeforeUnmount(()=>{live=false;clear();document.removeEventListener('visibilitychange',visibility)})
@@ -54,6 +69,7 @@ onBeforeUnmount(()=>{live=false;clear();document.removeEventListener('visibility
 .prediction-panel{padding:26px;display:grid;gap:16px;border-top:3px solid var(--accent,#4f8fca);min-width:0}.prediction-panel header,.prediction-status,.result-heading,.page-actions{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}.prediction-panel h2,.prediction-panel h3,.prediction-panel p{margin:0}.eyebrow{font-size:12px;letter-spacing:.08em;color:var(--text-3);margin-bottom:8px!important}.prediction-panel form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:16px;align-items:end}.prediction-panel label{display:grid;gap:8px}.prediction-panel select{width:100%;min-height:42px;min-width:0}.muted{color:var(--text-3);font-size:13px;line-height:1.75}.prediction-status{border-block:1px solid var(--border);padding:16px 0}.prediction-status span{font-size:13px}.research-note{border-left:3px solid var(--warning,#c59a47);padding:10px 14px;line-height:1.7}[role=alert]{color:var(--serious);line-height:1.7}@media(max-width:720px){.prediction-panel{padding:18px}.prediction-panel form{grid-template-columns:1fr}}
 .prediction-panel{grid-template-columns:minmax(0,1fr)}
 .prediction-panel>* , .prediction-panel label{min-width:0}
+.prediction-panel form{grid-template-columns:repeat(2,minmax(0,1fr)) auto}.prediction-panel input{min-height:42px;width:100%;box-sizing:border-box}.pool-proof{display:grid;gap:7px;padding:12px 16px;border-left:3px solid var(--accent,#4f8fca);background:var(--bg-2,transparent);font-size:13px}.pool-proof span,.pool-proof code{color:var(--text-3);overflow-wrap:anywhere}
 .prediction-panel header>div,.prediction-status span,.result-heading span{overflow-wrap:anywhere;min-width:0}
 @media(max-width:720px){.prediction-panel form{grid-template-columns:minmax(0,1fr)}}
 </style>

@@ -20,6 +20,8 @@ class PredictionService:
         if pools is None:
             from api.preparation import production_services
             _,pools,_=production_services(self.engine)
+            from .pools import PredictionPools
+            pools=PredictionPools(pools)
         self.pools=pools
         if workflow is None:
             from workflows.service import WorkflowService
@@ -75,18 +77,32 @@ class PredictionService:
     def catalog(self,actor):
         with self.engine.connect() as c:
             account(c,actor);ids=c.execute(select(releases.c.model_id).where(releases.c.enabled==True).order_by(releases.c.model_id).limit(20)).scalars().all()
-        versions=self.pools.versions(limit=50)['items'] if ids else [];models=[]
+        choices=getattr(self.pools,'choices',None)
+        versions=(choices() if choices else self.pools.versions(limit=50)['items']) if ids else []
+        models=[];catalog={}
+        fields=('pool_version','display_name','stock_count','group_type','group_code','provider',
+            'requested_as_of','provider_snapshot_date','survivorship_bias')
+        for pool in versions:catalog[pool['pool_version']]={k:pool[k] for k in fields if k in pool}
         for id in ids:
             with self.engine.connect() as c:release=self.approved(c,id)
             proof=self.model_proof(id)
             if proof!=release['proof']:raise ValueError('Approved model seal changed')
             options=[self.selection(proof,'model_'+id)]
+            fixed={k:options[0][k] for k in ('pool_version','display_name','stock_count')}
+            fixed.update(group_type='model',group_code=id,provider='frozen_model')
+            catalog[fixed['pool_version']]=fixed
+            incompatible=[]
             for pool in versions:
-                try:options.append(self.selection(proof,pool['pool_version']))
-                except ValueError:continue  # Unsupported complete pool, never intersect it.
+                codes=pool.get('codes')
+                if codes is None:codes=self.pools.get(pool['pool_version'])['codes']
+                unsupported=set(codes)-set(proof['stock_codes'])
+                if unsupported:
+                    incompatible.append(dict(pool_version=pool['pool_version'],reason='OUTSIDE_FROZEN_MODEL_POOL',unsupported_stock_count=len(unsupported)))
+                else:
+                    options.append(dict(pool_version=pool['pool_version'],display_name=pool['display_name'],stock_count=len(codes)))
             models.append(dict(id=id,title=proof['title'],algorithm=proof['algorithm'],model_sha256=proof['manifest_sha256'],
-                inference_pool_count=len(proof['stock_codes']),pools=[{k:p[k] for k in ('pool_version','display_name','stock_count')} for p in options]))
-        return dict(models=models,training_allowed=False,requires_result_publication=False)
+                inference_pool_count=len(proof['stock_codes']),pools=[{k:p[k] for k in ('pool_version','display_name','stock_count')} for p in options],incompatible_pools=incompatible))
+        return dict(models=models,pools=list(catalog.values()),training_allowed=False,requires_result_publication=False)
 
     def admin_models(self,actor):
         with self.engine.connect() as c:
