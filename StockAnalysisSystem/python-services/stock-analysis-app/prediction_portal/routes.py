@@ -47,6 +47,11 @@ def register_prediction_routes(app):
     async def models(request:Request):
         s,a=await guard(request,admin=True);query(request,set());return await run_in_threadpool(call,s.admin_models,a)
 
+    @app.get('/api/analysis/user-predictions/{id}/coverage')
+    async def coverage(id:str,request:Request,limit:str='20',after:str='0'):
+        s,a=await guard(request);query(request,{'limit','after'})
+        return await run_in_threadpool(call,s.coverage,a,id,limit=number(limit,1,100),after=number(after,0,10000))
+
     @app.post('/api/admin/prediction-models/{id}')
     async def release(id:str,request:Request):
         s,a=await guard(request,admin=True,write=True);query(request,set());value=await body(request)

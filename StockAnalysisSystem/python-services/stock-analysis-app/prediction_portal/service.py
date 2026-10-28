@@ -232,3 +232,15 @@ class PredictionService:
             raise Conflict('Requested date has no complete prediction')
         if any(r.get('ts_code') not in selected['stock_codes'] for r in value['rows']):raise ValueError('Prediction selection escaped')
         return dict(prediction=status,report=value['report'],rows=value['rows'],next_cursor=value['next_cursor'],view='filtered_frozen_model_pool',requires_publication=False)
+
+    def coverage(self,actor,key,*,limit=20,after=0):
+        # Reuse the same grant, approval, cache-binding, date and full seal checks
+        # as score access. No today's database classification can explain history.
+        value=self.result(actor,key,limit=1)
+        row,_=self.authorized(actor,key)
+        id=row['result_id'] or row['task_id']
+        from .coverage import read_coverage
+        result=read_coverage(self.workflow.store.path(id),json.loads(row['selection'])['stock_codes'],
+            value['prediction']['signal_date'],limit=limit,after=after)
+        self.workflow._verified(self.workflow.repo.get_result(id),'result')
+        return dict(result,prediction=value['prediction'])
