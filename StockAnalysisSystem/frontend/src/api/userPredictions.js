@@ -13,6 +13,10 @@ export function createUserPredictionApi(client=authApi){return {
     if(!Number.isSafeInteger(after)||after<0||after>10000000)throw Error('预测分页无效')
     return client.request(`${BASE}/${id(value)}/scores?limit=50&after=${after}`,'GET',undefined,{signal})
   },
+  coverage:(value,{after=0,signal}={})=>{
+    if(!Number.isSafeInteger(after)||after<0||after>10000)throw Error('缺失分数分页无效')
+    return client.request(`${BASE}/${id(value)}/coverage?limit=20&after=${after}`,'GET',undefined,{signal})
+  },
   releases:options=>client.request('/api/admin/prediction-models','GET',undefined,options),
   release:(model,enabled,options)=>{if(typeof enabled!=='boolean')throw Error('请明确模型上线状态');return client.request('/api/admin/prediction-models/'+id(model,32),'POST',{enabled},options)},
 }}
