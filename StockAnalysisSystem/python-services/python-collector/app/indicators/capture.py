@@ -11,10 +11,22 @@ def _normal(sql):return re.sub(r'\s+',' ',sql).strip().rstrip(';')
 
 
 def _metadata_compatible(schema, dialect, *, tables=None):
-    def type_name(kind):
+    def type_name(kind, inherited_collation, inherited_charset):
+        # Reflection may spell out a table's inherited non-server-default
+        # collation although our type declaration leaves it unspecified.
+        # Ignore only that effective default, never an explicit column drift.
+        matching_collation=inherited_collation and getattr(kind,'collation',None)==inherited_collation
+        matching_charset=inherited_charset and getattr(kind,'charset',None)==inherited_charset
+        if matching_collation or matching_charset:
+            kind=kind.copy()
+            if matching_collation:kind.collation=None
+            if matching_charset:kind.charset=None
         name=_normal(kind.compile(dialect=dialect)).upper()
         return 'TINYINT(1)' if dialect.name=='mysql' and name in ('BOOL','BOOLEAN') else name
     for table in metadata.tables.values() if tables is None else tables:
+        options=schema.get_table_options(table.name) if dialect.name=='mysql' else {}
+        inherited_collation=options.get('mysql_collate')
+        inherited_charset=options.get('mysql_default charset',options.get('mysql_default_charset'))
         actual={column['name']:column for column in schema.get_columns(table.name)}
         if (set(actual)!=set(table.c.keys())
                 or schema.get_pk_constraint(table.name)['constrained_columns']!=[c.name for c in table.primary_key]):
@@ -22,7 +34,7 @@ def _metadata_compatible(schema, dialect, *, tables=None):
         for column in table.c:
             found=actual[column.name]
             if (found['nullable']!=column.nullable
-                    or type_name(found['type'])!=type_name(column.type.dialect_impl(dialect))):
+                    or type_name(found['type'],inherited_collation,inherited_charset)!=type_name(column.type.dialect_impl(dialect),inherited_collation,inherited_charset)):
                 raise ValueError('Existing indicator metadata column drift')
         indexes={tuple(i['column_names']) for i in schema.get_indexes(table.name) if not i['unique']}
         if not {tuple(c.name for c in index.columns) for index in table.indexes}.issubset(indexes):
