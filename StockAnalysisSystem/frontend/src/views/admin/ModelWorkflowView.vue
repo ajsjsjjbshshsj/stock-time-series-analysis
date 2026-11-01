@@ -24,7 +24,7 @@
         <template v-else><label>原工程任务编号<input v-model="draft.import_task_id" maxlength="32" placeholder="与下方实验来源二选一" /></label><label>验证实验编号<input v-model="draft.experiment_id" maxlength="32" /></label><label>实验分支<select v-model="draft.trial"><option v-for="t in trials" :key="t">{{ t }}</option></select></label><p>只接收已有成功任务 / 封存实验编号，不接收文件路径或上传模型。实验分支仅支持 LightGBM。</p></template>
         <button class="btn btn-primary" :disabled="busy || !caps || caps.execution.quarantined || draft.operation==='train' && draft.pool_version && !poolReady">{{ busy ? '处理中…' : '提交后台任务' }}</button>
       </form>
-      <p class="muted">所有模型共用单执行槽；默认上限：进程树6 GiB、60分钟。全市场构建要求空闲内存≥8 GiB、临时磁盘≥16 GiB。关闭网页不影响任务。模型与旧封存包不会覆盖；发布必须另行确认。</p>
+      <p class="muted">所有模型共用单执行槽；进程树上限6 GiB，当前执行安全上限3小时（不改变已封存模型的训练配置）。全市场构建要求空闲内存≥8 GiB、临时磁盘≥16 GiB。关闭网页不影响任务。模型与旧封存包不会覆盖；发布必须另行确认。</p>
     </section>
     <DailyPredictionPanel :models="models.items" />
     <ModelReleasePanel :models="models.items" />
