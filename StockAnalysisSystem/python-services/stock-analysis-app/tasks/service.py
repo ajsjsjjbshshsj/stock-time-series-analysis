@@ -169,6 +169,8 @@ class TaskService:
                 or slot['quarantined'] or slot['lease_until']<=int(self.clock())):
             raise LeaseLost('Execution lease unavailable')
         row=self._row(c,task_id)
+        if slot['lease_until']<=int(self.clock()):
+            raise LeaseLost('Execution lease expired during task read')
         if row['state'] not in ('RUNNING','CANCEL_REQUESTED'):raise LeaseLost('Task not owned')
         return row
 
@@ -177,7 +179,7 @@ class TaskService:
             row=self._owned(c,slot,task_id,worker_id,generation);now=int(self.clock())
             c.execute(slots.update().where(slots.c.id==1).values(lease_until=now+30))
             c.execute(tasks.update().where(tasks.c.id==task_id).values(heartbeat_at=now))
-            return public(self._row(c,task_id))
+            return dict(public(self._row(c,task_id)),lease_until=now+30)
 
     def stage(self,task_id,worker_id,generation,stage):
         allowed=('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE')

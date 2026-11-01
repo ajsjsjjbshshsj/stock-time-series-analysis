@@ -1,11 +1,51 @@
 """Single-slot worker supervisor; HTTP requests never call this module."""
 import os
+import logging
 from pathlib import Path
 import sys
+import threading
 import time
 from uuid import uuid4
 from .contracts import TaskFailure,LeaseLost
 from .processes import OwnedProcess
+
+
+class _LeasePulse:
+    """Keep the pipe responsive, but never outlive a confirmed DB lease.
+
+    The child watchdog takes at most 16s to notice its 15s silence limit.
+    Reserve that entire interval before the lease deadline. Slow DB calls
+    therefore do not starve healthy children or grant unbounded permission.
+    """
+    def __init__(self,process,*,clock=time.monotonic,wall_clock=time.time):
+        self.process=process;self.clock=clock;self.wall_clock=wall_clock
+        self.deadline=0.;self.closed=threading.Event();self.failed=threading.Event()
+        self.lock=threading.Lock();self.thread=None
+
+    def renew(self,lease_until):
+        if type(lease_until) is not int:raise LeaseLost('Missing confirmed execution lease')
+        remaining=min(30.,lease_until-self.wall_clock())
+        with self.lock:self.deadline=self.clock()+max(0.,remaining-16.)
+
+    def tick(self):
+        with self.lock:
+            if self.closed.is_set() or self.clock()>=self.deadline:return False
+        # Pipe backpressure must not block the main thread's lease updates
+        # or its eventual owned-tree termination.
+        self.process.keepalive();return True
+
+    def start(self):
+        def run():
+            try:
+                while not self.closed.is_set():
+                    self.tick()
+                    self.closed.wait(1)
+            except Exception:self.failed.set()
+        self.thread=threading.Thread(target=run,daemon=True);self.thread.start()
+
+    def close(self):
+        self.closed.set()
+        if self.thread is not None:self.thread.join(timeout=2)
 
 
 class Worker:
@@ -22,7 +62,7 @@ class Worker:
         if self.before_poll is not None:self.before_poll()
         task=self.service.claim(self.worker_id)
         if task is None:return False
-        process=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
+        process=None;pulse=None;outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
         market=task['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate')
         try:
@@ -36,8 +76,12 @@ class Worker:
                 payload=dict(task_id=task['id'],worker_id=self.worker_id,generation=task['generation'],
                              expected_task_sha=task_digest(task),root=str(self.root))
             else:payload=dict(task={k:task[k] for k in ('id','request','binding')},root=str(self.root))
-            process.start(payload)
-            last_heartbeat=last_ping=0.;started=time.monotonic();complete=False
+            current=self.service.heartbeat(*fence)
+            if current['state']=='CANCEL_REQUESTED':
+                outcome='CANCELLED';return True
+            pulse=_LeasePulse(process);pulse.renew(current['lease_until'])
+            process.start(payload);pulse.start()
+            last_heartbeat=time.monotonic();last_ping=0.;started=time.monotonic();complete=False
             def drain(final=False):
                 nonlocal complete
                 for event in process.messages(final=final):
@@ -54,13 +98,18 @@ class Worker:
                 if now-last_heartbeat>=5:
                     current=self.service.heartbeat(*fence);last_heartbeat=now
                     if current['state']=='CANCEL_REQUESTED':outcome='CANCELLED';break
+                    pulse.renew(current['lease_until'])
+                if pulse.failed.is_set():raise TaskFailure('PROCESS_FAILED')
                 if now-last_ping>=1:
-                    process.keepalive();last_ping=now
+                    last_ping=now
                     if market:check_tree(process,profile)
                 drain()
-                if process.poll() is not None:
+                exit_code=process.poll()
+                if exit_code is not None:
                     drain(final=True)
-                    if process.poll()!=0 or not complete:raise TaskFailure('PROCESS_FAILED')
+                    if exit_code!=0 or not complete:
+                        logging.getLogger(__name__).warning('Owned task process exited: exit_code=%s complete=%s',exit_code,complete)
+                        raise TaskFailure('PROCESS_FAILED')
                     if not process.stop():raise TaskFailure('PROCESS_FAILED')
                     from .artifacts import verify_candidate
                     try:
@@ -74,6 +123,7 @@ class Worker:
         except (KeyboardInterrupt,SystemExit):code='INTERRUPTED';outcome='INTERRUPTED';interrupted=True
         except Exception:code='PROCESS_FAILED'
         finally:
+            if pulse is not None:pulse.close()
             stopped=process.stop() if process is not None else True
             if stopped:
                 try:self.service.finish(*fence,outcome,process_stopped=True,candidate=candidate,failure_code=code)
