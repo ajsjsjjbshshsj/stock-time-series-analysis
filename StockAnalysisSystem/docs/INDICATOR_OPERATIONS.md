@@ -23,6 +23,8 @@ INDICATOR_DEPLOYMENT_FILE=.runtime/indicator_operations/<generation>/deployment.
 
 启动入口为 `scripts/runtime/start_nightly_services.ps1`，从 WMI 或任务计划运行；支持 `-CheckOnly` 及显式 `-RegisterTask`。不设置 `INDICATOR_DEPLOYMENT_FILE` 时维持原有行为，不自动创建指标进程。也可单独启动：
 
+Windows 启动检查使用原生参数解析，支持恢复入口为每个参数加引号的合法写法；仍严格核实实际脚本位置、持续运行模式、20:00 边界及唯一部署记录，不把 `--once`、其他工作区或 Python `-c` 文本当成现有持久 worker。`-CheckOnly` 不启动进程、不迁移数据库。
+
 ```text
 python -m app.indicators worker --deployment-file .runtime/indicator_operations/<generation>/deployment.json
 ```
