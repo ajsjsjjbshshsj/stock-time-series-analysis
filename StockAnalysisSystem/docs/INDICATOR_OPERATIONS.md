@@ -53,6 +53,8 @@ Flink 作业发生重启或任务尝试改变，当前检查点读者会保守�
 
 ## 依赖故障与回滚
 
+历史审核的同步读取器在逐股核对、等待 Flink 检查点期间会暂停自己的 HTTP 事件循环。每条 ClickHouse 审核查询使用独立连接，避免复用期间已被服务端关闭、但本地尚未处理关闭通知的空闲连接。仍保留完整响应、单行大小、网络与总时限限制；不会自动重试或拼接半截结果，更不会因此跳过最终屏障复核。
+
 专用 V2 ClickHouse 入库进程可设置 `CLICKHOUSE_TIMEOUT_SECONDS=30`；普通查询默认 5 秒，允许范围 1–120 秒。写入超时可能已经提交；保留 Kafka ACK 边界，恢复原消费组，由 ReplacingMergeTree 的版本和 FINAL 去重，不重发历史种子。健康接口会在任一启用的消费子容器停止时返回 DOWN。
 
 初次启用前，先在只读探测实例检查 `/api/analysis/indicators/<code>/readiness` 和指标数据。正式查询入口再显式设置 `MARKET_GENERATION_READS_ENABLED=true`。需要恢复旧查询时关闭该开关并重启对应服务；这只切换读取，不清除新代、指针或证明，旧查询也必须显示 UNVERIFIED。已有上一代时，逻辑回滚仍须 `rollback` 的全审核和 CAS，不能直接修改指针表。

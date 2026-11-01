@@ -59,7 +59,11 @@ class ClickHouseProjectionReader:
         if self._client is None:
             self._client = aiohttp.ClientSession(auth=self.auth,trust_env=False,
                 timeout=aiohttp.ClientTimeout(total=self.query_timeout,connect=10,sock_read=30),
-                connector=aiohttp.TCPConnector(resolver=BoundedResolver()),
+                # This private loop is paused between synchronous reads (and
+                # during checkpoint observation). It cannot observe an idle
+                # peer's FIN before pooled POST reuse. Each audit query owns
+                # its connection; do not retry or splice partially read rows.
+                connector=aiohttp.TCPConnector(resolver=BoundedResolver(),force_close=True),
                 auto_decompress=False,headers={'Accept-Encoding':'identity'})
         async with self._client.post(self.endpoint,params=params,data=b'',allow_redirects=False) as response:
             if (response.status != 200 or response.headers.get('X-ClickHouse-Exception-Code','0') != '0'
