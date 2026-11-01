@@ -26,6 +26,7 @@ export default defineConfig(({ mode }) => {
       '/actuator/health': { target, changeOrigin: true },
       '^/api/analysis/stocks(?:\\?|$)': { target: marketTarget, changeOrigin: true },
       '^/api/analysis/(?:kline|indicators)/[0-9]{6}\\.(?:SZ|SH|BJ)(?:\\?|$)': { target: marketTarget, changeOrigin: true },
+      '^/api/analysis/indicators/[0-9]{6}\\.(?:SZ|SH|BJ)/readiness(?:\\?|$)': { target: marketTarget, changeOrigin: true },
       '^/api/analysis/daily-basic/[0-9]{6}\\.(?:SZ|SH|BJ)(?:\\?|$)': { target: marketTarget, changeOrigin: true },
       '^/api/analysis/market/overview(?:\\?|$)': { target: marketTarget, changeOrigin: true },
     },
