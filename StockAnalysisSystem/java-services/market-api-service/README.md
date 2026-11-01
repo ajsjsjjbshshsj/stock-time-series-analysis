@@ -33,6 +33,8 @@ Series limits 1..2000; inclusive ISO start/end dates optional and start <= end. 
 
 ## Verified generation read contract
 
+`CLICKHOUSE_TIMEOUT_SECONDS` is a per-process budget from 1 to 120 seconds, default 5. Keep the short serving budget; a dedicated bulk ingestion process can set 30 to accommodate storage/merge latency. A timeout does not prove an insert failed to commit: retain the unacknowledged Kafka batch and replay idempotently, never reset offsets or skip it. Enabled V1 and V2 consumer health checks include their child containers; a stopped ingester reports DOWN rather than a misleading healthy HTTP process.
+
 When enabled, `ActiveProjectionPointer` joins the singleton `daily` pointer to its CURRENT proof and ACTIVE generation, validates the immutable evidence digest and manifest/count/date binding, then obtains its registered topic/partition binding. A corrupt or missing referenced proof is a sanitized dependency failure, never an automatic fallback to the legacy table. Only the explicitly empty initial pointer retains legacy behavior.
 
 `ActiveIndicatorRepository` is the opt-in primary read adapter; V1 ingestion remains unchanged. Series are capped at the CURRENT proof's `verified_through` cutoff and never expose Kafka/internal receipt columns. Missing seed or repair-required keys fail closed. The pointer is reread after the data query; a concurrent cutover/refresh causes the response to be discarded rather than mixing generations.

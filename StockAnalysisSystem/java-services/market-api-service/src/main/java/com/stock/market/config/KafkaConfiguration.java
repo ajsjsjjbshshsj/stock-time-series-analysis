@@ -44,8 +44,13 @@ public class KafkaConfiguration {
     HealthIndicator indicatorConsumerHealth(
             KafkaListenerEndpointRegistry registry,
             @Value("${market.listener-enabled:true}") boolean enabled) {
+        return consumerHealth(registry, "marketIndicators", enabled);
+    }
+
+    static HealthIndicator consumerHealth(
+            KafkaListenerEndpointRegistry registry, String listenerId, boolean enabled) {
         return () -> {
-            var c = registry.getListenerContainer("marketIndicators");
+            var c = registry.getListenerContainer(listenerId);
             boolean running =
                     c != null
                             && c.isRunning()

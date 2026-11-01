@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.*;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.*;
 import java.util.HashMap;
@@ -15,6 +17,11 @@ import java.util.HashMap;
 @Configuration
 @ConditionalOnProperty(name = "market.generation-listener-enabled", havingValue = "true")
 public class GenerationKafkaConfiguration {
+    @Bean
+    HealthIndicator generationIndicatorConsumerHealth(KafkaListenerEndpointRegistry registry) {
+        return KafkaConfiguration.consumerHealth(registry, "marketGenerationIndicators", true);
+    }
+
     @Bean
     ConcurrentKafkaListenerContainerFactory<String, String> generationIndicatorFactory(
             @Value("${spring.kafka.bootstrap-servers}") String servers,
