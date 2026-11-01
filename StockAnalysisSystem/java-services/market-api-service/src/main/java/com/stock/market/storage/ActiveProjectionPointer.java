@@ -19,7 +19,9 @@ import org.springframework.stereotype.Repository;
 @ConditionalOnProperty(name="market.generation-reads-enabled",havingValue="true")
 public class ActiveProjectionPointer {
     public record Selection(IndicatorGenerationBinding binding,long epoch,String proofId,
-                            LocalDate cutoff,long verifiedAt) {}
+                            LocalDate cutoff,long verifiedAt,List<Long> requiredOffsets) {
+        public Selection { requiredOffsets=List.copyOf(requiredOffsets); }
+    }
     private final JdbcTemplate jdbc;
     private final GenerationRegistry registry;
     private final ObjectMapper json=IndicatorListener.mapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
@@ -62,7 +64,16 @@ public class ActiveProjectionPointer {
                     || !node.path("source_rows").isIntegralNumber() || !node.path("source_rows").canConvertToLong() || node.path("source_rows").longValue()!=count
                     || !node.path("source_stocks").isIntegralNumber() || !node.path("source_stocks").canConvertToLong() || node.path("source_stocks").longValue()!=stocks)throw invalid();
             hex(node.path("fence_token").asText(),32);
-            return Optional.of(new Selection(registry.require(generation),epoch,proofId,cutoff,number(row.get("created_at"))));
+            var binding=registry.require(generation);
+            var offsets=node.path("required_offsets");
+            if(!offsets.isArray() || offsets.size()!=binding.partitions())throw invalid();
+            var required=new ArrayList<Long>();
+            for(var offset:offsets) {
+                if(!offset.isIntegralNumber() || !offset.canConvertToLong() || offset.longValue() < -1
+                        || offset.longValue()==Long.MAX_VALUE)throw invalid();
+                required.add(offset.longValue());
+            }
+            return Optional.of(new Selection(binding,epoch,proofId,cutoff,number(row.get("created_at")),required));
         } catch(Exception error) {
             throw invalid();
         }
@@ -70,6 +81,25 @@ public class ActiveProjectionPointer {
 
     public boolean stillCurrent(Selection selected) {
         return current().filter(selected::equals).isPresent();
+    }
+
+    /** A source correction captured after this proof must not serve stale indicators.
+     * Future sessions do not invalidate the explicitly historical snapshot.
+     * NULL broker receipts are valid only for exact seed-covered ACKs; all
+     * other ACKs must be within this proof's partition receipt boundary.
+     */
+    public boolean keyCovered(Selection selected,String code) {
+        int partition=selected.binding().partitionFor(code);
+        try {
+            return jdbc.queryForList("SELECT 1 AS pending FROM indicator_outbox o "
+                +"LEFT JOIN indicator_outbox_delivery d ON d.outbox_id=o.id AND d.route_id=? "
+                +"WHERE o.ts_code=? AND o.trade_date<=? AND (d.route_id IS NULL OR d.state IS NULL "
+                +"OR d.state<>'ACKED' OR d.acked_at IS NULL OR NOT ("
+                +"(d.broker_partition IS NULL AND d.broker_offset IS NULL AND d.fence=0 AND d.attempts=0) OR "
+                +"(d.broker_partition IS NOT NULL AND d.broker_offset IS NOT NULL AND d.broker_partition=? "
+                +"AND d.broker_offset>=0 AND d.broker_offset<=?))) LIMIT 1",
+                selected.binding().generation(),code,selected.cutoff().toString(),partition,selected.requiredOffsets().get(partition)).isEmpty();
+        } catch(Exception error) { throw invalid(); }
     }
 
     private static long number(Object value) {

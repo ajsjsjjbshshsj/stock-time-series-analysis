@@ -37,13 +37,15 @@ public class IndicatorReadinessController {
         var selected=source.current();
         if(selected.isEmpty())return response;
         var current=selected.get();
-        var result=generations.query(current.binding(),tsCode,LocalDate.of(2023,1,1),current.cutoff(),1);
+        var result=source.keyCovered(current,tsCode)
+            ?generations.query(current.binding(),tsCode,LocalDate.of(2023,1,1),current.cutoff(),1):null;
+        boolean covered=source.keyCovered(current,tsCode);
         if(!source.stillCurrent(current))throw new DependencyException();
-        boolean ready=result.status()==GenerationIndicatorRepository.KeyStatus.SEED_COMPLETE && !result.indicators().isEmpty();
+        boolean ready=covered && result!=null && result.status()==GenerationIndicatorRepository.KeyStatus.SEED_COMPLETE && !result.indicators().isEmpty();
         response.put("mode","GENERATION");
         response.put("generation",current.binding().generation());
         response.put("epoch",current.epoch());response.put("verified_at",current.verifiedAt());
-        response.put("state",ready?"VERIFIED_SNAPSHOT":result.status().name());
+        response.put("state",ready?"VERIFIED_SNAPSHOT":(!covered || result==null)?"SOURCE_PENDING":result.status().name());
         response.put("indicator_ready",ready);
         response.put("verified_through",current.cutoff().toString());
         if(ready) {

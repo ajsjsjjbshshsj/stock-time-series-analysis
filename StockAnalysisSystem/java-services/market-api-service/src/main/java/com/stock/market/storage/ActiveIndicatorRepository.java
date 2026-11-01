@@ -33,6 +33,7 @@ public class ActiveIndicatorRepository extends IndicatorRepository {
             return legacy;
         }
         var selected=selection.get();
+        if(!pointer.keyCovered(selected,p.code()))throw new DependencyException();
         LocalDate start=p.start()==null || p.start().isBefore(FLOOR)?FLOOR:p.start();
         LocalDate end=p.end()==null || p.end().isAfter(selected.cutoff())?selected.cutoff():p.end();
         if(start.isAfter(end)) {
@@ -40,7 +41,7 @@ public class ActiveIndicatorRepository extends IndicatorRepository {
             return List.of();
         }
         var result=generations.query(selected.binding(),p.code(),start,end,p.limit());
-        if(result.status()!=GenerationIndicatorRepository.KeyStatus.SEED_COMPLETE || !pointer.stillCurrent(selected))
+        if(result.status()!=GenerationIndicatorRepository.KeyStatus.SEED_COMPLETE || !pointer.keyCovered(selected,p.code()) || !pointer.stillCurrent(selected))
             throw new DependencyException();
         var rows=new ArrayList<Map<String,Object>>();
         for(var source:result.indicators()) {

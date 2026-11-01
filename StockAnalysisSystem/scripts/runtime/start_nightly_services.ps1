@@ -28,10 +28,24 @@ $collector = Join-Path $project 'python-services/python-collector'
 $app = Join-Path $project 'python-services/stock-analysis-app'
 $collectorScript = Join-Path $collector 'scripts/prepare_stock_pool_data.py'
 $analysisScript = Join-Path $app 'scripts/training_worker.py'
+$indicatorReceipt = $null
+if ($env:INDICATOR_DEPLOYMENT_FILE) {
+    $indicatorReceipt = $env:INDICATOR_DEPLOYMENT_FILE
+    if (-not [IO.Path]::IsPathRooted($indicatorReceipt)) { $indicatorReceipt=Join-Path $project $indicatorReceipt }
+    $indicatorReceipt=(Resolve-Path -LiteralPath $indicatorReceipt).Path
+    if (-not $env:FLINK_REST_URL) { throw 'FLINK_REST_URL required for the opted-in projection worker.' }
+}
 $processes = @(Get-CimInstance Win32_Process)
 $collectors = @($processes | Where-Object { $_.Name -match '^python(w)?[.]exe$' -and $_.CommandLine -match 'prepare_stock_pool_data[.]py"?\s+worker(?:\s|$)' })
 $analysis = @($processes | Where-Object { $_.Name -match '^python(w)?[.]exe$' -and $_.CommandLine -match 'training_worker[.]py"?\s+run(?:\s|$)' })
-if ($collectors.Count -gt 1 -or $analysis.Count -gt 1) { throw 'Multiple workers detected; inspect ownership before continuing.' }
+$indicators = @($processes | Where-Object { $_.Name -match '^python(w)?[.]exe$' -and $_.CommandLine -match '\s-m\s+app[.]indicators\s+worker(?:\s|$)' })
+if ($collectors.Count -gt 1 -or $analysis.Count -gt 1 -or $indicators.Count -gt 1) { throw 'Multiple workers detected; inspect ownership before continuing.' }
+if ($indicators.Count -eq 1) {
+    $expected='--deployment-file "'+$indicatorReceipt+'"'
+    if (-not $indicatorReceipt -or -not $indicators[0].CommandLine.Contains($expected) -or $indicators[0].CommandLine -match '(?:^|\s)--once(?:\s|$)') {
+        throw 'Existing indicator worker has a different pinned deployment or temporary mode; inspect before replacement.'
+    }
+}
 function Own-PersistentWorker($process, [string]$script, [string]$mode) {
     $line = $process.CommandLine.Replace('/', '\')
     $path = [regex]::Escape($script.Replace('/', '\'))
@@ -47,7 +61,7 @@ if ($analysis.Count -eq 1 -and -not (Own-PersistentWorker $analysis[0] $analysis
     throw 'Existing analysis worker identity or persistent mode cannot be verified; stop it safely before replacing it.'
 }
 if ($CheckOnly) {
-    @{run_at='20:00';start_date=$start;collector_workers=$collectors.Count;analysis_workers=$analysis.Count} | ConvertTo-Json -Compress
+    @{run_at='20:00';start_date=$start;collector_workers=$collectors.Count;analysis_workers=$analysis.Count;indicator_workers=$indicators.Count;indicator_opt_in=($null -ne $indicatorReceipt)} | ConvertTo-Json -Compress
     return
 }
 if ($RegisterTask) {
@@ -78,5 +92,10 @@ if ($collectors.Count -eq 0) {
 if ($analysis.Count -eq 0) {
     $child = Start-Process $python -ArgumentList ('"'+$analysisScript+'" run') -WorkingDirectory $app -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs "nightly-analysis-$stamp.out.log") -RedirectStandardError (Join-Path $logs "nightly-analysis-$stamp.err.log")
     if ($child.WaitForExit(3000)) { throw 'Analysis worker exited during startup; inspect sanitized runtime logs before retry.' }
+}
+if ($indicatorReceipt -and $indicators.Count -eq 0) {
+    $arguments='-m app.indicators worker --deployment-file "'+$indicatorReceipt+'"'
+    $child=Start-Process $python -ArgumentList $arguments -WorkingDirectory $collector -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs "nightly-indicators-$stamp.out.log") -RedirectStandardError (Join-Path $logs "nightly-indicators-$stamp.err.log")
+    if ($child.WaitForExit(3000)) { throw 'Indicator worker exited during startup; inspect pinned deployment and runtime state.' }
 }
 'Nightly workers requested; verify queue outcomes, not just process liveness.'

@@ -35,6 +35,7 @@ const guard = createGenerationGuard()
 const summary = computed(() => {
   if (status.value?.indicatorReady) return '服务端指标已按所示截止日核对，不代表此后行情或模型预测已更新。'
   if (status.value?.state === 'REPAIR_REQUIRED') return '该股服务端指标待修复，当前不作为已就绪结果展示。'
+  if (status.value?.state === 'SOURCE_PENDING') return '该股历史行情有更新，指标尚未重新验收；暂不展示旧的已就绪状态。'
   if (status.value?.state === 'NO_SEED') return '该股尚未完成服务端历史指标引导。'
   if (status.value?.state === 'SEED_COMPLETE') return '该股暂无可用的已验收指标。'
   return '尚无完整的服务端指标验收证明；现有图表不视为服务端验收通过。'

@@ -9,6 +9,7 @@ checkpoints. Infrastructure readers and fence implementation need native tests
 before this authority is wired into an operational command.
 """
 from hashlib import sha256
+from datetime import date
 import time
 from uuid import uuid4
 
@@ -254,15 +255,20 @@ class Lifecycle:
     def activate(self, generation, *, expected_epoch, expected_generation):
         return self._switch(generation,expected_epoch,expected_generation,rollback=False)
 
-    def refresh(self, *, expected_epoch, expected_generation):
+    def refresh(self, *, expected_epoch, expected_generation, expected_cutoff=None, source_ready=None):
         """Advance an active generation's cutoff only after a fresh current audit.
 
         Ordinary nightly append does not create another generation. Keep the
         rollback target intact while replacing its verification proof by CAS.
         """
         identity(expected_generation)
+        if expected_cutoff is not None:
+            if date.fromisoformat(expected_cutoff).isoformat()!=expected_cutoff or not callable(source_ready):
+                raise ValueError('Pinned successful source day required')
+        elif source_ready is not None:
+            raise ValueError('Pinned successful source day required')
         return self._switch(expected_generation,expected_epoch,expected_generation,
-            rollback=False,refresh=True)
+            rollback=False,refresh=True,expected_cutoff=expected_cutoff,source_ready=source_ready)
 
     def rollback(self, *, expected_epoch, expected_generation):
         with self.registry.factory() as session:
@@ -302,7 +308,8 @@ class Lifecycle:
             finally:
                 result.close()
 
-    def _switch(self, generation, expected_epoch, expected_generation, *, rollback, refresh=False):
+    def _switch(self, generation, expected_epoch, expected_generation, *, rollback, refresh=False,
+                expected_cutoff=None, source_ready=None):
         identity(generation);integer(expected_epoch,0,2**63-2)
         if expected_generation is not None: identity(expected_generation)
         if generation==expected_generation and not refresh:
@@ -312,6 +319,10 @@ class Lifecycle:
         # generation -> route -> coverage. Keep fence through metadata commit.
         with self.guard.hold(binding) as fence:
             fence.assert_held()
+            def check_source_day():
+                if expected_cutoff is not None and (fence.cutoff!=expected_cutoff or not source_ready(expected_cutoff)):
+                    raise ValueError('Scheduled source day changed or incomplete')
+            check_source_day()
             with self.registry.outbox.transaction() as session:
                 pointer = session.execute(select(active).where(active.c.slot=='daily').with_for_update()).mappings().one()
                 if (pointer['epoch']!=expected_epoch or pointer['generation']!=expected_generation
@@ -327,6 +338,7 @@ class Lifecycle:
                 self._delivery_proof(session,binding,folder,evidence['checkpoint'])
                 self._caught_up(session,generation)
                 self._fresh(binding,evidence);fence.assert_held()
+                check_source_day()
                 proof = self._save(session,evidence)
                 result = dict(generation=generation,previous_generation=pointer['previous_generation'] if refresh else expected_generation,
                     epoch=expected_epoch+1,proof_id=proof['id'],switched_at=int(self.clock()))

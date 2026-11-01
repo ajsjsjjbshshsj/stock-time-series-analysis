@@ -26,7 +26,7 @@ export function normalizeIndicatorReadiness(dto, code) {
     result.latestObservation = day(dto.latest_observation)
     if (result.latestObservation > result.verifiedThrough || typeof dto.is_warmup !== 'boolean') invalid()
     result.isWarmup = dto.is_warmup
-  } else if (['NO_SEED', 'REPAIR_REQUIRED', 'SEED_COMPLETE'].includes(dto.state)) {
+  } else if (['NO_SEED', 'REPAIR_REQUIRED', 'SEED_COMPLETE', 'SOURCE_PENDING'].includes(dto.state)) {
     if (dto.indicator_ready || dto.latest_observation !== null) invalid()
   } else invalid()
   return Object.freeze({ ...result, generation: dto.generation, epoch: dto.epoch, verifiedAt: dto.verified_at })

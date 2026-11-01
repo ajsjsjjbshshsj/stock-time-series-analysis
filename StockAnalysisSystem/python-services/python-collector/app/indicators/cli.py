@@ -40,6 +40,10 @@ def parser():
     result.add_argument('--calendar-root', help='Existing sealed preparation calendar root; no provider calls')
     commands = result.add_subparsers(dest='command', required=True)
     commands.add_parser('status', help='Bounded metadata only; never asserts indicator readiness')
+    worker=commands.add_parser('worker',help='Single-owner tail and CURRENT refresh; never seeds or trains')
+    worker.add_argument('--deployment-file',required=True,help='Operator-pinned V2 deployment receipt, relative to project root')
+    worker.add_argument('--poll-seconds',type=_bound(5,300),default=30)
+    worker.add_argument('--once',action='store_true')
     migration = commands.add_parser('migrate', help='Explicit additive schema only; no route is enabled')
     migration.add_argument('--backup-file', required=True)
     migration.add_argument('--backup-sha256', required=True)
@@ -52,6 +56,8 @@ def parser():
         if name == 'export': command.add_argument('--batch-size', type=_bound(1, 5000), default=500)
         if name == 'stage': command.add_argument('--partitions', type=_bound(1, 256), required=True)
         if name == 'ack-covered': command.add_argument('--batch-size', type=_bound(1, 5000), default=1000)
+        if name == 'refresh':
+            command.add_argument('--source-day',help='Pin nightly completed day and recheck successful source run under the write fence')
         if name in ('verify-seed', 'enable-tail', 'activate', 'refresh', 'rollback'):
             command.add_argument('--job-id', required=True, type=_identity,
                 help='Known deployed V2 artifact/job identity; REST cannot authenticate arbitrary binaries')
@@ -122,6 +128,9 @@ def _status(engine):
 
 def _execute(args, db, project, env, now):
     if args.command == 'status': return _status(db.engine)
+    if args.command == 'worker':
+        from .worker import run
+        return run(args,db,project,env)
     if args.command == 'migrate':
         from .capture import migrate_capture
         from .generation_repository import migrate_generations
@@ -172,7 +181,12 @@ def _execute(args, db, project, env, now):
             return dict(generation=args.generation, tail_enabled=True, indicator_ready=False)
         expected = dict(expected_epoch=args.expected_epoch, expected_generation=args.expected_generation)
         if args.command == 'activate': return lifecycle.activate(args.generation, **expected)
-        if args.command == 'refresh': return lifecycle.refresh(**expected)
+        if args.command == 'refresh':
+            if args.source_day is not None:
+                from .worker import successful_source_day
+                return lifecycle.refresh(**expected,expected_cutoff=args.source_day,
+                    source_ready=lambda day:successful_source_day(db.Session,day))
+            return lifecycle.refresh(**expected)
         if args.command == 'rollback': return lifecycle.rollback(**expected)
     raise ValueError('Unknown projection operation')
 
