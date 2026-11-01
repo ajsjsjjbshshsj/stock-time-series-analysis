@@ -1,5 +1,6 @@
 <template>
   <div>
+    <IndicatorProjectionStatus :ts-code="tsCode" />
     <div class="card section">
       <div class="card-title">技术指标 · 浏览器本地计算</div>
       <div class="card-sub">
@@ -46,6 +47,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ChartBox from '../../components/ChartBox.vue'
 import StatCard from '../../components/StatCard.vue'
 import Icon from '../../components/Icon.vue'
+import IndicatorProjectionStatus from '../../components/IndicatorProjectionStatus.vue'
 import { getKline } from '../../api/analysis.js'
 import { dataSource } from '../../api/client.js'
 import { computeIndicators } from '../../utils/indicators.js'

@@ -12,6 +12,8 @@ Build from java-services: `mvn -pl market-api-service -am package`. Run the resu
 
 Variables: `DB_HOST/PORT/NAME/USER/PASSWORD` match the collector; `CLICKHOUSE_HTTP_URL/DB/USER/PASSWORD` default to loopback / stock_analytics / stock_app (password has no default); `KAFKA_BOOTSTRAP_SERVERS`; `MARKET_KAFKA_GROUP` defaults stock-clickhouse-indicators-v1; `INDICATOR_TOPIC` defaults stock.dws.daily-indicator.v1. `MARKET_LISTENER_ENABLED=false` disables ingestion for API-only/test deployments.
 
+Generation ingestion and reads are separate opt-ins: `MARKET_GENERATION_LISTENER_ENABLED=true` enables the V2 listener only after its metadata/tables/topics have been explicitly installed. `MARKET_GENERATION_READS_ENABLED=true` enables active-pointer reads only after the projection lifecycle tables and a verified CURRENT proof are available. Both default to false; neither flag installs tables, creates topics, activates a generation or submits a Flink job. Keep them disabled during initial rollout and native acceptance.
+
 ## Guarantees and recovery
 
 Consumer reads committed Kafka transactions from earliest on a new group, processes stock-key-ordered records synchronously, and acknowledges only after ClickHouse returns complete HTTP 200 with `wait_end_of_query=1`. Insert errors, error bodies, malformed/schema-invalid events or mismatched topic/key receive three retries with one-second backoff; exhaustion stops the affected consumer without acknowledging the poison offset. No dead-letter skip or recovered commit. Actuator `/actuator/health` becomes DOWN/503 when a concurrent child stops. Correct the dependency/event issue, then restart deliberately; replay remains idempotent on logical reads.
@@ -25,7 +27,16 @@ The output topic identity, stock-key partitioning, and **three-partition count a
 - `GET /api/analysis/stocks?limit=6000`: stock_basic rows in ascending code order; limit 1..6000.
 - `GET /api/analysis/kline/000001.SZ?limit=260&start=2026-01-01&end=2026-09-01`: `{ts_code,bars}` using existing stock_daily columns; latest bounded rows, returned ascending date.
 - `GET /api/analysis/indicators/000001.SZ?limit=260`: `{ts_code,indicators}` with FINAL, latest bounded rows returned ascending date.
+- `GET /api/analysis/indicators/000001.SZ/readiness`: read-only per-stock evidence status. Without the read opt-in or before the initial pointer is set, returns `mode=LEGACY`, `state=UNVERIFIED`, `indicator_ready=false`; it does not query missing projection tables when the feature is disabled.
 
 Series limits 1..2000; inclusive ISO start/end dates optional and start <= end. JSON emits numbers, ISO dates, and null optional values. Invalid input 400; missing stock 404; known empty series 200 with empty array; dependency failures 503 with a sanitized error. Stock list and kline need MySQL only; indicators also look up stock existence in MySQL before querying ClickHouse.
+
+## Verified generation read contract
+
+When enabled, `ActiveProjectionPointer` joins the singleton `daily` pointer to its CURRENT proof and ACTIVE generation, validates the immutable evidence digest and manifest/count/date binding, then obtains its registered topic/partition binding. A corrupt or missing referenced proof is a sanitized dependency failure, never an automatic fallback to the legacy table. Only the explicitly empty initial pointer retains legacy behavior.
+
+`ActiveIndicatorRepository` is the opt-in primary read adapter; V1 ingestion remains unchanged. Series are capped at the CURRENT proof's `verified_through` cutoff and never expose Kafka/internal receipt columns. Missing seed or repair-required keys fail closed. The pointer is reread after the data query; a concurrent cutover/refresh causes the response to be discarded rather than mixing generations.
+
+Readiness returns `VERIFIED_SNAPSHOT`, `NO_SEED` or `REPAIR_REQUIRED` with `verified_through`, `latest_observation` and the proof epoch. `SEED_COMPLETE` with an empty series is also explicitly not ready (`indicator_ready=false`, no latest observation): a seed barrier alone is not a usable audited data result. `indicator_ready` refers only to the audited snapshot; `guarantees_latest=false` is deliberate. A historical cutoff is not proof that today's collection, every market-data gap, model features or predictions are ready. No training, activation, repair clearing or other mutation endpoint is introduced here. Deploying this code does not itself perform the production replay/cutover or validate continuous nightly operation.
 
 Official behavior references: [HTTP parameters, auth, wait_end_of_query and error caveats](https://clickhouse.com/docs/interfaces/http), [ReplacingMergeTree and FINAL](https://clickhouse.com/docs/engines/table-engines/mergetree-family/replacingmergetree), [Docker environment and initialization scripts](https://hub.docker.com/r/clickhouse/clickhouse-server).
