@@ -163,11 +163,14 @@ class TaskService:
                 raise ValueError('Task reference mismatch')
             return task
 
-    def _owned(self,c,slot,task_id,worker_id,generation):
+    def _fenced(self,slot,task_id,worker_id,generation):
         identity(task_id);identity(worker_id);bound_integer(generation,1,2**63-1)
         if (slot['task_id']!=task_id or slot['worker_id']!=worker_id or slot['generation']!=generation
                 or slot['quarantined'] or slot['lease_until']<=int(self.clock())):
             raise LeaseLost('Execution lease unavailable')
+
+    def _owned(self,c,slot,task_id,worker_id,generation):
+        self._fenced(slot,task_id,worker_id,generation)
         row=self._row(c,task_id)
         if slot['lease_until']<=int(self.clock()):
             raise LeaseLost('Execution lease expired during task read')
@@ -176,10 +179,15 @@ class TaskService:
 
     def heartbeat(self,task_id,worker_id,generation):
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation);now=int(self.clock())
+            self._fenced(slot,task_id,worker_id,generation)
+            # Control traffic must not load/decode the frozen market binding.
+            state=c.execute(select(tasks.c.state).where(tasks.c.id==task_id)).scalar_one()
+            self._fenced(slot,task_id,worker_id,generation)
+            if state not in ('RUNNING','CANCEL_REQUESTED'):raise LeaseLost('Task not owned')
+            now=int(self.clock())
             c.execute(slots.update().where(slots.c.id==1).values(lease_until=now+30))
             c.execute(tasks.update().where(tasks.c.id==task_id).values(heartbeat_at=now))
-            return dict(public(self._row(c,task_id)),lease_until=now+30)
+            return dict(state=state,lease_until=now+30)
 
     def stage(self,task_id,worker_id,generation,stage):
         allowed=('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE')

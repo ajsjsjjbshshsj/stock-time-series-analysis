@@ -1,5 +1,6 @@
 """Explicit task migration and independent worker. No import-time side effects."""
 import argparse
+from contextlib import ExitStack
 from getpass import getpass
 import os
 from pathlib import Path
@@ -28,7 +29,8 @@ def main():
     from tasks.service import TaskService
     from tasks.source import SourceProvider,PROJECT
     from tasks.contracts import encoded
-    with DatabaseConnector(diagnostic=True) as db:
+    with ExitStack() as connections:
+        db=connections.enter_context(DatabaseConnector(diagnostic=True))
         repo=TaskRepository(db.engine)
         if args.command in ('migrate-automation','migrate-predictions'):
             repo.check_ready()
@@ -75,7 +77,11 @@ def main():
         def before_poll():
             try:scheduler.tick()
             except Exception:pass  # Optional daily dependency failure never claims readiness.
-        worker=Worker(service,root,before_poll=before_poll)
+        from tasks.control import connection_config
+        control_db=connections.enter_context(DatabaseConnector(connection_config(db.config),diagnostic=True))
+        # No source binding/scheduler work may consume this control pool.
+        heartbeat=TaskService(TaskRepository(control_db.engine),None)
+        worker=Worker(service,root,before_poll=before_poll,heartbeat_service=heartbeat)
         if args.once:worker.run_once()
         else:worker.run()
 
