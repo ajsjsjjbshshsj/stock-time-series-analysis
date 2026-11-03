@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "pairs": [
+    {
+      "algorithm": "xgboost",
+      "before": "3e6d0383e2d5ca2e0ee89a2226bf342825f2a148e039542a0aba4aa33c484089",
+      "after": "b247f865ff1e92c51e11d767fe628d2a1f63ddc0541b75354739c8070e8a728c",
+      "reason": "checkpoint_and_input_reuse_only"
+    },
+    {
+      "algorithm": "lightgbm",
+      "before": "cbd4201b77c93d90d7e0de7c0747ad535e5f9f794401f8f4ba2dce8b5e9d2b02",
+      "after": "6a567f0d49cba151cabd1cfd9a2b50e68a3700df8c287cf621d5695ce30ed7c9",
+      "reason": "checkpoint_and_input_reuse_only"
+    },
+    {
+      "algorithm": "transformer",
+      "before": "98655025b62a231967eed867375831b72191d6aa99e301ec7699e494d8bfc6d5",
+      "after": "5fada482ef38bea9133c2fb2b8bc8b2bb0981e89771e9b780e73c24a62abddde",
+      "reason": "checkpoint_and_input_reuse_only"
+    }
+  ]
+}

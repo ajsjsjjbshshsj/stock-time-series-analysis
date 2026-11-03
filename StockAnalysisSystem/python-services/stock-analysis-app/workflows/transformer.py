@@ -29,7 +29,10 @@ def train_transformer(task,directory,source,emit):
     import torch
     from analysis.transformer_trainer import run_transformer_training
     from analysis.transformer_features import load_model_preprocessing
-    request=task['request'];frame,calendar,contract=source.load(task)
+    request=task['request']
+    activity=getattr(source,'activity',lambda *args,**kwargs:None)
+    activity('FEATURE_READ',force=True)
+    frame,calendar,contract=source.load(task)
     history=contract['source_history'].copy();history['trade_date']=pd.to_datetime(history.trade_date)
     if sorted(history.ts_code.unique())!=request['stock_codes']:raise ValueError('Transformer source pool changed')
     history=history[history.trade_date<=pd.Timestamp(request['end_date'])].copy()
@@ -43,9 +46,27 @@ def train_transformer(task,directory,source,emit):
     if torch.cuda.is_available():
         total=torch.cuda.get_device_properties(0).total_memory
         torch.cuda.set_per_process_memory_fraction(min(.8,4*1024**3/total));torch.cuda.reset_peak_memory_stats()
-    emit('stage',stage='PROBE');emit('stage',stage='TRAIN')
+    activity('FEATURE_COMPUTE',force=True)
+    resume_from=None
+    from tasks.resumption import semantic_identity
+    if task['binding'].get('resume'):
+        from analysis.transformer_checkpoint import EpochCheckpoint
+        from tasks.reuse import safe_path
+        import shutil
+        parent,resume_from=source.resume_parent(task)
+        proof=EpochCheckpoint.inspect(resume_from,expected_task=semantic_identity(parent))
+        if proof['fingerprint']!=task['binding']['resume']['checkpoint_sha256']:raise ValueError('Transformer checkpoint changed after enqueue')
+        if 'probe_selection.json' in proof['record']['extra_files']:
+            shutil.copyfile(safe_path(resume_from.parent/'probe_selection.json'),safe_path(directory/'probe_selection.json'))
+    def stage(value):
+        emit('stage',stage=value)
+        activity('PROBE' if value=='PROBE' else 'TRAIN_EPOCH',force=True)
+    def progress(completed,total):
+        emit('progress',phase='TRAIN',completed=completed,total=total)
+        activity('TRAIN_EPOCH',checkpoint_epoch=completed,force=True)
     result=run_transformer_training(panel_df=history,config=config,create_plots=False,pool_validator=validate_pool_context,
-        progress_callback=lambda completed,total:emit('progress',phase='TRAIN',completed=completed,total=total))
+        enable_checkpoints=True,resume_from=resume_from,checkpoint_context=semantic_identity(task),
+        stage_callback=stage,progress_callback=progress)
     config=result['config'];_,meta=load_model_preprocessing(result['model_path'],config)
     from analysis.transformer_model import MultiHeadStockTransformer
     model=MultiHeadStockTransformer(input_dim=len(result['feature_names']),config=config,num_stocks=len(result['stockid2idx']))
@@ -58,7 +79,7 @@ def train_transformer(task,directory,source,emit):
         horizon=5,holding_sessions=4,label_definition='open_T5/open_T1-1',train_start=request['start_date'],
         train_end=str((val_start-pd.Timedelta(days=1)).date()),seen_through=request['end_date'],
         pool_count=len(result['stockid2idx']),metrics=dict(best_validation_score=float(result['best_score'])),
-        probe_selected=True,epochs_completed=result['epochs_completed'],config=config,stockid2idx=result['stockid2idx'],
+        probe_selected=True,epochs_completed=result['epochs_completed'],resumed_epochs=result['resumed_epochs'],config=config,stockid2idx=result['stockid2idx'],
         device='cuda' if torch.cuda.is_available() else 'cpu',peak_vram_bytes=int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else 0)
 
 

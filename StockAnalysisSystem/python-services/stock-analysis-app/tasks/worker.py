@@ -94,6 +94,8 @@ class Worker:
                         operation='stage';self.service.stage(*fence,event['stage'])
                     elif event['event']=='progress':
                         operation='progress';self.service.progress(*fence,event['phase'],event['completed'],event['total'])
+                    elif event['event']=='activity':
+                        operation='progress';self.service.activity(*fence,{k:v for k,v in event.items() if k!='event'})
                     elif event['event']=='failure':raise TaskFailure(event['code'])
                     elif event['event']=='complete':
                         if complete:raise TaskFailure('PROTOCOL_INVALID')

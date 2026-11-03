@@ -42,8 +42,8 @@ class Operation(BaseModel):
     def boundaries(self):
         for value in (self.model_id,self.import_task_id,self.experiment_id,self.resume_task_id):
             if value is not None:identity(value)
-        if self.resume_task_id is not None and (self.operation!='predict' or self.algorithm!='lightgbm'):
-            raise ValueError('Resume is only supported for LightGBM prediction')
+        if self.resume_task_id is not None and (self.algorithm,self.operation) not in (('lightgbm','predict'),('transformer','train')):
+            raise ValueError('Unsupported workflow resume type')
         if self.operation=='import':
             if self.feature_build_id is not None:raise ValueError('Imported model cannot select features')
             if self.pool_version is not None:raise ValueError('Imported model dictates its own pool')

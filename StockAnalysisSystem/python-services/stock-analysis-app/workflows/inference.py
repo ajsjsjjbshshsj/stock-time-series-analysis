@@ -25,6 +25,8 @@ def iter_predictions(task,source,*,skip_codes=None):
         from .source import native_request
         iterator=source.iter_stocks(task,skip_codes=skip_codes) if skip_codes else source.iter_stocks(task)
         for code,snapshot,calendar,proof in iterator:
+            activity=getattr(source,'activity',None)
+            if activity is not None:activity('SCORE',stock=code)
             from dataclasses import is_dataclass,replace
             from copy import copy
             clipped={name:getattr(snapshot,name)[pd.to_datetime(getattr(snapshot,name).trade_date).between(

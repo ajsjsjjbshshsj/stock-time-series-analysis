@@ -39,7 +39,7 @@
         <div class="actions"><button v-if="models.next_cursor" class="btn btn-sm" @click="modelControl.refresh(models.next_cursor)">更早模型</button><button v-if="models.before" class="btn btn-sm" @click="modelControl.refresh(null)">最新模型</button></div>
       </section>
     </div>
-    <section v-if="canResume" class="card box"><h2>LightGBM 预测断点续跑</h2><p>所选已停止任务：{{ detail.job.id }}。检查并复用已提交分块，新建任务计算剩余股票；不重训、不缩池、不发布，也不覆盖原失败记录。</p><p class="muted">仅支持新版完整检查点，旧散落评分文件不能续跑。模型、参数、日期、股票池、代码及特征版本必须完全一致；任务隔离时须先按原流程受控恢复。</p><button class="btn" :disabled="busy || !caps || caps.execution.quarantined" @click="resumePrediction">检查断点并创建续跑任务</button></section>
+    <section v-if="canResume" class="card box"><h2>{{ resumeTitle }}</h2><p>所选已停止任务：{{ detail.job.id }}。{{ resumeDescription }}原任务与已有产物保留，不自动发布或解除隔离。</p><p class="muted">仅支持完整提交的新版检查点。参数、日期、股票池、代码及输入版本必须一致；旧最佳权重或散落文件不能续跑。Transformer 从已完成轮次继续训练，特征构建不会自动启用。</p><button class="btn" :disabled="busy || !caps || caps.execution.quarantined" @click="resumePrediction">检查断点并创建续跑任务</button></section>
     <section class="card box"><h2>预测与回测结果 · 审核发布</h2><p>负收益、低相关或相关系数未定义不阻止发布。发布前请阅读结果日期、费用与执行假设；未就绪结果不能发布。</p><p v-if="results.error || previewError" role="alert">{{ results.error || previewError }}</p>
       <div class="list"><button v-for="r in results.items" :key="r.id" class="item" @click="selectResult(r.id)"><strong>{{ r.title }} · {{ r.algorithm }}</strong><span>{{ r.published ? '已发布' : '未发布' }} · {{ r.metadata.status }} · {{ r.id.slice(0,12) }}</span></button></div>
       <div class="actions"><button v-if="results.next_cursor" class="btn btn-sm" @click="resultControl.refresh(results.next_cursor)">更早结果</button><button v-if="results.before" class="btn btn-sm" @click="resultControl.refresh(null)">最新结果</button></div>
@@ -73,7 +73,10 @@ const modelControl=createWorkflowController({list:workflowApi.models},models,{en
 const resultControl=createWorkflowController({list:workflowApi.results},results,{enabled,visible})
 const taskControl=createTaskController(workflowApi,detail,{enabled,visible})
 const matchingModels=computed(()=>models.items.filter(m=>m.algorithm===draft.algorithm))
-const canResume=computed(()=>enabled() && caps.value?.prediction_resume?.checkpoint_version===1 && detail.job?.request?.kind==='model_workflow' && detail.job.request.operation==='predict' && detail.job.request.algorithm==='lightgbm' && ['FAILED','INTERRUPTED','CANCELLED'].includes(detail.job.state))
+const resumeType=computed(()=>{const r=detail.job?.request;if(r?.kind==='feature_build')return 'feature_build';if(r?.kind==='model_workflow'&&r.algorithm==='lightgbm'&&r.operation==='predict')return 'lightgbm_predict';if(r?.kind==='model_workflow'&&r.algorithm==='transformer'&&r.operation==='train')return 'transformer_train';return null})
+const canResume=computed(()=>enabled() && caps.value?.resumption?.version===1 && caps.value.resumption.types.includes(resumeType.value) && ['FAILED','INTERRUPTED','CANCELLED'].includes(detail.job?.state))
+const resumeTitle=computed(()=>({feature_build:'特征构建断点复用',transformer_train:'Transformer 训练续跑',lightgbm_predict:'LightGBM 预测断点续跑'}[resumeType.value]))
+const resumeDescription=computed(()=>resumeType.value==='transformer_train'?'新建任务，从完整轮次检查点继续训练。':resumeType.value==='feature_build'?'新建暂存构建，核验并复用已完成股票特征。':'新建预测任务，核验并计算剩余股票，不重训。')
 const resumeKeys=new Map()
 let active=true,generation=0,previewGeneration=0,previewRequest,capRequest,submitBody='',submitKey=''
 function current(run){return active && run===generation && enabled()}
@@ -104,7 +107,7 @@ async function submit(){
 }
 async function cancel(){if(busy.value||!window.confirm('请求取消？执行进程完全退出前不会释放槽位。'))return;busy.value=true;const run=generation;try{await taskControl.cancel();if(current(run))notice.value='已请求取消，请以服务器最终状态为准。'}catch(e){if(current(run))error.value=e.message}finally{if(active)busy.value=false}}
 async function resumePrediction(){
-  if(busy.value||!canResume.value||caps.value.execution.quarantined||!window.confirm('确认校验断点并新建预测任务？只复用相同来源与模型的已提交分块，不重训、不发布，也不会解除隔离。'))return
+  if(busy.value||!canResume.value||caps.value.execution.quarantined||!window.confirm(`${resumeTitle.value}：${resumeDescription.value}确认校验断点并创建新任务？不覆盖旧任务、不发布、不解除隔离。`))return
   const parent=detail.job.id,run=generation;busy.value=true;error.value='';notice.value=''
   if(!resumeKeys.has(parent))resumeKeys.set(parent,crypto.randomUUID().replaceAll('-',''))
   try{const job=await workflowApi.resume(parent,resumeKeys.get(parent));if(!current(run))return;resumeKeys.delete(parent);notice.value=`续跑任务 ${job.id} 已入队，原任务 ${parent} 保留。`;await Promise.all([jobControl.refresh(null),taskControl.select(job.id)])}

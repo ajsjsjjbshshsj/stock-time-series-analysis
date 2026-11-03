@@ -63,10 +63,10 @@ def pipeline_identity(algorithm):
     names=['workflows/training.py']
     if algorithm=='transformer':
         names+=['workflows/transformer.py',*[f'analysis/transformer_{n}.py' for n in ('trainer','features','model','utils','config','scoring')],
-                'analysis/transformer_portfolio_signals.py','data_processor/probe_selection.py']
+                'analysis/transformer_portfolio_signals.py','data_processor/probe_selection.py','analysis/transformer_checkpoint.py']
         packages=('torch','lightgbm','numpy','pandas','scikit-learn','TA-Lib')
     elif algorithm=='lightgbm':
-        names+=['tasks/disk_matrix.py','tasks/market_samples.py','tasks/market_profile.py','analysis/disk_probe.py','data_processor/probe_rules.py']
+        names+=['tasks/disk_matrix.py','tasks/market_samples.py','tasks/market_profile.py','analysis/disk_probe.py','data_processor/probe_rules.py','tasks/matrix_cache.py','tasks/reuse.py']
         packages=('lightgbm','numpy','pandas','TA-Lib')
     elif algorithm=='xgboost':
         names+=['analysis/predictor.py','analysis/pipeline.py','analysis/strategy_samples.py']
@@ -111,8 +111,9 @@ class WorkflowSource:
         if request['operation']!='train':
             row,meta=self.model(request['model_id'])
             if row['algorithm']!=request['algorithm']:raise ValueError('Model algorithm mismatch')
-            if meta['binding'].get('model_pipeline') is not None and meta['binding']['model_pipeline']!=pipeline:
-                raise ValueError('Model algorithm/dependencies changed; explicit retraining required')
+            if meta['binding'].get('model_pipeline') is not None:
+                from .pipeline_compatibility import require_compatible
+                require_compatible(request['algorithm'],request['operation'],meta['binding']['model_pipeline'],pipeline)
             selected=dict(request,ts_code=meta['native']['ts_code'],stock_codes=meta['native']['stock_codes'])
             model_sha=row['manifest_sha256']
             if request['operation']=='backtest':
@@ -151,6 +152,7 @@ class WorkflowSource:
             if request['stock_codes'] and request['stock_codes']!=meta['native']['stock_codes']:raise ValueError('Model pool cannot be replaced')
         from tasks.source import APP
         files={p.relative_to(APP).as_posix():p.read_text(encoding='utf-8') for p in sorted((APP/'workflows').glob('*.py'))}
+        files['workflows/pipeline_compatibility.json']=(APP/'workflows/pipeline_compatibility.json').read_text(encoding='utf-8')
         bound=dict(data=data,workflow_sha256=digest(files),model_manifest_sha256=model_sha)
         if pool is not None:bound['registry_pool']=pool
         bound['model_pipeline']=pipeline
@@ -162,7 +164,8 @@ class WorkflowSource:
             sessions=sum(r['is_open'] for r in calendar['rows'] if request['start_date']<=r['cal_date']<=selected['end_date'])
             bound['backtest_price_rows_budget']=check_backtest_budget(bound['pool_count'],sessions)
         if request.get('resume_task_id'):
-            from .prediction_resume import bind_resume
+            if request['algorithm']=='transformer':from .transformer_resume import bind_resume
+            else:from .prediction_resume import bind_resume
             bound['resume']=bind_resume(self,request,bound)
         return bound
 
@@ -174,10 +177,15 @@ class WorkflowSource:
         # hashing a full-market float matrix on every future model operation.
         return task_path(self.store.root.parent/'workflow_work',task['id'])
 
+    def matrix_reuse_store(self):
+        from tasks.reuse import ContentStore
+        return ContentStore(self.store.root.parent/'reusable_inputs/matrices',max_files=16)
+
     def resume_parent(self,task):
-        from .prediction_resume import parent_task
+        from tasks.resumption import parent_task
         with self.engine.connect() as connection:parent=parent_task(connection,task['request']['resume_task_id'])
-        return parent,self.store.path(parent['id'])/'prediction_checkpoint'
+        suffix='training_checkpoints' if task['request']['algorithm']=='transformer' else 'prediction_checkpoint'
+        return parent,self.store.path(parent['id'])/suffix
 
     def load_stock(self,task,code):
         r=task['request'];bound=task['binding']['data']
@@ -227,6 +235,7 @@ class WorkflowSource:
         request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
         frozen_codes=self.model(task['request']['model_id'])[1]['binding']['data']['stock_codes'] if task['request']['model_id'] else None
         reader=MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool'),frozen_codes=frozen_codes)
+        reader.activity=getattr(self,'activity',None)
         stream=dict(request=request,binding=task['binding']['data'])
         def verify_skipped(code,history):
             if task['request']['model_id']:self.verify_history(task,code,history)

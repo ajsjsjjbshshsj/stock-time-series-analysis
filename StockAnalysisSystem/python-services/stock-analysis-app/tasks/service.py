@@ -69,7 +69,7 @@ class TaskService:
             if request.get('resume_task_id'):
                 # All task creation paths, including the engineering API, must
                 # recheck the parent/slot after potentially slow source binding.
-                from workflows.prediction_resume import parent_task
+                from .resumption import parent_task
                 parent_task(c,request['resume_task_id'])
             task_id=uuid4().hex
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
@@ -78,6 +78,12 @@ class TaskService:
             self._event(c,task_id,'CREATED',actor_id=actor_id)
             if on_create is not None:on_create(c,self._row(c,task_id))
             return public(self._row(c,task_id))
+
+    def resume(self,actor,id,key):
+        from .resumption import parent_task
+        with self.repo.transaction() as (connection,_):
+            self._admin(connection,actor);parent=parent_task(connection,id)
+        return self.create(actor,dict(parent['request'],resume_task_id=id),key)
 
     def get(self,task_id):
         with self.repo.engine.connect() as c:return public(self._row(c,task_id))
@@ -201,7 +207,7 @@ class TaskService:
             row=self._owned(c,slot,task_id,worker_id,generation)
             if allowed.index(stage)<allowed.index(row['stage']):raise Conflict('Stage regression')
             if row['stage']!=stage:
-                c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage))
+                c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage,progress=None))
                 self._event(c,task_id,stage)
             return public(self._row(c,task_id))
 
@@ -214,11 +220,25 @@ class TaskService:
             if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build') or row['stage']!=phase:
                 raise Conflict('Progress does not match current stage')
             old=json.loads(row['progress']) if row['progress'] else None
-            if old and old['phase']==phase:
+            if old and old.get('phase')==phase:
                 if total!=old['total'] or completed<old['completed']:raise Conflict('Progress regression')
                 if completed==old['completed']:return public(row)
+            if old and 'activity' in old:detail['activity']=old['activity']
             c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
             self._event(c,task_id,'PROGRESS',detail=detail)
+            return public(self._row(c,task_id))
+
+    def activity(self,task_id,worker_id,generation,value):
+        from .telemetry import normalize_activity
+        value=normalize_activity(value)
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation)
+            expected={'PROBE':('PROBE',),'TRAIN_EPOCH':('TRAIN',),'TRAIN_ITERATION':('TRAIN',),'SEAL':('VERIFY','SAVE')}.get(value['step'],('INPUT',))
+            if row['stage'] not in expected:raise ValueError('Activity stage mismatch')
+            detail=json.loads(row['progress']) if row['progress'] else {}
+            detail['activity']=dict(value,reported_at=int(self.clock()))
+            c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
+            self._event(c,task_id,'PROGRESS',detail={'activity':detail['activity']})
             return public(self._row(c,task_id))
 
     def _release(self,c):

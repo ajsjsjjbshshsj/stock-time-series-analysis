@@ -102,7 +102,9 @@ def build_market_matrix(task,stock_iterator,workdir,emit):
         streams={name:stack.enter_context((directory/name).open('xb')) for name in DATA_FILES}
         for code,snapshot,calendar,proof in stock_iterator:
             if len(seen)>=len(codes) or code!=codes[len(seen)]:raise ValueError('Stream changed frozen pool')
-            samples,report=qualify_stock(snapshot,calendar,proof,task['request'])
+            from .matrix_cache import PreparedSamples
+            if isinstance(snapshot,PreparedSamples):samples,report=snapshot.samples,snapshot.report
+            else:samples,report=qualify_stock(snapshot,calendar,proof,task['request'])
             if not seen:
                 coverage['calendar']=calendar
                 coverage['daily_eligible_stocks']={str(day):0 for day in open_days(calendar)

@@ -117,24 +117,31 @@ class MarketSource:
         expected=(meta['build_id'],meta['source_sha256'])
         skip_codes=set(skip_codes or ())
         if not skip_codes<=set(codes):raise ValueError('Skip outside frozen pool')
-        for code in codes:
-            with self.engine.connect() as c,c.begin():
-                current=c.execute(text("SELECT state,build_id,source_sha256 FROM stock_feature_build WHERE active_slot='traditional_v2'")).mappings().one()
-                if current['state']!='READY' or (current['build_id'],current['source_sha256'])!=expected:
-                    raise SourceChanged('Full market publication changed')
+        from contextlib import ExitStack
+        evidence_index={s['ts_code']:s for s in meta['source_manifest']['shards']} if 'source_manifest' in meta else None
+        options=dict(evidence_index=evidence_index) if evidence_index is not None else {}
+        with ExitStack() as batch:
+            for position,code in enumerate(codes):
+                activity=getattr(self,'activity',None)
+                if activity is not None:activity('RAW_VERIFY',stock=code)
+                if position%64==0:
+                    batch.close();c=batch.enter_context(self.engine.connect());batch.enter_context(c.begin())
+                    current=c.execute(text("SELECT state,build_id,source_sha256 FROM stock_feature_build WHERE active_slot='traditional_v2'")).mappings().one()
+                    if current['state']!='READY' or (current['build_id'],current['source_sha256'])!=expected:
+                        raise SourceChanged('Full market publication changed')
                 if code in skip_codes:
                     # Build metadata does not make mutable raw DB rows immutable.
                     # Recheck their manifest, while avoiding feature loading/scoring.
-                    raw,_=reader.stock_source(c,code,meta)
-                else:snapshot=reader.read_stock_snapshot(c,code,meta,start,end)
-            if code in skip_codes:
-                if on_skipped is not None:on_skipped(code,raw)
-                del raw
-                continue
-            proof=self.evidence.for_stock(code,str(meta['source_start']),request['end_date'],reviews=reviews)
-            proof['lifecycle']=lifecycles[code]
-            proof['list_date']=lifecycles[code]['list_date']
-            yield code,snapshot,calendar,proof
-            del snapshot,proof
+                    raw,_=reader.stock_source(c,code,meta,**options)
+                else:snapshot=reader.read_stock_snapshot(c,code,meta,start,end,**options)
+                if code in skip_codes:
+                    if on_skipped is not None:on_skipped(code,raw)
+                    del raw
+                    continue
+                proof=self.evidence.for_stock(code,str(meta['source_start']),request['end_date'],reviews=reviews)
+                proof['lifecycle']=lifecycles[code]
+                proof['list_date']=lifecycles[code]['list_date']
+                yield code,snapshot,calendar,proof
+                del snapshot,proof
         self._verify_binding(task)
         with self.engine.connect() as c:reader.validate_table(c,CANONICAL_TABLE,meta['build_id'])

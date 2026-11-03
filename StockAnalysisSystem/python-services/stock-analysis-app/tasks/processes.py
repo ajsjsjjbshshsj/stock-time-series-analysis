@@ -19,6 +19,9 @@ def parse_message(raw):
         return result
     body=json.loads(raw,object_pairs_hook=unique,parse_constant=lambda x:(_ for _ in ()).throw(ValueError('Protocol number')))
     if not isinstance(body,dict):raise ValueError('Protocol schema')
+    if body.get('event')=='activity':
+        from .telemetry import normalize_activity
+        return dict(event='activity',**normalize_activity({k:v for k,v in body.items() if k!='event'}))
     if set(body)=={'event','stage'} and body['event']=='stage' and body['stage'] in ('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE'):return body
     if set(body)=={'event','phase','completed','total'} and body['event']=='progress':
         from .contracts import bound_integer
