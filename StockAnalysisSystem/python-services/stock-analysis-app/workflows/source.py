@@ -161,6 +161,9 @@ class WorkflowSource:
         if request['operation']=='backtest':
             sessions=sum(r['is_open'] for r in calendar['rows'] if request['start_date']<=r['cal_date']<=selected['end_date'])
             bound['backtest_price_rows_budget']=check_backtest_budget(bound['pool_count'],sessions)
+        if request.get('resume_task_id'):
+            from .prediction_resume import bind_resume
+            bound['resume']=bind_resume(self,request,bound)
         return bound
 
     def verify(self,task):
@@ -170,6 +173,11 @@ class WorkflowSource:
         # Disposable training input is not part of the deployable model. Avoid
         # hashing a full-market float matrix on every future model operation.
         return task_path(self.store.root.parent/'workflow_work',task['id'])
+
+    def resume_parent(self,task):
+        from .prediction_resume import parent_task
+        with self.engine.connect() as connection:parent=parent_task(connection,task['request']['resume_task_id'])
+        return parent,self.store.path(parent['id'])/'prediction_checkpoint'
 
     def load_stock(self,task,code):
         r=task['request'];bound=task['binding']['data']
@@ -214,12 +222,16 @@ class WorkflowSource:
             frame.attrs={};frames.append(frame);histories.append(history)
         return pd.concat(frames,ignore_index=True),read_calendar(self.calendar_path),dict(source_history=pd.concat(histories,ignore_index=True))
 
-    def iter_stocks(self,task):
+    def iter_stocks(self,task,*,skip_codes=None):
         from tasks.market_source import MarketSource
         request=native_request(dict(task['request'],end_date=task['binding'].get('execution_end',task['request']['end_date'])))
         frozen_codes=self.model(task['request']['model_id'])[1]['binding']['data']['stock_codes'] if task['request']['model_id'] else None
         reader=MarketSource(self.engine,self.calendar_path,pool=task['binding'].get('registry_pool'),frozen_codes=frozen_codes)
-        for code,snapshot,calendar,proof in reader.iter_stocks(dict(request=request,binding=task['binding']['data'])):
+        stream=dict(request=request,binding=task['binding']['data'])
+        def verify_skipped(code,history):
+            if task['request']['model_id']:self.verify_history(task,code,history)
+        iterator=reader.iter_stocks(stream,skip_codes=skip_codes,on_skipped=verify_skipped) if skip_codes else reader.iter_stocks(stream)
+        for code,snapshot,calendar,proof in iterator:
             if task['request']['model_id']:self.verify_history(task,code,snapshot.source_history)
             yield code,snapshot,calendar,proof
 

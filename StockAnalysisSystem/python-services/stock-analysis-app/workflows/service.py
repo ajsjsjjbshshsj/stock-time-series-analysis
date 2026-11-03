@@ -80,6 +80,7 @@ class WorkflowService:
         from tasks.market_profile import bounded_profile
         slot=self.tasks.slot_status()
         return dict(algorithms=['xgboost','lightgbm','transformer'],operations=['train','predict','backtest','import'],
+            prediction_resume=dict(algorithm='lightgbm',operation='predict',checkpoint_version=1,manual=True),
             source=source,default_transformer_stocks=pool,transformer=dict(min_stocks=10,max_stocks=20,num_epochs=1,max_epochs=5,batch_size=1,max_batch_size=2,use_probe_selection=True),
             resource_profile=bounded_profile(),execution=dict(task_id=slot['task_id'],quarantined=slot['quarantined']),
             max_backtest_price_rows=MAX_BACKTEST_PRICE_ROWS,purpose='model_workflow',profit_required=False,automatic_publication=False)
@@ -88,6 +89,13 @@ class WorkflowService:
         value=normalize_operation(value)
         if value['model_id'] and self.repo.get_model(value['model_id']) is None:raise NotFound('Model not found')
         return self.tasks.create(actor,value,key)
+
+    def resume(self,actor,id,key):
+        from .prediction_resume import parent_task
+        with self.tasks.repo.transaction() as (connection,_):
+            self.tasks._admin(connection,actor)
+            parent=parent_task(connection,id)
+        return self.create(actor,dict(parent['request'],resume_task_id=id),key)
 
     def jobs(self,**kwargs):return self.tasks.list(**kwargs)
 

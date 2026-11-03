@@ -19,6 +19,7 @@ class Operation(BaseModel):
     ts_code:str|None=Field(default=None,pattern=r'^[0-9]{6}\.(SH|SZ)$')
     stock_codes:list[str]|None=None
     model_id:str|None=None
+    resume_task_id:str|None=None
     pool_version:str|None=Field(default=None,pattern=r'^(pool_[0-9a-f]{32}|csi300_[0-9a-f]{16})$')
     feature_build_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
     import_task_id:str|None=None
@@ -39,8 +40,10 @@ class Operation(BaseModel):
 
     @model_validator(mode='after')
     def boundaries(self):
-        for value in (self.model_id,self.import_task_id,self.experiment_id):
+        for value in (self.model_id,self.import_task_id,self.experiment_id,self.resume_task_id):
             if value is not None:identity(value)
+        if self.resume_task_id is not None and (self.operation!='predict' or self.algorithm!='lightgbm'):
+            raise ValueError('Resume is only supported for LightGBM prediction')
         if self.operation=='import':
             if self.feature_build_id is not None:raise ValueError('Imported model cannot select features')
             if self.pool_version is not None:raise ValueError('Imported model dictates its own pool')
@@ -69,6 +72,7 @@ def normalize_operation(value):
     # Absent selections retain the legacy request/digest byte shape.
     if result['pool_version'] is None:result.pop('pool_version')
     if result['feature_build_id'] is None:result.pop('feature_build_id')
+    if result['resume_task_id'] is None:result.pop('resume_task_id')
     return result
 
 

@@ -66,6 +66,11 @@ class TaskService:
             # Recheck current role and idempotency after the unlocked interval.
             old=existing(c)
             if old is not None:return old
+            if request.get('resume_task_id'):
+                # All task creation paths, including the engineering API, must
+                # recheck the parent/slot after potentially slow source binding.
+                from workflows.prediction_resume import parent_task
+                parent_task(c,request['resume_task_id'])
             task_id=uuid4().hex
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),

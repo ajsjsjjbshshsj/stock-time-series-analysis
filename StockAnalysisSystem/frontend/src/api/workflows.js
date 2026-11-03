@@ -28,6 +28,7 @@ export function createWorkflowApi(client = authApi) {
     results: options => list(client, `${ADMIN}/results`, options),
     result: (id, options) => get(client, `${ADMIN}/results`, id, options),
     create: (body, key, options = {}) => client.request(`${ADMIN}/jobs`, 'POST', body, { ...options, headers: { 'Idempotency-Key': key } }),
+    resume: (id, key, options = {}) => client.request(`${ADMIN}/jobs/${identity(id)}/resume`, 'POST', {}, { ...options, headers: { 'Idempotency-Key': key } }),
     get: tasks.get, events: tasks.events, cancel: tasks.cancel,
     publish: (id, options) => client.request(`${ADMIN}/results/${identity(id)}/publish`, 'POST', undefined, options),
     withdraw: (id, options) => client.request(`${ADMIN}/results/${identity(id)}/withdraw`, 'POST', undefined, options),
