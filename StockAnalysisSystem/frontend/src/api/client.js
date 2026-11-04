@@ -34,8 +34,9 @@ export function createRequestClient({ mode = 'mock', base = '', fetchImpl = glob
     const pathname = path.split('?')[0]
     const evaluationList = pathname === '/api/analysis/evaluations'
     const evaluationDetail = /^\/api\/analysis\/evaluations\/[0-9]{6}\.(?:SZ|SH|BJ)\/eval_[0-9a-f]{32}$/.test(pathname)
+    const indicatorReadiness = /^\/api\/analysis\/indicators\/\d{6}\.(?:SZ|SH|BJ)\/readiness$/.test(pathname)
     const live = LIVE_PATHS.has(pathname) || pathname === '/api/analysis/stocks' || pathname === '/api/analysis/models' || pathname === '/api/analysis/market/overview' || pathname === '/api/analysis/transformer/signals' || /^\/api\/analysis\/(kline|indicators|prediction|results|daily-basic)\/\d{6}\.(SZ|SH|BJ)$/.test(pathname) || /^\/api\/analysis\/models\/[A-Za-z0-9_-]+\/importance$/.test(pathname)
-    if (normalizeMode(selected) === 'mock' || !(live || evaluationList || evaluationDetail)) {
+    if (normalizeMode(selected) === 'mock' || !(live || evaluationList || evaluationDetail || indicatorReadiness)) {
       if (!(typeof allowMock === 'function' ? allowMock() : allowMock)) throw new Error('此功能尚未接入真实接口，当前不可用')
       if (mockDelayMs) await new Promise((resolve) => setTimeout(resolve, mockDelayMs))
       return mockProducer()

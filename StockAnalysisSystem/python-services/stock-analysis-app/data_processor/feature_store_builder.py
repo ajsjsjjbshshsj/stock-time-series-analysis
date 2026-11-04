@@ -25,7 +25,7 @@ def algorithm_identity():
     return FEATURE_VERSION,hashlib.sha256(canonical_bytes(evidence)).hexdigest(),evidence
 
 
-def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None,on_progress=None,timings=None):
+def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None,on_progress=None,timings=None,reuse_store=None,on_stock=None,on_activity=None):
     """Compute a sealed snapshot; no call here marks READY or changes active input."""
     validate_build_id(build_id)
     directory=Path(directory).resolve()
@@ -40,22 +40,34 @@ def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None
     version,code_hash,algorithm=algorithm_identity()
     with measured(timings,'metadata_persist'):
         repository.start_build(build_id,manifest,version,code_hash)
-    total=0;digest=hashlib.sha256();stocks=[]
+    total=0;digest=hashlib.sha256();stocks=[];reused=0
     try:
         for shard in manifest['shards']:
+            if on_activity is not None:on_activity('RAW_VERIFY',stock=shard['ts_code'],cache_hits=reused)
             with measured(timings,'source_shard_read'):
                 source=validate_source(pd.read_parquet(directory/shard['file']),manifest['source_start'],manifest['source_cutoff'])
-            with measured(timings,'feature_compute'):
-                calculation=source.copy(deep=True)
-                for name in SOURCE_COLUMNS[2:]:
-                    calculation[name]=pd.to_numeric(calculation[name],errors='raise').astype(float)
-                featured=engineer.calculate_all_features(calculation)
-            with measured(timings,'feature_materialize'):
-                before=list(zip(calculation.ts_code,calculation.trade_date))
-                after=list(zip(featured.ts_code,featured.trade_date))
-                if before!=after or len(featured)!=len(source):
-                    raise ValueError('Feature source-key coverage mismatch')
-                rows=feature_records(featured,build_id,start_date=manifest['source_start'],cutoff=manifest['source_cutoff'])
+            rows=None;receipt=None
+            if reuse_store is not None:
+                from data_processor import feature_reuse
+                key=feature_reuse.identity(shard,version,code_hash)
+                with measured(timings,'feature_cache_read'):
+                    rows=feature_reuse.load(reuse_store,key,source,build_id,manifest['source_start'],manifest['source_cutoff'])
+                reused+=int(rows is not None)
+            if rows is None:
+                if on_activity is not None:on_activity('FEATURE_COMPUTE',stock=shard['ts_code'],cache_hits=reused)
+                with measured(timings,'feature_compute'):
+                    calculation=source.copy(deep=True)
+                    for name in SOURCE_COLUMNS[2:]:
+                        calculation[name]=pd.to_numeric(calculation[name],errors='raise').astype(float)
+                    featured=engineer.calculate_all_features(calculation)
+                with measured(timings,'feature_materialize'):
+                    before=list(zip(calculation.ts_code,calculation.trade_date))
+                    after=list(zip(featured.ts_code,featured.trade_date))
+                    if before!=after or len(featured)!=len(source):
+                        raise ValueError('Feature source-key coverage mismatch')
+                    rows=feature_records(featured,build_id,start_date=manifest['source_start'],cutoff=manifest['source_cutoff'])
+            if reuse_store is not None:
+                with measured(timings,'feature_cache_write'):receipt=feature_reuse.save(reuse_store,key,rows)
             with measured(timings,'feature_persist'):
                 for offset in range(0,len(rows),1000):
                     batch=rows[offset:offset+1000]
@@ -66,15 +78,16 @@ def compute_build(db,manifest,build_id,*,directory,repository=None,engineer=None
                     digest.update(canonical_bytes(row)+b'\n')
             total+=len(rows)
             stocks.append(dict(ts_code=shard['ts_code'],row_count=len(rows),last_date=shard['last_date']))
+            if on_stock is not None and receipt is not None:on_stock(receipt)
             if on_progress is not None:
-                on_progress(dict(build_id=build_id,stocks=len(stocks),rows=total))
+                on_progress(dict(build_id=build_id,stocks=len(stocks),rows=total,reused_stocks=reused,ts_code=shard['ts_code']))
         if total!=manifest['row_count'] or len(stocks)!=manifest['stock_count']:
             raise ValueError('Feature build coverage mismatch')
         report=dict(build_id=build_id,storage_contract=STORAGE_CONTRACT,columns_sha256=columns_digest(),
                     algorithm_version=version,code_sha256=code_hash,algorithm=algorithm,
                     source_sha256=manifest['source_sha256'],source_start=manifest['source_start'],
                     source_cutoff=manifest['source_cutoff'],output_sha256=digest.hexdigest(),
-                    row_count=total,stock_count=len(stocks),stocks=stocks,published=False)
+                    row_count=total,stock_count=len(stocks),stocks=stocks,published=False,reused_stocks=reused)
         with measured(timings,'metadata_persist'):
             repository.finish_build(build_id,report)
         with (directory.parent/('build_'+build_id+'.json')).open('x',encoding='utf-8') as stream:

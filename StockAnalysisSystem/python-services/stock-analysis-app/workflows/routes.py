@@ -76,6 +76,17 @@ def register_workflow_routes(app):
         s,_=await guard(request,admin=True);query(request,{'limit','before'})
         return await run_in_threadpool(invoke,s.models,limit=number(limit,1,20),before=number(before,1,2**63-1) if before else None)
 
+    @app.post('/api/admin/workflows/jobs/{id}/resume',status_code=201)
+    async def resume(id:str,request:Request):
+        s,actor=await guard(request,admin=True,write=True);query(request,set())
+        if await body(request,empty=True):raise HTTPException(400,'Unexpected resume fields')
+        try:
+            keys=request.headers.getlist('idempotency-key')
+            if len(keys)!=1:raise ValueError('Idempotency key required')
+            key=idempotency(keys[0])
+        except (ValueError,TypeError):raise HTTPException(400,'Invalid resume request') from None
+        return await run_in_threadpool(invoke,s.resume,actor['id'],opaque(id),key)
+
     async def listing(request,limit,before,public):
         s,_=await guard(request,admin=not public);query(request,{'limit','before'})
         return await run_in_threadpool(invoke,s.results,public=public,limit=number(limit,1,20),before=number(before,1,2**63-1) if before else None)

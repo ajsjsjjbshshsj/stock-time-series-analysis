@@ -13,12 +13,15 @@ public class MarketProperties {
     @Bean
     ClickHouseClient clickHouseClient(Environment env) {
         require(env, "DB_PASSWORD");
+        int seconds = Integer.parseInt(env.getProperty("CLICKHOUSE_TIMEOUT_SECONDS", "5"));
+        if (seconds < 1 || seconds > 120)
+            throw new IllegalArgumentException("CLICKHOUSE_TIMEOUT_SECONDS must be between 1 and 120");
         return new ClickHouseClient(
                 URI.create(env.getProperty("CLICKHOUSE_HTTP_URL", "http://127.0.0.1:8123")),
                 env.getProperty("CLICKHOUSE_DB", "stock_analytics"),
                 env.getProperty("CLICKHOUSE_USER", "stock_app"),
                 require(env, "CLICKHOUSE_PASSWORD"),
-                Duration.ofSeconds(5));
+                Duration.ofSeconds(seconds));
     }
 
     private String require(Environment env, String key) {

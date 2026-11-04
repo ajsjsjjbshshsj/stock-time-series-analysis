@@ -24,7 +24,7 @@ def train_operation(task,directory,source,emit):
     write_json(directory/'native.json',native);verify_native(directory,algorithm)
     # Public metadata is intentionally independent of file paths/full bindings.
     info={key:native[key] for key in ('score_units','horizon','holding_sessions','feature_names','feature_count',
-        'train_start','train_end','seen_through','pool_count','metrics','probe_selected','epochs_completed','rounds','device','peak_vram_bytes','label_definition','ts_code','stock_codes') if key in native}
+        'train_start','train_end','seen_through','pool_count','metrics','probe_selected','epochs_completed','resumed_epochs','matrix_reused','input_reused_stocks','rounds','device','peak_vram_bytes','label_definition','ts_code','stock_codes') if key in native}
     info['scope']='all_shsz_a' if algorithm=='lightgbm' else 'fixed_stocks'
     info['parameters']={k:request[k] for k in ('n_estimators','max_depth','num_epochs','batch_size','label','early_metric','patience','use_probe_selection')}
     return info
@@ -40,6 +40,7 @@ def _xgboost(task,directory,source,emit):
     raw=dependency.to_frame() if dependency is not None else frame
     write_json(directory/'history.json',dict(cutoff=request['end_date'],prefixes={request['ts_code']:history_fingerprint(raw,request['end_date'])}))
     names=contract['feature_names'];emit('stage',stage='TRAIN')
+    activity=getattr(source,'activity',lambda *args,**kwargs:None);activity('TRAIN_ITERATION',force=True)
     result=StockPredictor('xgboost').train_dated(frame,feature_names=names,calendar=calendar,model_params=dict(
         n_estimators=request['n_estimators'],max_depth=request['max_depth'],n_jobs=1,random_state=42,tree_method='hist',device='cpu'))
     model=result['model'];model.save_model(directory/'model.json')
@@ -66,9 +67,14 @@ def _lightgbm(task,directory,source,emit):
         for code,snapshot,calendar,proof in source.iter_stocks(task):
             prefixes[code]=history_fingerprint(getattr(snapshot,'source_history',snapshot.raw_prices),r['end_date'])
             yield code,snapshot,calendar,proof
-    bundle=build_market_matrix(original,captured(),work,emit)
+    if hasattr(source,'matrix_reuse_store'):
+        from tasks.matrix_cache import build_reusable_matrix
+        bundle=build_reusable_matrix(original,source.iter_stocks(task),work,emit,source.matrix_reuse_store(),prefixes=prefixes,activity=getattr(source,'activity',None))
+    else:bundle=build_market_matrix(original,captured(),work,emit)
     write_json(directory/'history.json',dict(cutoff=r['end_date'],prefixes=prefixes))
-    emit('stage',stage='PROBE');names,probe=disk_probe(bundle,bundle.feature_names,bounded_profile(),emit)
+    activity=getattr(source,'activity',lambda *args,**kwargs:None)
+    emit('stage',stage='PROBE');activity('PROBE',force=True)
+    names,probe=disk_probe(bundle,bundle.feature_names,bounded_profile(),emit)
     write_json(directory/'probe_selection.json',probe)
     train_index=bundle.splits['train'];val_index=bundle.splits['val'];columns=[bundle.feature_names.index(n) for n in names]
     ytrain=np.asarray(bundle.labels[train_index]);yval=np.asarray(bundle.labels[val_index])
@@ -78,11 +84,13 @@ def _lightgbm(task,directory,source,emit):
         value=metric.evaluate(pred)['mean_daily_rank_ic']
         return 'mean_daily_rank_ic',-1. if value is None else value,True
     def progress(env):
+        activity('TRAIN_ITERATION')
         if (env.iteration+1)%10==0:emit('progress',phase='TRAIN',completed=env.iteration+1,total=r['n_estimators'])
     transform=lambda y,index:within_day_ranks(y,bundle.dates[index]) if r['label']=='daily_rank' else y
     ds=lgb.Dataset(DiskFeatureSequence(bundle.features,train_index,columns),label=transform(ytrain,train_index),feature_name=names,params=params)
     vs=lgb.Dataset(DiskFeatureSequence(bundle.features,val_index,columns),label=transform(yval,val_index),feature_name=names,reference=ds,params=params)
     emit('stage',stage='TRAIN')
+    activity('TRAIN_ITERATION',force=True)
     model=lgb.train(params,ds,num_boost_round=r['n_estimators'],valid_sets=[vs],
         feval=feval if r['early_metric']=='rank_ic' else None,
         callbacks=[progress,lgb.early_stopping(r['patience'],verbose=False),lgb.log_evaluation(0)])
@@ -95,7 +103,8 @@ def _lightgbm(task,directory,source,emit):
     return dict(feature_names=names,feature_count=len(names),score_units='within_day_centered_rank' if r['label']=='daily_rank' else 'raw_return_5d',
         horizon=5,holding_sessions=5,train_start=bundle.split_metadata['train']['signal_start'],train_end=bundle.split_metadata['train']['signal_end'],
         seen_through=bundle.split_metadata['val']['label_end'],pool_count=task['binding']['data']['pool_count'],
-        metrics=metrics,params=params,splits=bundle.split_metadata,probe_selected=True,rounds=model.current_iteration())
+        metrics=metrics,params=params,splits=bundle.split_metadata,probe_selected=True,rounds=model.current_iteration(),
+        matrix_reused=getattr(bundle,'reused',False),input_reused_stocks=getattr(bundle,'reused_stocks',0))
 
 
 def verify_native(directory,algorithm):

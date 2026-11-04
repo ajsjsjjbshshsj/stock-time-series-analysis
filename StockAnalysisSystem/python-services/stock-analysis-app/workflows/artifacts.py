@@ -12,13 +12,15 @@ class ArtifactStore:
 
     def inventory(self,folder):
         if any(_is_link(p) for p in (folder,*folder.parents)):raise ValueError('Unsafe workflow root')
-        files={}
+        files={};paths=[]
         for path in sorted(folder.rglob('*')):
             if _is_link(path):raise ValueError('Unsafe workflow file')
             if path.is_file():
                 name=path.relative_to(folder).as_posix()
-                if name not in ('manifest.json','complete.json'):files[name]=file_digest(path)
-            if len(files)>2048:raise ValueError('Workflow file count exceeded')
+                if name not in ('manifest.json','complete.json'):paths.append(path)
+            if len(paths)>2048:raise ValueError('Workflow file count exceeded')
+        from tasks.reuse import bounded_hashes
+        files={path.relative_to(folder).as_posix():sha for path,sha in zip(paths,bounded_hashes(paths,file_digest))}
         return files
 
     def seal(self,id,metadata):

@@ -437,7 +437,8 @@ def evaluate_ranking_model(model, dataloader, criterion, device, config, writer=
 # ============================================================
 
 def run_transformer_training(panel_df=None, feature_path=None, config=None, use_multi_head=True,
-                              num_epochs=None, learning_rate=None, save_name=None,progress_callback=None,create_plots=True,pool_validator=None):
+                              num_epochs=None, learning_rate=None, save_name=None,progress_callback=None,create_plots=True,pool_validator=None,
+                              enable_checkpoints=False,resume_from=None,checkpoint_context=None,stage_callback=None):
     """
     执行 Transformer 训练流程。
 
@@ -507,6 +508,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
 
     # 探针法特征筛选：支持在线计算和预计算特征两种训练路径。
     if config.get('use_probe_selection', False):
+        if stage_callback is not None:stage_callback('PROBE')
         from data_processor.probe_selection import load_selected_features, probe_feature_selection
 
         probe_output_path = os.path.join(output_dir, 'probe_selection.json')
@@ -597,8 +599,28 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
                              config.get('early_stopping_min_delta', 0.))
     stopped_early = False
     history = []  # 记录每个epoch的指标
+    start_epoch=0;best_state=None;checkpoint=None
+    if stage_callback is not None:stage_callback('TRAIN')
+    if enable_checkpoints or resume_from is not None:
+        from pathlib import Path
+        from tasks.contracts import digest
+        from analysis.transformer_checkpoint import EpochCheckpoint,data_identity,scaler_state
+        if resume_from is not None and Path(resume_from).resolve().parent==Path(output_dir).resolve():
+            raise ValueError('Resume requires a fresh output directory')
+        math_config={k:v for k,v in config.items() if k not in ('output_dir','probe_selected_features_path')}
+        identity=dict(task=checkpoint_context,config=digest(math_config),
+            data=data_identity(train_result,val_result,full_features,features,stockid2idx,scaler),
+            device=device.type,dependencies=dict(torch=str(torch.__version__),numpy=np.__version__))
+        checkpoint=EpochCheckpoint(Path(output_dir)/'training_checkpoints',identity)
+        if resume_from is not None:
+            proof=EpochCheckpoint.inspect(resume_from)
+            restored=checkpoint.restore(proof,model,optimizer,scheduler,stopping)
+            start_epoch=restored['epoch'];history=restored['history'];best_score=restored['best_score'];best_epoch=restored['best_epoch']
+            best_state=restored['best_state'];stopped_early=restored['stopped_early']
+            if start_epoch>config['num_epochs']:raise ValueError('Checkpoint exceeds planned epochs')
+            torch.save(best_state,os.path.join(output_dir,f'{save_name or "best_model"}.pth'))
 
-    for epoch in range(config['num_epochs']):
+    for epoch in range(start_epoch,start_epoch if stopped_early else config['num_epochs']):
         logger.info(f"\n=== Epoch {epoch+1}/{config['num_epochs']} ===")
 
         train_loss, train_metrics = train_ranking_model(
@@ -638,7 +660,6 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
             'ratio_pred': eval_metrics.get('ratio_pred', train_metrics.get('ratio_pred', 0.0)),
         }
         history.append(epoch_history)
-        if progress_callback is not None:progress_callback(epoch+1,config['num_epochs'])
 
         current_final_score = eval_metrics.get('final_score', 0.0)
         improved, should_stop = stopping.update(current_final_score)
@@ -647,7 +668,13 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
             best_epoch = epoch + 1
             model_name = save_name or 'best_model'
             torch.save(model.state_dict(), os.path.join(output_dir, f'{model_name}.pth'))
+            if checkpoint is not None:best_state={name:value.detach().cpu().clone() for name,value in model.state_dict().items()}
             logger.info(f"保存最佳模型 - final score: {best_score:.4f}")
+        if checkpoint is not None:
+            checkpoint.save(epoch+1,model,optimizer,scheduler,stopping,history,best_score,best_epoch,best_state,should_stop,
+                preprocessing=dict(scaler=scaler_state(scaler),full_features=full_features,selected_features=features,stockid2idx=stockid2idx))
+        # A reported completed epoch now has a durable checkpoint when enabled.
+        if progress_callback is not None:progress_callback(epoch+1,config['num_epochs'])
         if should_stop:
             stopped_early = True
             logger.info(f"验证指标连续 {stopping.patience} 轮未改善，提前停止")
@@ -688,6 +715,7 @@ def run_transformer_training(panel_df=None, feature_path=None, config=None, use_
         'best_score': best_score,
         'best_epoch': best_epoch,
         'epochs_completed': len(history),
+        'resumed_epochs': start_epoch,
         'stopped_early': stopped_early,
         'history': history,
         'config': config,

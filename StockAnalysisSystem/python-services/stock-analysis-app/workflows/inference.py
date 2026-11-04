@@ -5,7 +5,7 @@ from tasks.artifacts import write_json
 from .training import verify_native
 
 
-def iter_predictions(task,source):
+def iter_predictions(task,source,*,skip_codes=None):
     r=task['request'];_,metadata=source.model(r['model_id']);native=metadata['native']
     folder=source.store.path(r['model_id']);model=verify_native(folder,r['algorithm']);names=native['feature_names']
     if r['algorithm']=='transformer':
@@ -23,7 +23,10 @@ def iter_predictions(task,source):
     else:
         from tasks.market_samples import qualify_signals
         from .source import native_request
-        for code,snapshot,calendar,proof in source.iter_stocks(task):
+        iterator=source.iter_stocks(task,skip_codes=skip_codes) if skip_codes else source.iter_stocks(task)
+        for code,snapshot,calendar,proof in iterator:
+            activity=getattr(source,'activity',None)
+            if activity is not None:activity('SCORE',stock=code)
             from dataclasses import is_dataclass,replace
             from copy import copy
             clipped={name:getattr(snapshot,name)[pd.to_datetime(getattr(snapshot,name).trade_date).between(
@@ -41,6 +44,8 @@ def iter_predictions(task,source):
 
 
 def collect_predictions(task,directory,source,emit,*,keep_prices=False):
+    if not keep_prices and task['request']['operation']=='predict' and task['request']['algorithm']=='lightgbm':
+        return collect_checkpointed_predictions(task,directory,source,emit)
     (directory/'scores').mkdir(exist_ok=False);parts=[];count=0;stocks=set();dates=set();exclusions=[];all_scores=[];prices=[];files=0
     latest=None;latest_parts=[];price_rows=0
     for i,(scores,raw,coverage) in enumerate(iter_predictions(task,source),1):
@@ -76,6 +81,47 @@ def collect_predictions(task,directory,source,emit,*,keep_prices=False):
     ranking.to_parquet(directory/'latest_scores.parquet',index=False)
     write_json(directory/'eligibility.json',dict(stocks_with_signals=len(stocks),score_rows=count,dates=sorted(dates),exclusions=exclusions))
     return dict(score_rows=count,scored_stocks=len(stocks),signal_start=min(dates),signal_end=max(dates)),all_scores,prices
+
+
+def collect_checkpointed_predictions(task,directory,source,emit):
+    from .prediction_checkpoint import Checkpoint,CHUNK_SIZE
+    checkpoint=Checkpoint.create(task,directory/'prediction_checkpoint');resumed=0
+    if task['binding'].get('resume'):
+        parent,folder=source.resume_parent(task)
+        checkpoint.copy_prefix(parent,folder,task['binding']['resume']['checkpoint_sha256'])
+        resumed=len(checkpoint.completed_codes)
+        if resumed!=task['binding']['resume']['completed_stocks']:raise ValueError('Resume count changed')
+    total=len(checkpoint.codes);emit('progress',phase='INPUT',completed=resumed,total=total)
+    parts=[];reports=[];members=[]
+    skip=set(checkpoint.completed_codes)
+    iterator=iter_predictions(task,source,skip_codes=skip) if skip else iter_predictions(task,source)
+    for scores,raw,coverage in iterator:
+        index=len(checkpoint.completed_codes)+len(members)
+        if index>=total or coverage.get('ts_code')!=checkpoint.codes[index]:raise ValueError('Prediction stream changed frozen pool')
+        parts.append(scores);reports.append(coverage);members.append(coverage['ts_code'])
+        if len(members)==CHUNK_SIZE:
+            checkpoint.commit(members,pd.concat(parts,ignore_index=True),reports)
+            emit('progress',phase='INPUT',completed=len(checkpoint.completed_codes),total=total)
+            parts=[];reports=[];members=[]
+    if members:checkpoint.commit(members,pd.concat(parts,ignore_index=True),reports)
+    if checkpoint.completed_codes!=checkpoint.codes:raise ValueError('Incomplete prediction pool')
+    # Rebuild global ranking/coverage from ALL committed chunks, including zero-score stocks.
+    count=0;stocks=set();dates=set();exclusions=[];latest=None;latest_parts=[]
+    for scores,reports in checkpoint.iter_chunks():
+        count+=len(scores);stocks.update(scores.ts_code);dates.update(scores.trade_date)
+        exclusions.extend(report for report in reports if report.get('reasons') or report.get('excluded_rows'))
+        if len(scores):
+            day=scores.trade_date.max()
+            if latest is None or day>latest:latest=day;latest_parts=[]
+            if day==latest:latest_parts.append(scores[scores.trade_date==latest])
+    if not count:raise ValueError('No eligible signals in requested period')
+    ranking=pd.concat(latest_parts,ignore_index=True).sort_values(['score','ts_code'],ascending=[False,True]).reset_index(drop=True)
+    ranking['rank']=np.arange(1,len(ranking)+1)
+    ranking.to_parquet(directory/'latest_scores.parquet',index=False)
+    write_json(directory/'eligibility.json',dict(stocks_with_signals=len(stocks),score_rows=count,dates=sorted(dates),exclusions=exclusions))
+    emit('progress',phase='INPUT',completed=total,total=total)
+    return dict(score_rows=count,scored_stocks=len(stocks),signal_start=min(dates),signal_end=max(dates),
+        resumed_stocks=resumed,resume_task_id=task['request'].get('resume_task_id')),[],[]
 
 
 def predict_operation(task,directory,source,emit):

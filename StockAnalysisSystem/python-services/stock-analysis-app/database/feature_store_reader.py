@@ -70,24 +70,24 @@ def validate_table(connection,table,build_id):
         raise FeatureStoreUnavailable('Feature identity index missing')
 
 
-def stock_source(connection,code,meta):
+def stock_source(connection,code,meta,*,evidence_index=None):
     rows=connection.execute(text(SOURCE_SQL),dict(code=code,start=meta['source_start'],cutoff=meta['source_cutoff'])).mappings().all()
     if not rows or any(r['basic_code'] is None or r['master_code'] is None for r in rows):
         raise FeatureStoreUnavailable('Feature source/reference coverage missing')
     frame=validate_source(pd.DataFrame([{c:r[c] for c in SOURCE_COLUMNS} for r in rows]),meta['source_start'],meta['source_cutoff'])
-    evidence=next((s for s in meta['source_manifest']['shards'] if s['ts_code']==code),None)
+    evidence=evidence_index.get(code) if evidence_index is not None else next((s for s in meta['source_manifest']['shards'] if s['ts_code']==code),None)
     digest=hashlib.sha256();update_source_digest(digest,frame)
     if evidence is None or len(frame)!=evidence['row_count'] or digest.hexdigest()!=evidence['source_sha256']:
         raise FeatureStoreUnavailable('Raw source changed since feature build')
     return frame,evidence
 
 
-def read_stock_snapshot(connection,code,meta,start,end):
+def read_stock_snapshot(connection,code,meta,start,end,*,evidence_index=None):
     """One stock, caller-owned transaction and prevalidated global publication."""
     validate_stock_code(code);start=date_only(start);end=date_only(end)
     if start>end or start<date_only(meta['source_start']) or end>date_only(meta['source_cutoff']):
         raise FeatureStoreUnavailable('Requested range outside verified feature source')
-    raw,proof=stock_source(connection,code,meta)
+    raw,proof=stock_source(connection,code,meta,evidence_index=evidence_index)
     history=raw.copy()
     for name in SOURCE_COLUMNS[2:]:history[name]=pd.to_numeric(history[name]).astype(float)
     raw=raw[raw.trade_date.between(start,end)].copy()

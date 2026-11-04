@@ -9,6 +9,7 @@ import { normalizeStockPool, normalizeKline, normalizeIndicators, STOCK_CODE } f
 import { normalizeModels, normalizePrediction, normalizeResults, finiteJson } from '../utils/prediction.js'
 import { normalizeEvaluations, normalizeEvaluation } from '../utils/evaluation.js'
 import { normalizeTransformerSignals } from '../utils/transformerSignals.js'
+import { normalizeIndicatorReadiness } from '../utils/indicatorReadiness.js'
 
 const evaluationDemoUnavailable = () => { throw new Error('滚动评估仅提供真实离线发布报告，演示模式不可用') }
 const evaluationCode = code => { if (!/^[0-9]{6}\.(?:SZ|SH|BJ)$/.test(code)) throw new Error('股票代码无效') }
@@ -95,6 +96,14 @@ export async function getIndicatorSeries(tsCode, options = {}) {
   const live = dataSource.value === 'hybrid'
   const data = await request(() => getIndicators(tsCode), `/api/analysis/indicators/${tsCode}`, options)
   return live ? { ts_code: tsCode, indicators: normalizeIndicators(data, tsCode) } : data
+}
+
+/** GET only; errors never become a synthetic successful readiness report. */
+export async function getIndicatorReadiness(tsCode, options = {}) {
+  if (!STOCK_CODE.test(tsCode)) throw new Error('股票代码无效')
+  const unavailable = () => { throw new Error('服务端指标验收仅在真实模式可用') }
+  return normalizeIndicatorReadiness(await request(unavailable, `/api/analysis/indicators/${tsCode}/readiness`,
+    { ...options, method: 'GET' }), tsCode)
 }
 
 /** GET /api/analysis/statistics/:tsCode — 描述统计/直方图/回撤/波动率/相关性/趋势 */

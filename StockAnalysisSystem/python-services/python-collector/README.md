@@ -192,6 +192,8 @@ python -m pytest tests/ -v
 
 ## 代码维护边界
 
+历史指标、夜间增量、隔离重建、检查点恢复和备份边界见 [指标运维说明](../../docs/INDICATOR_OPERATIONS.md)。指标 `worker` 是显式启用的独立单所有者进程，不代替采集 worker，也不会重新训练模型。
+
 夜间更新和历史补采的生产入口统一使用 `app/nightly/gap_service.py` 的数据库优先缺口队列。已移除退役的 `MarketUpdateService` 和仅供其使用的全日证据注册/补充请求规划逻辑；原任务存储仓库、符号有效期规则与 `NativeDayAcquirer` 仍被现行队列使用，不删除旧任务记录或原始来源证据。
 
 任务额度等待状态集中在 `app/market_data/retry_policy.py`，不与网络重试策略混用。基础信息的重复键恢复和只插入 SQL 集中在 `app/repositories/stock_reference.py`；两个调用方继续各自验证 IPO、来源、所有权和外层事务，不覆盖已有名称、行业或上市日期。
