@@ -6,6 +6,7 @@ slot. The supervisor still proves its owned tree stopped before finalization.
 import logging
 import threading
 import time
+from sqlalchemy.exc import OperationalError
 from .contracts import TaskFailure
 
 
@@ -24,6 +25,18 @@ class TaskControl:
     def _fail(self,code):
         self.failure=code;self.stopped.set();self.pulse.close()
 
+    def _heartbeat(self):
+        try:return self.service.heartbeat(*self.fence)
+        except OperationalError as error:
+            args=getattr(error.orig,'args',())
+            number=args[0] if args and type(args[0]) is int else None
+            # One fresh transaction only. Keep sending solely under the last
+            # CONFIRMED pulse deadline; do not extend a lease on an exception.
+            # Authentication, ownership, schema and unknown errors never retry.
+            if number not in (1205,1213,2003,2006,2013) or self.stopped.is_set() or self.clock()>=self.deadline:raise
+            logging.getLogger(__name__).warning('Task control retry: operation=heartbeat db_errno=%d attempt=1',number)
+            return self.service.heartbeat(*self.fence)
+
     def start(self):
         def run():
             while not self.stopped.wait(self.interval):
@@ -31,7 +44,7 @@ class TaskControl:
                     self._fail('TIME_LIMIT');return
                 begin=self.clock()
                 try:
-                    current=self.service.heartbeat(*self.fence)
+                    current=self._heartbeat()
                     if self.stopped.is_set():return
                     if self.clock()>=self.deadline:
                         self._fail('TIME_LIMIT');return
@@ -43,7 +56,7 @@ class TaskControl:
                     logging.getLogger(__name__).warning(
                         'Task control failed: operation=heartbeat exception_type=%s elapsed_ms=%d',
                         type(error).__name__,int(1000*(self.clock()-begin)))
-                    self._fail('DEPENDENCY_UNAVAILABLE');return
+                    self._fail('TIME_LIMIT' if self.clock()>=self.deadline else 'DEPENDENCY_UNAVAILABLE');return
         self.thread=threading.Thread(target=run,daemon=True,name='task-lease-control')
         self.thread.start()
 

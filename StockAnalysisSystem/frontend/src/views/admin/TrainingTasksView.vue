@@ -11,7 +11,7 @@
       <h2>创建工程任务</h2><p class="muted">这是保留的工程验证入口。三模型正式工作流、参数、预测、回测与发布请使用 <RouterLink to="/models">模型工作台</RouterLink>。只读取已核验数据，不触发采集。</p>
       <p v-if="caps?.source" class="muted">可用输入：{{ caps.source.source_start }} → {{ caps.source.source_cutoff }} · 构建 {{ caps.source.build_id || '已配置' }}</p>
       <form class="task-form" @submit.prevent="createJob">
-        <label>训练器<select v-model="draft.kind" aria-label="训练器"><option value="xgboost_single">单股 XGBoost · 工程验证</option><option value="lightgbm_all_market" :disabled="!marketCapability?.enabled">全市场 LightGBM · 保留探针筛选</option><option value="transformer" disabled>Transformer · 未接入</option></select></label>
+        <label>训练器<select v-model="draft.kind" aria-label="训练器"><option value="xgboost_single">单股 XGBoost · 工程验证</option><option value="lightgbm_all_market" :disabled="!marketCapability?.enabled">全市场 LightGBM · 保留探针筛选</option><option value="transformer" disabled>Transformer · 请使用模型工作台</option></select></label>
         <label v-if="!isMarket">股票代码<input v-model="draft.ts_code" required maxlength="9" placeholder="000001.SZ" /></label>
         <label>输入开始<input v-model="draft.start_date" type="date" required :min="inputSource?.source_start" :max="inputSource?.source_cutoff" /></label>
         <label>输入截止<input v-model="draft.end_date" type="date" required :min="draft.start_date" :max="inputSource?.source_cutoff" /></label>
@@ -23,7 +23,7 @@
         <h3>冻结完整沪深 A 股池 · 不含北交所</h3>
         <p v-if="marketCapability?.source">已入库 {{ marketCapability.source.pool_count }} 只 · {{ marketCapability.source.source_start }} → {{ marketCapability.source.source_cutoff }}</p>
         <p>股票池不随日期资格变化；上市前、预热、已证实停牌和标签未成熟会单独统计。发现未解释缺口或成熟特征异常即失败，不缩池、不补造数据。</p>
-        <p>预测第 5 个市场交易日收益。探针 1 次 × 3 任务、10 个噪声列、各最多 30 轮；最终回归最多 20 轮。CPU 2 线程，需空闲内存 ≥8 GiB、临时磁盘 ≥16 GiB；训练树上限 6 GiB / 60 分钟。</p>
+        <p>预测第 5 个市场交易日收益。探针 1 次 × 3 任务、10 个噪声列、各最多 30 轮；最终回归最多 20 轮。CPU 2 线程，需空闲内存 ≥8 GiB、临时磁盘 ≥16 GiB；训练树上限 6 GiB，当前运行安全时限为 3 小时。</p>
         <p class="task-hash" v-if="marketCapability?.source">池摘要：{{ marketCapability.source.pool_identity }}</p>
       </div>
     </section>

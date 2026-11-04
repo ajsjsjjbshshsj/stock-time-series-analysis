@@ -38,7 +38,9 @@ class TaskService:
 
     def _event(self,c,task_id,event,*,actor_id=None,detail=None):
         if event not in EVENTS:raise ValueError('Invalid event')
-        row=self._row(c,task_id)
+        identity(task_id)
+        row=c.execute(select(tasks.c.event_count).where(tasks.c.id==task_id)).mappings().one_or_none()
+        if row is None:raise NotFound('Task unavailable')
         if row['event_count']>=2000:raise ValueError('Event bound exceeded')
         c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock()),actor_id=actor_id,
                                         detail=encoded(detail) if detail is not None else None))
@@ -180,9 +182,12 @@ class TaskService:
                 or slot['quarantined'] or slot['lease_until']<=int(self.clock())):
             raise LeaseLost('Execution lease unavailable')
 
-    def _owned(self,c,slot,task_id,worker_id,generation):
+    def _owned(self,c,slot,task_id,worker_id,generation,*,include_payload=True):
         self._fenced(slot,task_id,worker_id,generation)
-        row=self._row(c,task_id)
+        if include_payload:row=self._row(c,task_id)
+        else:
+            row=c.execute(select(tasks.c.state,tasks.c.stage,tasks.c.request,tasks.c.progress).where(tasks.c.id==task_id)).mappings().one_or_none()
+            if row is None:raise NotFound('Task unavailable')
         if slot['lease_until']<=int(self.clock()):
             raise LeaseLost('Execution lease expired during task read')
         if row['state'] not in ('RUNNING','CANCEL_REQUESTED'):raise LeaseLost('Task not owned')
@@ -200,46 +205,54 @@ class TaskService:
             c.execute(tasks.update().where(tasks.c.id==task_id).values(heartbeat_at=now))
             return dict(state=state,lease_until=now+30)
 
-    def stage(self,task_id,worker_id,generation,stage):
+    def record_stage(self,*args):return self.stage(*args,return_snapshot=False)
+
+    def record_progress(self,*args):return self.progress(*args,return_snapshot=False)
+
+    def record_activity(self,*args):return self.activity(*args,return_snapshot=False)
+
+    def stage(self,task_id,worker_id,generation,stage,*,return_snapshot=True):
         allowed=('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE')
         if stage not in allowed:raise ValueError('Invalid training stage')
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation)
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
             if allowed.index(stage)<allowed.index(row['stage']):raise Conflict('Stage regression')
             if row['stage']!=stage:
                 c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage,progress=None))
                 self._event(c,task_id,stage)
-            return public(self._row(c,task_id))
+        return self.get(task_id) if return_snapshot else None
 
-    def progress(self,task_id,worker_id,generation,phase,completed,total):
+    def progress(self,task_id,worker_id,generation,phase,completed,total,*,return_snapshot=True):
         if phase not in ('INPUT','PROBE','TRAIN'):raise ValueError('Invalid progress phase')
         bound_integer(total,1,10000000);bound_integer(completed,0,total)
         detail=dict(phase=phase,completed=completed,total=total)
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation)
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
             if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build') or row['stage']!=phase:
                 raise Conflict('Progress does not match current stage')
             old=json.loads(row['progress']) if row['progress'] else None
+            unchanged=False
             if old and old.get('phase')==phase:
                 if total!=old['total'] or completed<old['completed']:raise Conflict('Progress regression')
-                if completed==old['completed']:return public(row)
-            if old and 'activity' in old:detail['activity']=old['activity']
-            c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
-            self._event(c,task_id,'PROGRESS',detail=detail)
-            return public(self._row(c,task_id))
+                unchanged=completed==old['completed']
+            if not unchanged:
+                if old and 'activity' in old:detail['activity']=old['activity']
+                c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
+                self._event(c,task_id,'PROGRESS',detail=detail)
+        return self.get(task_id) if return_snapshot else None
 
-    def activity(self,task_id,worker_id,generation,value):
+    def activity(self,task_id,worker_id,generation,value,*,return_snapshot=True):
         from .telemetry import normalize_activity
         value=normalize_activity(value)
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation)
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
             expected={'PROBE':('PROBE',),'TRAIN_EPOCH':('TRAIN',),'TRAIN_ITERATION':('TRAIN',),'SEAL':('VERIFY','SAVE')}.get(value['step'],('INPUT',))
             if row['stage'] not in expected:raise ValueError('Activity stage mismatch')
             detail=json.loads(row['progress']) if row['progress'] else {}
             detail['activity']=dict(value,reported_at=int(self.clock()))
             c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
             self._event(c,task_id,'PROGRESS',detail={'activity':detail['activity']})
-            return public(self._row(c,task_id))
+        return self.get(task_id) if return_snapshot else None
 
     def _release(self,c):
         c.execute(slots.update().where(slots.c.id==1).values(task_id=None,worker_id=None,lease_until=None,quarantined=False))
