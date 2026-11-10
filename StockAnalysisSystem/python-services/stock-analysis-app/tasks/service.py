@@ -63,7 +63,15 @@ class TaskService:
             if old is not None:return old
         # Source binding can hash the complete market and outlive the30s lease.
         # Never hold the execution-slot (or account) lock during that work.
-        binding=self.source.bind(request)
+        source=self.source
+        from .resumption import is_lightgbm_prediction_resume
+        if is_lightgbm_prediction_resume(request):
+            from .source import SourceProvider
+            if isinstance(source,SourceProvider):
+                from .resumption import parent_task,resume_calendar_path
+                with self.repo.engine.connect() as c:parent=parent_task(c,request['resume_task_id'])
+                source=SourceProvider(source.engine,resume_calendar_path(source.calendar_path,parent['binding']))
+        binding=source.bind(request)
         with self.repo.transaction() as (c,_):
             # Recheck current role and idempotency after the unlocked interval.
             old=existing(c)
