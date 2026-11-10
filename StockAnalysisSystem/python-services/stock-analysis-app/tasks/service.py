@@ -14,7 +14,7 @@ def public(row):
         'started_at','heartbeat_at','finished_at','failure_code')}
     result.update(request=json.loads(row['request']),binding=json.loads(row['binding']),
                   candidate=json.loads(row['candidate']) if row['candidate'] else None)
-    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate'):
+    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate','lightgbm_continue'):
         binding=result['binding']
         result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff','preparation_id','pool_version','previous_active_build_id') if k in binding}
         result['progress']=json.loads(row['progress']) if row['progress'] else None
@@ -58,12 +58,16 @@ class TaskService:
                 if on_create is not None:on_create(c,old)
                 return public(old)
             return None
-        with self.repo.transaction() as (c,_):
+        with self.repo.transaction() as (c,slot):
             old=existing(c)
             if old is not None:return old
+            if request['kind']=='lightgbm_continue' and slot['quarantined']:raise Conflict('Execution slot quarantined')
         # Source binding can hash the complete market and outlive the30s lease.
         # Never hold the execution-slot (or account) lock during that work.
         source=self.source
+        if request['kind']=='lightgbm_continue':
+            from lightgbm_continuation.source import ContinuationSource
+            source=ContinuationSource(self.repo.engine,self.source.calendar_path)
         from .resumption import is_lightgbm_prediction_resume
         if is_lightgbm_prediction_resume(request):
             from .source import SourceProvider
@@ -72,10 +76,14 @@ class TaskService:
                 with self.repo.engine.connect() as c:parent=parent_task(c,request['resume_task_id'])
                 source=SourceProvider(source.engine,resume_calendar_path(source.calendar_path,parent['binding']))
         binding=source.bind(request)
-        with self.repo.transaction() as (c,_):
+        with self.repo.transaction() as (c,slot):
             # Recheck current role and idempotency after the unlocked interval.
             old=existing(c)
             if old is not None:return old
+            if request['kind']=='lightgbm_continue':
+                from lightgbm_continuation.source import assert_current
+                if slot['quarantined']:raise Conflict('Execution slot quarantined')
+                assert_current(c,request,binding)
             if request.get('resume_task_id'):
                 # All task creation paths, including the engineering API, must
                 # recheck the parent/slot after potentially slow source binding.
@@ -184,6 +192,20 @@ class TaskService:
                 raise ValueError('Task reference mismatch')
             return task
 
+    def reserve_continuation(self,task_id,worker_id,generation,windows):
+        from lightgbm_continuation.source import RESERVED,assert_current,reserve_comparison
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation)
+            request=json.loads(row['request'])
+            # Child output is consumed asynchronously by the supervisor.
+            if request['kind']!='lightgbm_continue' or row['state']!='RUNNING' or row['stage'] not in ('PREFLIGHT','INPUT'):
+                raise LeaseLost('Continuation reservation requires an owned input stage')
+            self._admin(c,row['actor_id'])
+            assert_current(c,request,json.loads(row['binding']))
+            try:reserve_comparison(c,request,windows)
+            except Conflict:raise TaskFailure('COMPARISON_RESERVED') from None
+            self._event(c,task_id,RESERVED,detail=windows)
+
     def _fenced(self,slot,task_id,worker_id,generation):
         identity(task_id);identity(worker_id);bound_integer(generation,1,2**63-1)
         if (slot['task_id']!=task_id or slot['worker_id']!=worker_id or slot['generation']!=generation
@@ -236,7 +258,7 @@ class TaskService:
         detail=dict(phase=phase,completed=completed,total=total)
         with self.repo.transaction() as (c,slot):
             row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
-            if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build') or row['stage']!=phase:
+            if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build','lightgbm_continue') or row['stage']!=phase:
                 raise Conflict('Progress does not match current stage')
             old=json.loads(row['progress']) if row['progress'] else None
             unchanged=False
@@ -283,12 +305,21 @@ class TaskService:
                 elif request['kind']=='feature_build':
                     from feature_jobs.contracts import validate_summary
                     validate_summary(candidate,dict(id=task_id,binding=json.loads(row['binding'])))
-                elif request['kind']=='model_workflow':
+                elif request['kind'] in ('model_workflow','lightgbm_continue'):
                     from workflows.contracts import validate_summary
                     from workflows.repository import WorkflowRepository
                     validate_summary(candidate)
                     if candidate['task_id']!=task_id:raise ValueError('Workflow identity mismatch')
-                    WorkflowRepository(self.repo.engine).register(c,candidate)
+                    if request['kind']=='lightgbm_continue':
+                        from lightgbm_continuation.source import assert_current,reserved_window
+                        try:
+                            self._admin(c,row['actor_id'])
+                            assert_current(c,request,json.loads(row['binding']))
+                            if reserved_window(c,task_id)!=candidate['index']['metadata']['comparison']:
+                                raise ValueError('Unreserved continuation comparison')
+                        except (LookupError,ValueError,PermissionError):
+                            outcome='FAILED';failure_code='SOURCE_CHANGED';candidate=None
+                    if candidate is not None:WorkflowRepository(self.repo.engine).register(c,candidate)
                 elif request['kind']=='lightgbm_all_market':
                     from .lightgbm_artifacts import validate_summary
                     validate_summary(candidate,dict(id=task_id,request=request,binding=json.loads(row['binding'])))

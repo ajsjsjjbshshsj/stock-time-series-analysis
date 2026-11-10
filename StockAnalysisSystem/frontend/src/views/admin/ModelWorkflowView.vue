@@ -28,9 +28,11 @@
     </section>
     <DailyPredictionPanel :models="models.items" />
     <ModelReleasePanel :models="models.items" />
+    <LightgbmContinuationPanel v-if="enabled()" :key="authState.user.id" :feature-build="caps?.source?.build_id"
+      :blocked="caps?.execution?.quarantined" @queued="showContinuation" />
     <div class="columns">
       <section class="card box"><h2>任务队列</h2><p v-if="jobs.error" role="alert">{{ jobs.error }}</p><p v-if="jobs.loading">正在读取…</p><p v-if="!jobs.items.length && !jobs.loading">暂无任务</p>
-        <div class="list"><button v-for="j in jobs.items" :key="j.id" class="item" @click="taskControl.select(j.id)"><strong>{{ operationLabels[j.request.operation] || '旧工程训练' }} · {{ j.request.algorithm || j.request.kind }}</strong><span>{{ j.state === 'SUCCEEDED' ? '已完成并保存' : stateLabels[j.state] || j.state }} · {{ j.id.slice(0,12) }}</span></button></div>
+        <div class="list"><button v-for="j in jobs.items" :key="j.id" class="item" @click="taskControl.select(j.id)"><strong>{{ j.request.kind === 'lightgbm_continue' ? 'LightGBM 继续训练' : (operationLabels[j.request.operation] || '旧工程训练') + ' · ' + (j.request.algorithm || j.request.kind) }}</strong><span>{{ j.state === 'SUCCEEDED' ? '已完成并保存' : stateLabels[j.state] || j.state }} · {{ j.id.slice(0,12) }}</span></button></div>
         <div class="actions"><button v-if="jobs.next_cursor" class="btn btn-sm" @click="jobControl.refresh(jobs.next_cursor)">更早任务</button><button v-if="jobs.before" class="btn btn-sm" @click="jobControl.refresh(null)">最新任务</button></div>
         <template v-if="detail.job"><h3>所选任务</h3><code>{{ detail.job.id }}</code><p>{{ detail.job.state === 'SUCCEEDED' ? '完成（不代表已发布或盈利）' : stateLabels[detail.job.state] }} · {{ stageLabels[detail.job.stage] || detail.job.stage }}</p><p>{{ formatTaskProgress(detail.job.progress) }}</p><p v-if="detail.job.failure_code" role="alert">{{ failureLabels[detail.job.failure_code] || detail.job.failure_code }}</p><button v-if="detail.job.state==='QUEUED'||detail.job.state==='RUNNING'&&detail.job.request.kind!=='feature_activate'" class="btn" :disabled="busy" @click="cancel">取消任务</button><button class="btn" @click="taskControl.refresh">刷新详情</button><ol class="events"><li v-for="e in detail.events" :key="e.id">{{ stageLabels[e.event] || e.event }} {{ formatTaskProgress(e.detail) }}</li></ol></template><p v-if="detail.error" role="alert">{{ detail.error }}</p>
       </section>
@@ -58,6 +60,7 @@ import WorkflowReport from '../../components/WorkflowReport.vue'
 import WorkflowPoolSelector from '../../components/WorkflowPoolSelector.vue'
 import DailyPredictionPanel from '../../components/DailyPredictionPanel.vue'
 import ModelReleasePanel from '../../components/ModelReleasePanel.vue'
+import LightgbmContinuationPanel from '../../components/LightgbmContinuationPanel.vue'
 const poolReady=ref(true)
 const route=useRoute()
 function usePoolMembers(codes){if(draft.algorithm==='transformer'&&draft.pool_version)draft.stock_codes=codes.join(', ')}
@@ -72,6 +75,7 @@ const jobControl=createWorkflowController(workflowApi,jobs,{enabled,visible,poll
 const modelControl=createWorkflowController({list:workflowApi.models},models,{enabled,visible})
 const resultControl=createWorkflowController({list:workflowApi.results},results,{enabled,visible})
 const taskControl=createTaskController(workflowApi,detail,{enabled,visible})
+function showContinuation(id){return Promise.all([jobControl.refresh(null),taskControl.select(id)])}
 const matchingModels=computed(()=>models.items.filter(m=>m.algorithm===draft.algorithm))
 const resumeType=computed(()=>{const r=detail.job?.request;if(r?.kind==='feature_build')return 'feature_build';if(r?.kind==='model_workflow'&&r.algorithm==='lightgbm'&&r.operation==='predict')return 'lightgbm_predict';if(r?.kind==='model_workflow'&&r.algorithm==='transformer'&&r.operation==='train')return 'transformer_train';return null})
 const canResume=computed(()=>enabled() && caps.value?.resumption?.version===1 && caps.value.resumption.types.includes(resumeType.value) && ['FAILED','INTERRUPTED','CANCELLED'].includes(detail.job?.state))

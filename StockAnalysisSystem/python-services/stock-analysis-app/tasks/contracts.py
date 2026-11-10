@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TERMINAL=frozenset(('SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'))
 STAGES=frozenset(('QUEUED','PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE','DONE'))
-EVENTS=STAGES | TERMINAL | {'CREATED','CANCEL_REQUESTED','RECOVERED','PROGRESS'}
+EVENTS=STAGES | TERMINAL | {'CREATED','CANCEL_REQUESTED','RECOVERED','PROGRESS','CONTINUATION_RESERVED'}
 
 
 class Conflict(ValueError): pass
@@ -18,7 +18,7 @@ class TaskFailure(RuntimeError):
     def __init__(self,code):
         self.code=code if code in {'SOURCE_CHANGED','INPUT_INVALID','TRAINING_FAILED','CANDIDATE_INVALID',
             'PROCESS_FAILED','PROTOCOL_INVALID','INTERRUPTED','DEPENDENCY_UNAVAILABLE',
-            'RESOURCE_UNAVAILABLE','RESOURCE_LIMIT','TIME_LIMIT'} else 'TRAINING_FAILED'
+            'RESOURCE_UNAVAILABLE','RESOURCE_LIMIT','TIME_LIMIT','COMPARISON_RESERVED','CONTINUATION_NOT_READY'} else 'TRAINING_FAILED'
         super().__init__(self.code)
 
 
@@ -74,6 +74,9 @@ class MarketJobRequest(BaseModel):
 
 
 def normalize_request(value):
+    if isinstance(value,dict) and value.get('kind')=='lightgbm_continue':
+        from lightgbm_continuation.contracts import normalize
+        return normalize(value)
     if isinstance(value,dict) and value.get('kind')=='feature_activate':
         from feature_jobs.activation import normalize
         return normalize(value)

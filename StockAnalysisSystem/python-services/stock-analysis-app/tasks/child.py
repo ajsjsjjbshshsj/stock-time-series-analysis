@@ -66,6 +66,11 @@ def main():
                         from .resumption import workflow_source_for_task
                         from workflows.runner import run_operation
                         run_operation(task,payload['root'],workflow_source_for_task(db.engine,task),emit)
+                    elif task['request']['kind']=='lightgbm_continue':
+                        from lightgbm_continuation.runner import run_continuation
+                        def reserve(windows):
+                            control.reserve_continuation(payload['task_id'],payload['worker_id'],payload['generation'],windows)
+                        run_continuation(task,payload['root'],db,emit,owner_guard,reserve)
                     else:
                         from .market_source import MarketSource
                         from .lightgbm_runner import run_lightgbm

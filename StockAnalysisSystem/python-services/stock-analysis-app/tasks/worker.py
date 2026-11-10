@@ -66,7 +66,7 @@ class Worker:
         if task is None:return False
         process=None;pulse=None;control=None;operation='start';outcome='FAILED';code='PROCESS_FAILED';candidate=None;interrupted=False
         fence=(task['id'],self.worker_id,task['generation'])
-        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate')
+        market=task['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate','lightgbm_continue')
         try:
             process=self.process_factory()
             if market:
@@ -122,7 +122,12 @@ class Worker:
                     operation='verify_candidate'
                     try:
                         options=dict(engine=self.service.repo.engine) if task['request']['kind'] in ('feature_build','feature_activate') else {}
-                        candidate=verify_candidate(task,self.root,**options)
+                        if task['request']['kind']=='lightgbm_continue':
+                            from lightgbm_continuation.runner import verify_candidate as verify_continuation
+                            from lightgbm_continuation.source import reserved_window
+                            with self.service.repo.engine.connect() as c:windows=reserved_window(c,task['id'])
+                            candidate=verify_continuation(task,self.root,windows)
+                        else:candidate=verify_candidate(task,self.root,**options)
                     except Exception as error:
                         logging.getLogger(__name__).warning('Task supervisor failed: operation=verify_candidate exception_type=%s',type(error).__name__)
                         raise TaskFailure('CANDIDATE_INVALID') from None
