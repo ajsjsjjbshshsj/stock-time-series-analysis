@@ -4,6 +4,8 @@ from sqlalchemy import text
 from tasks.artifacts import task_path,task_digest,read_json,write_json,file_digest,_is_link
 from .contracts import validate_summary
 
+MAX_FEATURE_FILES=2*10000+32
+
 
 def inventory(folder):
     files={}
@@ -14,7 +16,7 @@ def inventory(folder):
         elif path.is_file() and path.parent!=folder:
             # The source manifest is evidence too, unlike the top-level seal.
             files[path.relative_to(folder).as_posix()]=file_digest(path)
-        if len(files)>12000:raise ValueError('Feature artifact file count exceeded')
+        if len(files)>MAX_FEATURE_FILES:raise ValueError('Feature artifact file count exceeded')
     return files
 
 
@@ -70,12 +72,20 @@ def run_build(task,root,db,emit):
     from data_processor.feature_store_builder import snapshot_source,compute_build
     from data_processor.build_timings import BuildTimings
     timings=BuildTimings()
+    from tasks.telemetry import ActivityReporter
+    activity=ActivityReporter(emit)
     emit('stage',stage='INPUT')
+    activity('SNAPSHOT',force=True)
     with timings.measure('source_snapshot'):
         manifest=snapshot_source(db,folder/'source',task['binding']['source_start'],task['binding']['source_cutoff'])
+    if task['binding'].get('resume') and manifest['source_sha256']!=task['binding']['resume']['source_sha256']:
+        raise ValueError('Feature resume raw snapshot changed')
+    from .checkpoint import cache,initialize
+    commit=initialize(task,folder)
     report=compute_build(db,manifest,task['id'],directory=folder/'source',
-        on_progress=feature_progress(emit,manifest['stock_count']),timings=timings)
+        on_progress=feature_progress(emit,manifest['stock_count']),timings=timings,reuse_store=cache(root),on_stock=commit,on_activity=activity)
     emit('stage',stage='VERIFY');source.verify(task)
+    activity('SEAL',force=True)
     write_json(folder/'report.json',report)
     with timings.measure('artifact_inventory'):
         files=inventory(folder)

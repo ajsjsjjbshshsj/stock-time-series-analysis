@@ -10,6 +10,7 @@ class FeatureRequest(BaseModel):
     kind:Literal['feature_build']
     preparation_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
     nightly_task_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
+    resume_task_id:str|None=Field(default=None,pattern=r'^[0-9a-f]{32}$')
 
     @model_validator(mode='after')
     def one_origin(self):

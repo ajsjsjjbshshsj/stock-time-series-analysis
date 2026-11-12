@@ -54,15 +54,7 @@
       </header>
 
       <main class="content">
-        <section v-if="authState.mode === 'protected' && route.name === 'overview'" class="card">
-          <h1>后台功能尚未接入</h1>
-          <p>系统总览尚未接入。当前可使用账户管理、数据采集、训练任务、模型工作台、消费监控和用户端真实结果。</p>
-          <RouterLink class="btn" to="/collector">数据采集</RouterLink>
-          <RouterLink class="btn" to="/accounts">账户管理</RouterLink>
-          <RouterLink class="btn" to="/training">训练任务</RouterLink>
-          <RouterLink class="btn" to="/models">模型工作台</RouterLink>
-          <RouterLink class="btn" to="/user">查看用户端</RouterLink>
-        </section>
+        <SystemOverviewView v-if="authState.mode === 'protected' && route.name === 'overview'" />
         <RouterView v-else :key="dataSource + route.path" />
       </main>
     </div>
@@ -73,6 +65,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
+import SystemOverviewView from './views/admin/SystemOverviewView.vue'
 import { dataSource, setDataSource } from './api/client.js'
 import { useThemeStore } from './stores/theme.js'
 import { fmtTime } from './utils/format.js'
@@ -98,7 +91,7 @@ const sourceLabel = computed(() => {
   if (authState.mode === 'protected' && route.name === 'accounts') return '受保护模式 · 真实账户管理'
   if (authState.mode === 'protected' && route.name === 'pools') return '受保护模式 · 固定股票池 · 查询不触发采集训练'
   if (authState.mode === 'protected' && route.name === 'collector') return '受保护模式 · 真实缺口补采 · 仅管理员'
-  if (authState.mode === 'protected' && route.name === 'overview') return '受保护模式 · 总览未就绪'
+  if (authState.mode === 'protected' && route.name === 'overview') return '受保护模式 · 真实系统总览 · 只读'
   if (dataSource.value !== 'hybrid') return '演示数据 · 非真实行情'
   if (route.name === 'monitor') return '监控接口数据'
   if (route.name === 'analysis') return '真实行情与已发布结果 · 只读分析'

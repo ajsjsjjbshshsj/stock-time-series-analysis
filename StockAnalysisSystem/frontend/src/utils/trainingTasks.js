@@ -1,7 +1,7 @@
 /** One detail selection owns its requests and timers. Late data cannot cross tasks. */
 export const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'INTERRUPTED'])
 export const stateLabels = { QUEUED: '等待领取', RUNNING: '执行中', CANCEL_REQUESTED: '等待取消确认', CANCELLED: '已取消', SUCCEEDED: '工程候选已验证', FAILED: '执行失败', INTERRUPTED: '执行中断' }
-export const stageLabels = { CREATED: '已入队', QUEUED: '排队', PREFLIGHT: '预检', INPUT: '准备输入', PROBE: '探针筛选', PROGRESS: '进度', TRAIN: '训练', VERIFY: '重加载验证', SAVE: '候选已保存', DONE: '结束', RECOVERED: '执行槽已恢复', ...stateLabels }
+export const stageLabels = { CREATED: '已入队', QUEUED: '排队', PREFLIGHT: '预检', INPUT: '准备输入', PROBE: '探针筛选', PROGRESS: '进度', TRAIN: '训练', VERIFY: '重加载验证', SAVE: '候选已保存', DONE: '结束', RECOVERED: '执行槽已恢复', CONTINUATION_RESERVED: '独立比较期已锁定', ...stateLabels }
 
 export function taskTitle(job) {
   if (job.request.kind === 'feature_activate') return `特征${job.request.action === 'rollback' ? '回滚' : '启用'} · 不训练模型`
@@ -25,16 +25,28 @@ export function buildTrainingRequest(draft) {
 }
 
 export function formatTaskProgress(value) {
-  if (!value || !['INPUT', 'PROBE', 'TRAIN'].includes(value.phase) || !Number.isInteger(value.completed) || !Number.isInteger(value.total) || value.total < 1 || value.total > 10000000 || value.completed < 0 || value.completed > value.total) return ''
-  return `${stageLabels[value.phase]}：${value.completed} / ${value.total}`
+  if (!value) return ''
+  const parts = []
+  if (['INPUT', 'PROBE', 'TRAIN'].includes(value.phase) && Number.isInteger(value.completed) && Number.isInteger(value.total) && value.total >= 1 && value.total <= 10000000 && value.completed >= 0 && value.completed <= value.total) parts.push(`${stageLabels[value.phase]}：${value.completed} / ${value.total}`)
+  const a = value.activity, labels = { SNAPSHOT:'冻结来源', RAW_VERIFY:'核对原始行情', FEATURE_READ:'读取特征', FEATURE_COMPUTE:'计算特征', CACHE_READ:'验证复用输入', MATRIX_WRITE:'写入训练矩阵', SCORE:'计算评分', PROBE:'探针筛选', TRAIN_EPOCH:'训练轮次', TRAIN_ITERATION:'训练迭代', SEAL:'验证并封存' }
+  if (a && Object.hasOwn(labels,a.step) && Number.isInteger(a.elapsed_ms) && a.elapsed_ms >= 0 && a.elapsed_ms <= 86400000) {
+    parts.push(labels[a.step])
+    if (typeof a.stock === 'string' && /^\d{6}\.(SH|SZ)$/.test(a.stock)) parts.push(a.stock)
+    parts.push(`上次报告耗时 ${Math.floor(a.elapsed_ms / 60000)}分${Math.floor(a.elapsed_ms / 1000) % 60}秒`)
+    if (Number.isInteger(a.cache_hits) && a.cache_hits >= 0 && a.cache_hits <= 10000) parts.push(`复用 ${a.cache_hits} 只`)
+    if (Number.isInteger(a.checkpoint_epoch) && a.checkpoint_epoch > 0 && a.checkpoint_epoch <= 10000) parts.push(`已提交 ${a.checkpoint_epoch} 轮`)
+  }
+  return parts.join(' · ')
 }
 
 export const failureLabels = {
   RESOURCE_UNAVAILABLE: '可用内存不足 8 GiB 或临时磁盘不足 16 GiB，未开始构建矩阵。',
   RESOURCE_LIMIT: '训练进程树超过 6 GiB 内存上限，或临时磁盘剩余不足 2 GiB；任务已停止，不会缩小股票池重试。',
-  TIME_LIMIT: '全市场工程任务超过 60 分钟上限，已停止。',
+  TIME_LIMIT: '工程任务超过配置的安全时限，已停止；已提交的受支持检查点可受控续跑。',
   INPUT_INVALID: '输入资格校验失败，请检查后台保存的缺口、上市日期或成熟特征诊断；未静默丢弃异常股票。',
   SOURCE_CHANGED: '绑定的数据、参考、日历或运行代码发生变化；请核对后重新创建任务。',
+  CONTINUATION_NOT_READY: '没有足够的合格训练或比较样本，或父模型历史无法核验；没有继续训练。',
+  COMPARISON_RESERVED: '该父模型的比较期已被其他任务使用，请等待新的独立比较期。',
 }
 
 export function createTaskController(api, state = {}, { visible = () => true, enabled = () => true, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {

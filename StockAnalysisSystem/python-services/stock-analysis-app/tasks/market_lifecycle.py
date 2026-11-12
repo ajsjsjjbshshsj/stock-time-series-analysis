@@ -55,5 +55,11 @@ def bind_lifecycles(root,references,end):
             if iso(row['list_date'])!=listed:raise ValueError('Master/lifecycle listing conflict')
             delisted=None if row['delist_date'] in (None,'') else iso(row['delist_date'])
         stocks[code]=validate_lifecycle(code,dict(list_date=listed,delist_date=delisted,**period_for(code)))
-    return dict(reference_sha256=bundle['manifest_sha256'],
+    # The loader above verifies the complete sealed reference. Task identity
+    # binds only the validated lifecycle rows this frozen pool actually uses:
+    # a nightly acquisition timestamp or an unrelated IPO is not a source
+    # change for this model. Actual selected lifecycle changes still alter the
+    # digest, and the independent code-period policy remains pinned below.
+    from .contracts import digest
+    return dict(reference_sha256=digest(dict(schema_version=2,stocks=stocks)),
         policy_sha256=hashlib.sha256((collector_root()/'app/nightly/symbol_periods.py').read_bytes()).hexdigest(),stocks=stocks)

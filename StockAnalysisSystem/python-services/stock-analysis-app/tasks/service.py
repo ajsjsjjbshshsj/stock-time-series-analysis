@@ -14,7 +14,7 @@ def public(row):
         'started_at','heartbeat_at','finished_at','failure_code')}
     result.update(request=json.loads(row['request']),binding=json.loads(row['binding']),
                   candidate=json.loads(row['candidate']) if row['candidate'] else None)
-    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate'):
+    if result['request']['kind'] in ('lightgbm_all_market','model_workflow','feature_build','feature_activate','lightgbm_continue'):
         binding=result['binding']
         result['binding']={k:binding[k] for k in ('build_id','pool_count','pool_identity','source_sha256','source_start','source_cutoff','preparation_id','pool_version','previous_active_build_id') if k in binding}
         result['progress']=json.loads(row['progress']) if row['progress'] else None
@@ -38,7 +38,9 @@ class TaskService:
 
     def _event(self,c,task_id,event,*,actor_id=None,detail=None):
         if event not in EVENTS:raise ValueError('Invalid event')
-        row=self._row(c,task_id)
+        identity(task_id)
+        row=c.execute(select(tasks.c.event_count).where(tasks.c.id==task_id)).mappings().one_or_none()
+        if row is None:raise NotFound('Task unavailable')
         if row['event_count']>=2000:raise ValueError('Event bound exceeded')
         c.execute(events.insert().values(task_id=task_id,event=event,created_at=int(self.clock()),actor_id=actor_id,
                                         detail=encoded(detail) if detail is not None else None))
@@ -56,16 +58,37 @@ class TaskService:
                 if on_create is not None:on_create(c,old)
                 return public(old)
             return None
-        with self.repo.transaction() as (c,_):
+        with self.repo.transaction() as (c,slot):
             old=existing(c)
             if old is not None:return old
+            if request['kind']=='lightgbm_continue' and slot['quarantined']:raise Conflict('Execution slot quarantined')
         # Source binding can hash the complete market and outlive the30s lease.
         # Never hold the execution-slot (or account) lock during that work.
-        binding=self.source.bind(request)
-        with self.repo.transaction() as (c,_):
+        source=self.source
+        if request['kind']=='lightgbm_continue':
+            from lightgbm_continuation.source import ContinuationSource
+            source=ContinuationSource(self.repo.engine,self.source.calendar_path)
+        from .resumption import is_lightgbm_prediction_resume
+        if is_lightgbm_prediction_resume(request):
+            from .source import SourceProvider
+            if isinstance(source,SourceProvider):
+                from .resumption import parent_task,resume_calendar_path
+                with self.repo.engine.connect() as c:parent=parent_task(c,request['resume_task_id'])
+                source=SourceProvider(source.engine,resume_calendar_path(source.calendar_path,parent['binding']))
+        binding=source.bind(request)
+        with self.repo.transaction() as (c,slot):
             # Recheck current role and idempotency after the unlocked interval.
             old=existing(c)
             if old is not None:return old
+            if request['kind']=='lightgbm_continue':
+                from lightgbm_continuation.source import assert_current
+                if slot['quarantined']:raise Conflict('Execution slot quarantined')
+                assert_current(c,request,binding)
+            if request.get('resume_task_id'):
+                # All task creation paths, including the engineering API, must
+                # recheck the parent/slot after potentially slow source binding.
+                from .resumption import parent_task
+                parent_task(c,request['resume_task_id'])
             task_id=uuid4().hex
             c.execute(tasks.insert().values(id=task_id,actor_id=actor_id,idempotency_key=key,
                 request_hash=request_hash,request=encoded(request),binding=encoded(binding),
@@ -73,6 +96,12 @@ class TaskService:
             self._event(c,task_id,'CREATED',actor_id=actor_id)
             if on_create is not None:on_create(c,self._row(c,task_id))
             return public(self._row(c,task_id))
+
+    def resume(self,actor,id,key):
+        from .resumption import parent_task
+        with self.repo.transaction() as (connection,_):
+            self._admin(connection,actor);parent=parent_task(connection,id)
+        return self.create(actor,dict(parent['request'],resume_task_id=id),key)
 
     def get(self,task_id):
         with self.repo.engine.connect() as c:return public(self._row(c,task_id))
@@ -163,48 +192,97 @@ class TaskService:
                 raise ValueError('Task reference mismatch')
             return task
 
-    def _owned(self,c,slot,task_id,worker_id,generation):
+    def reserve_continuation(self,task_id,worker_id,generation,windows):
+        from lightgbm_continuation.source import RESERVED,assert_current,reserve_comparison
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation)
+            request=json.loads(row['request'])
+            # Child output is consumed asynchronously by the supervisor.
+            if request['kind']!='lightgbm_continue' or row['state']!='RUNNING' or row['stage'] not in ('PREFLIGHT','INPUT'):
+                raise LeaseLost('Continuation reservation requires an owned input stage')
+            self._admin(c,row['actor_id'])
+            assert_current(c,request,json.loads(row['binding']))
+            try:reserve_comparison(c,request,windows)
+            except Conflict:raise TaskFailure('COMPARISON_RESERVED') from None
+            self._event(c,task_id,RESERVED,detail=windows)
+
+    def _fenced(self,slot,task_id,worker_id,generation):
         identity(task_id);identity(worker_id);bound_integer(generation,1,2**63-1)
         if (slot['task_id']!=task_id or slot['worker_id']!=worker_id or slot['generation']!=generation
                 or slot['quarantined'] or slot['lease_until']<=int(self.clock())):
             raise LeaseLost('Execution lease unavailable')
-        row=self._row(c,task_id)
+
+    def _owned(self,c,slot,task_id,worker_id,generation,*,include_payload=True):
+        self._fenced(slot,task_id,worker_id,generation)
+        if include_payload:row=self._row(c,task_id)
+        else:
+            row=c.execute(select(tasks.c.state,tasks.c.stage,tasks.c.request,tasks.c.progress).where(tasks.c.id==task_id)).mappings().one_or_none()
+            if row is None:raise NotFound('Task unavailable')
+        if slot['lease_until']<=int(self.clock()):
+            raise LeaseLost('Execution lease expired during task read')
         if row['state'] not in ('RUNNING','CANCEL_REQUESTED'):raise LeaseLost('Task not owned')
         return row
 
     def heartbeat(self,task_id,worker_id,generation):
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation);now=int(self.clock())
+            self._fenced(slot,task_id,worker_id,generation)
+            # Control traffic must not load/decode the frozen market binding.
+            state=c.execute(select(tasks.c.state).where(tasks.c.id==task_id)).scalar_one()
+            self._fenced(slot,task_id,worker_id,generation)
+            if state not in ('RUNNING','CANCEL_REQUESTED'):raise LeaseLost('Task not owned')
+            now=int(self.clock())
             c.execute(slots.update().where(slots.c.id==1).values(lease_until=now+30))
             c.execute(tasks.update().where(tasks.c.id==task_id).values(heartbeat_at=now))
-            return public(self._row(c,task_id))
+            return dict(state=state,lease_until=now+30)
 
-    def stage(self,task_id,worker_id,generation,stage):
+    def record_stage(self,*args):return self.stage(*args,return_snapshot=False)
+
+    def record_progress(self,*args):return self.progress(*args,return_snapshot=False)
+
+    def record_activity(self,*args):return self.activity(*args,return_snapshot=False)
+
+    def stage(self,task_id,worker_id,generation,stage,*,return_snapshot=True):
         allowed=('PREFLIGHT','INPUT','PROBE','TRAIN','VERIFY','SAVE')
         if stage not in allowed:raise ValueError('Invalid training stage')
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation)
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
             if allowed.index(stage)<allowed.index(row['stage']):raise Conflict('Stage regression')
             if row['stage']!=stage:
-                c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage))
+                c.execute(tasks.update().where(tasks.c.id==task_id).values(stage=stage,progress=None))
                 self._event(c,task_id,stage)
-            return public(self._row(c,task_id))
+        return self.get(task_id) if return_snapshot else None
 
-    def progress(self,task_id,worker_id,generation,phase,completed,total):
+    def progress(self,task_id,worker_id,generation,phase,completed,total,*,return_snapshot=True):
         if phase not in ('INPUT','PROBE','TRAIN'):raise ValueError('Invalid progress phase')
         bound_integer(total,1,10000000);bound_integer(completed,0,total)
         detail=dict(phase=phase,completed=completed,total=total)
         with self.repo.transaction() as (c,slot):
-            row=self._owned(c,slot,task_id,worker_id,generation)
-            if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build') or row['stage']!=phase:
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
+            if json.loads(row['request'])['kind'] not in ('lightgbm_all_market','model_workflow','feature_build','lightgbm_continue') or row['stage']!=phase:
                 raise Conflict('Progress does not match current stage')
             old=json.loads(row['progress']) if row['progress'] else None
-            if old and old['phase']==phase:
+            unchanged=False
+            if old and old.get('phase')==phase:
                 if total!=old['total'] or completed<old['completed']:raise Conflict('Progress regression')
-                if completed==old['completed']:return public(row)
+                unchanged=completed==old['completed']
+            if not unchanged:
+                if old and 'activity' in old:detail['activity']=old['activity']
+                c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
+                self._event(c,task_id,'PROGRESS',detail=detail)
+        return self.get(task_id) if return_snapshot else None
+
+    def activity(self,task_id,worker_id,generation,value,*,return_snapshot=True):
+        from .telemetry import normalize_activity
+        value=normalize_activity(value)
+        with self.repo.transaction() as (c,slot):
+            row=self._owned(c,slot,task_id,worker_id,generation,include_payload=False)
+            expected={'PROBE':('PROBE',),'TRAIN_EPOCH':('TRAIN',),'TRAIN_ITERATION':('TRAIN',),'SEAL':('VERIFY','SAVE')}.get(value['step'],('INPUT',))
+            if row['stage'] not in expected:raise ValueError('Activity stage mismatch')
+            detail=json.loads(row['progress']) if row['progress'] else {}
+            detail['activity']=dict(value,reported_at=int(self.clock()))
             c.execute(tasks.update().where(tasks.c.id==task_id).values(progress=encoded(detail)))
-            self._event(c,task_id,'PROGRESS',detail=detail)
-            return public(self._row(c,task_id))
+            self._event(c,task_id,'PROGRESS',detail={'activity':detail['activity']})
+        return self.get(task_id) if return_snapshot else None
 
     def _release(self,c):
         c.execute(slots.update().where(slots.c.id==1).values(task_id=None,worker_id=None,lease_until=None,quarantined=False))
@@ -227,12 +305,21 @@ class TaskService:
                 elif request['kind']=='feature_build':
                     from feature_jobs.contracts import validate_summary
                     validate_summary(candidate,dict(id=task_id,binding=json.loads(row['binding'])))
-                elif request['kind']=='model_workflow':
+                elif request['kind'] in ('model_workflow','lightgbm_continue'):
                     from workflows.contracts import validate_summary
                     from workflows.repository import WorkflowRepository
                     validate_summary(candidate)
                     if candidate['task_id']!=task_id:raise ValueError('Workflow identity mismatch')
-                    WorkflowRepository(self.repo.engine).register(c,candidate)
+                    if request['kind']=='lightgbm_continue':
+                        from lightgbm_continuation.source import assert_current,reserved_window
+                        try:
+                            self._admin(c,row['actor_id'])
+                            assert_current(c,request,json.loads(row['binding']))
+                            if reserved_window(c,task_id)!=candidate['index']['metadata']['comparison']:
+                                raise ValueError('Unreserved continuation comparison')
+                        except (LookupError,ValueError,PermissionError):
+                            outcome='FAILED';failure_code='SOURCE_CHANGED';candidate=None
+                    if candidate is not None:WorkflowRepository(self.repo.engine).register(c,candidate)
                 elif request['kind']=='lightgbm_all_market':
                     from .lightgbm_artifacts import validate_summary
                     validate_summary(candidate,dict(id=task_id,request=request,binding=json.loads(row['binding'])))

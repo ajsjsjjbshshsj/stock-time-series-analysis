@@ -8,6 +8,7 @@ from .contracts import normalize
 def code_identity():
     from tasks.source import APP
     names=['data_processor/feature_store_builder.py','data_processor/feature_store_source.py',
+        'data_processor/feature_reuse.py','tasks/reuse.py','tasks/resumption.py',
         'data_processor/feature_store_contract.py','data_processor/feature_schema.py',
         'data_processor/feature_engineer.py','database/feature_store_repository.py']
     names += [p.relative_to(APP).as_posix() for p in sorted((APP/'feature_jobs').glob('*.py'))]
@@ -34,9 +35,9 @@ class FeatureSource:
             if (day>completed_session(calendar) or day<calendar['start'] or calendar['start']>'2023-01-01'
                     or active and (active['state']!='READY' or str(active['source_cutoff'])>day)):
                 raise ValueError('NIGHTLY_FEATURE_BOUNDARY_CHANGED')
-            return dict(nightly_task_id=request['nightly_task_id'],nightly_proof=proof,
+            return self._bound(request,dict(nightly_task_id=request['nightly_task_id'],nightly_proof=proof,
                 source_start='2023-01-01',source_cutoff=day,previous_active_build_id=active['build_id'] if active else None,
-                calendar_sha256=digest(calendar),code_sha256=code_identity(),model_ready=False)
+                calendar_sha256=digest(calendar),code_sha256=code_identity(),model_ready=False))
         repo,pools,_=production_services(self.engine)
         parent=repo.get(request['preparation_id'])
         if parent['status']!='SUBMITTED' or parent['data_state']!='READY_CORE':
@@ -51,12 +52,20 @@ class FeatureSource:
         cutoff=max(parent['end_date'],str(active['source_cutoff']) if active else parent['end_date'])
         if date.fromisoformat(cutoff).isoformat()!=cutoff or not calendar['start']<='2023-01-01'<=cutoff<=completed:
             raise ValueError('FEATURE_RANGE_NOT_COMPLETED')
-        return dict(preparation_id=parent['id'],preparation_sha256=parent['request_sha256'],
+        return self._bound(request,dict(preparation_id=parent['id'],preparation_sha256=parent['request_sha256'],
             preparation_batch_id=parent['batch_id'],pool_version=parent['pool_version'],
             pool_sha256=parent['pool_sha256'],pool_count=pool['stock_count'],pool_identity=pool['member_sha256'],
             source_start='2023-01-01',source_cutoff=cutoff,
             previous_active_build_id=active['build_id'] if active else None,
-            calendar_sha256=digest(calendar),code_sha256=code_identity(),model_ready=False)
+            calendar_sha256=digest(calendar),code_sha256=code_identity(),model_ready=False))
+
+    def _bound(self,request,bound):
+        from data_processor.feature_store_builder import algorithm_identity
+        bound['feature_algorithm_sha256']=algorithm_identity()[1]
+        if request.get('resume_task_id'):
+            from .checkpoint import bind_resume
+            bound['resume']=bind_resume(self,request,bound)
+        return bound
 
     def verify(self,task):
         from tasks.source import SourceChanged

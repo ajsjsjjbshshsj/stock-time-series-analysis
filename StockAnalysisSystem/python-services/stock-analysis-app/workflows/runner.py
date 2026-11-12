@@ -10,6 +10,8 @@ def run_operation(task,root,source,emit):
     store=ArtifactStore(root);folder=store.path(task['id']);resources.preflight(folder,bounded_profile())
     emit('stage',stage='PREFLIGHT');source.verify(task);folder.mkdir(parents=True,exist_ok=False)
     request=task['request'];operation=request['operation']
+    from tasks.telemetry import ActivityReporter
+    source.activity=ActivityReporter(emit)
     if operation=='train':
         from .training import train_operation
         info=train_operation(task,folder,source,emit);kind='model';model_id=task['id']
@@ -23,6 +25,7 @@ def run_operation(task,root,source,emit):
         from .backtest import backtest_operation
         info=backtest_operation(task,folder,source,emit);kind='result';model_id=request['model_id']
     emit('stage',stage='VERIFY');source.verify(task)
+    source.activity('SEAL',force=True)
     native=read_json(folder/'native.json',max_bytes=8*1024*1024) if kind=='model' else None
     info=dict(info,status=info.get('status','COMPLETE'),operation=operation)
     if task['binding'].get('registry_pool') is not None:
